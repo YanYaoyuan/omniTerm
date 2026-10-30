@@ -8,6 +8,16 @@ const MAX_SESSIONS = 20;
 const FLUSH_DELAY_MS = 4;
 const FLUSH_BYTES = 256 * 1024;
 
+// The renderer sends UTF-8. Under Linux's C/POSIX character locale, readline
+// can edit that input byte by byte and corrupt multibyte characters. Keep
+// explicit user locales, but give the ASCII fallback a UTF-8 character set.
+export function terminalEnvironment(env = process.env, platform = process.platform) {
+  if (platform !== "linux") return env;
+  const characterLocale = env.LC_ALL || env.LC_CTYPE || env.LANG || "C";
+  if (characterLocale !== "C" && characterLocale !== "POSIX") return env;
+  return { ...env, LC_CTYPE: "C.UTF-8", ...(env.LC_ALL ? { LC_ALL: "C.UTF-8" } : {}) };
+}
+
 function descriptor(session) {
   return { id: session.id, title: session.plan.title, kind: session.plan.kind, cwd: session.plan.cwd, ...(session.pty ? { pid: session.pty.pid } : {}), ...(session.plan.remote ? { remote: true } : {}), ...(session.plan.powershell ? { powershell: true } : {}), status: session.status };
 }
@@ -23,11 +33,12 @@ export function terminatePty(pty, platform = process.platform, signalProcess = p
 }
 
 export class SessionManager {
-  constructor({ planner, spawnPty, onData = () => {}, onExit = () => {}, onStart = () => {}, onClose = () => {}, terminate = terminatePty, schedule = (callback) => setTimeout(callback, FLUSH_DELAY_MS), cancel = clearTimeout }) {
+  constructor({ planner, spawnPty, platform = process.platform, onData = () => {}, onExit = () => {}, onStart = () => {}, onClose = () => {}, terminate = terminatePty, schedule = (callback) => setTimeout(callback, FLUSH_DELAY_MS), cancel = clearTimeout }) {
     this.planner = planner;
     this.schedule = schedule;
     this.cancel = cancel;
     this.spawnPty = spawnPty;
+    this.platform = platform;
     this.onData = onData;
     this.onExit = onExit;
     this.onStart = onStart;
@@ -83,7 +94,7 @@ export class SessionManager {
     if (session.status !== "pending") return descriptor(session);
     session.status = "starting";
     try {
-      const pty = this.spawnPty(session.plan.executable, session.plan.args, { name: "xterm-256color", cols: session.cols, rows: session.rows, cwd: session.plan.cwd, env: session.plan.env });
+      const pty = this.spawnPty(session.plan.executable, session.plan.args, { name: "xterm-256color", cols: session.cols, rows: session.rows, cwd: session.plan.cwd, env: terminalEnvironment(session.plan.env, this.platform) });
       session.pty = pty;
       session.status = "running";
       session.listeners.push(pty.onData((data) => { if (this.sessions.get(id) === session && !session.exited) this.append(session, data); }));

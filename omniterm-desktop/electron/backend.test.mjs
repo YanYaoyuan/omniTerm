@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, rmSync, readdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { buildCommandPlan, externalUrl, resolveDesktopAgent, validateProfile } from "./command-plan.mjs";
-import { SessionManager, terminatePty } from "./session-manager.mjs";
+import { SessionManager, terminalEnvironment, terminatePty } from "./session-manager.mjs";
 import { ProfileStore } from "./profile-store.mjs";
 
 const options = { platform: "linux", env: { PATH: "/usr/bin", SHELL: "/bin/zsh", CUSTOM: "preserved" }, defaultCwd: "/work", repositoryRoot: "/repo", isDirectory: () => true, isExecutable: (name) => ["/usr/bin/ssh", "/usr/bin/sftp", "/usr/bin/python3", "/bin/zsh", "/repo/dist/omniterm-agent/bin/codex"].includes(name) };
@@ -74,15 +74,53 @@ test("invalid destinations, secret fields, ports, and cwd are rejected", async (
   await assert.rejects(buildCommandPlan({ kind: "shell" }, { ...options, isDirectory: () => false }), /does not exist/);
 });
 
-function fixture(planner = async () => ({ executable: "/bin/sh", args: ["-l"], kind: "shell", title: "Terminal", cwd: "/work", env: {} })) {
+function fixture(planner = async () => ({ executable: "/bin/sh", args: ["-l"], kind: "shell", title: "Terminal", cwd: "/work", env: {} }), platform = process.platform) {
   const events = { data: [], exit: [], writes: [], sizes: [], kills: 0, spawns: [] };
   let dataCallback, exitCallback;
-  const manager = new SessionManager({ planner, terminate: (pty) => pty.kill(), onData: (event) => events.data.push(event), onExit: (event) => events.exit.push(event), spawnPty: (...args) => {
+  const manager = new SessionManager({ planner, platform, terminate: (pty) => pty.kill(), onData: (event) => events.data.push(event), onExit: (event) => events.exit.push(event), spawnPty: (...args) => {
     events.spawns.push(args);
     return { pid: 42, onData: (callback) => { dataCallback = callback; return { dispose() {} }; }, onExit: (callback) => { exitCallback = callback; return { dispose() {} }; }, write: (data) => events.writes.push(data), resize: (...size) => events.sizes.push(size), kill: () => events.kills++ };
   } });
   return { manager, events, emitData: (data) => dataCallback(data), emitExit: (event) => exitCallback(event) };
 }
+
+test("Linux PTYs use UTF-8 for C/POSIX character locales without mutating the parent environment", async () => {
+  for (const env of [
+    { PATH: "/bin" },
+    { PATH: "/bin", LANG: "C" },
+    { LANG: "POSIX" },
+    { LANG: "en_US.UTF-8", LC_CTYPE: "C", LC_NUMERIC: "C" },
+    { LANG: "en_US.UTF-8", LC_CTYPE: "en_US.UTF-8", LC_ALL: "POSIX" },
+    { LANG: "C", LC_ALL: "C" },
+  ]) {
+    const before = { ...env };
+    const { manager, events } = fixture(async () => ({ executable: "/bin/sh", args: [], kind: "shell", title: "Terminal", cwd: "/work", env }), "linux");
+    const session = await manager.create({ kind: "shell" });
+    manager.start(session.id);
+    const spawned = events.spawns[0][2].env;
+    assert.equal(spawned.LC_CTYPE, "C.UTF-8");
+    assert.equal(spawned.LC_ALL || spawned.LC_CTYPE, "C.UTF-8");
+    assert.equal(spawned.LANG, env.LANG);
+    assert.equal(spawned.LC_NUMERIC, env.LC_NUMERIC);
+    assert.equal(spawned.PATH, env.PATH);
+    assert.deepEqual(env, before);
+    manager.dispose();
+  }
+});
+
+test("PTY locale normalization respects category precedence, explicit locales and other platforms", () => {
+  for (const env of [
+    { LANG: "C", LC_CTYPE: "zh_CN.UTF-8" },
+    { LANG: "C", LC_CTYPE: "C", LC_ALL: "C.UTF-8" },
+    { LANG: "en_US.UTF-8" },
+    { LANG: "C.utf8" },
+    { LANG: "en_US.ISO-8859-1" },
+  ]) assert.deepEqual(terminalEnvironment(env, "linux"), env);
+  for (const platform of ["darwin", "win32"]) {
+    const env = { LANG: "C", LC_ALL: "POSIX" };
+    assert.deepEqual(terminalEnvironment(env, platform), env);
+  }
+});
 
 test("create is pending, early resize applies at start, and start is idempotent", async () => {
   const { manager, events, emitData, emitExit } = fixture();
