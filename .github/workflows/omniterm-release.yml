@@ -99,7 +99,7 @@ jobs:
         if: env.OMNITERM_REUSE_AGENT_RUN_ID == ''
         run: python scripts/release/build-agent.py --target x86_64-pc-windows-msvc
       - name: Preserve the source-built Agent before desktop packaging
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: omniterm-agent-windows-x64-${{ github.sha }}
           path: dist/omniterm-agent/
@@ -128,7 +128,7 @@ jobs:
       - name: Create unsigned portable ZIP and checksums
         run: node omniterm-desktop/scripts/package-release.mjs
       - name: Upload desktop release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: omniterm-windows-x64-${{ github.sha }}
           path: dist/release/*
