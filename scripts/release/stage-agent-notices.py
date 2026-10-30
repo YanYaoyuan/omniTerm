@@ -113,14 +113,25 @@ def collect_cargo_licenses(metadata: dict, destination: Path, root_packages: set
     return records
 
 
-def collect_ripgrep_licenses(destination: Path, archive_override: Path | None, target: str) -> dict:
-    # Reuse the same checksum-pinned release archive as the package builder.
-    # No new network fetch or unpinned upstream license lookup is needed.
+def collect_ripgrep_licenses(destination: Path, archive_override: Path | None, target: str, *, offline: bool = False) -> dict:
+    # Reused Agent artifacts do not carry the previous runner's download cache.
     manifest_text = (REPOSITORY / "scripts/codex_package/rg").read_text(encoding="utf-8")
     manifest = json.loads(manifest_text[manifest_text.index("{"):])
     artifact = manifest["platforms"][TARGET_PLATFORMS[target]]
     url = artifact["providers"][0]["url"]
     archive_path = archive_override or Path(tempfile.gettempdir()) / "codex-package" / f"{target}-rg" / url.rsplit("/", 1)[-1]
+    if archive_override is None:
+        if offline:
+            if not archive_path.is_file():
+                raise RuntimeError(f"Offline ripgrep license archive is missing: {archive_path}; populate the locked cache online or pass --rg-archive")
+        else:
+            # Fetch only the size/SHA-256-pinned archive into temporary storage.
+            # This does not replace any executable in the Agent package.
+            os.environ["CODEX_REPO_ROOT"] = str(REPOSITORY)
+            sys.path.insert(0, str(REPOSITORY / "scripts"))
+            from codex_package.ripgrep import fetch_rg
+            from codex_package.targets import TARGET_SPECS
+            fetch_rg(TARGET_SPECS[target])
     if archive_path.stat().st_size != artifact["size"] or sha256(archive_path) != artifact["digest"]:
         raise RuntimeError("The ripgrep release archive differs from the locked DotSlash manifest")
     prefix = PurePosixPath(artifact["path"]).parent
@@ -214,7 +225,7 @@ def main() -> None:
     parser.add_argument("package", nargs="?", type=Path, default=REPOSITORY / "dist/omniterm-agent")
     parser.add_argument("--target", choices=tuple(TARGET_PLATFORMS), help="Expected target; defaults to the package manifest")
     parser.add_argument("--cargo-metadata", type=Path, help="Existing target-filtered locked Cargo metadata JSON; never copied into the package")
-    parser.add_argument("--offline", action="store_true", help="Require a complete Cargo source cache; by default locked metadata may download missing sources without updating Cargo.lock")
+    parser.add_argument("--offline", action="store_true", help="Require complete Cargo source and locked ripgrep archive caches; by default missing locked sources/archives may be downloaded without updating Cargo.lock")
     parser.add_argument("--rg-archive", type=Path, help="Existing ripgrep archive matching the checked-in target SHA-256")
     parser.add_argument("--cargo-profile", choices=("dev-small", "release"), default="dev-small")
     args = parser.parse_args()
@@ -242,7 +253,7 @@ def main() -> None:
     destination = package / "third-party-licenses"
     destination.mkdir(exist_ok=True)
     records = collect_cargo_licenses(metadata, destination, root_packages)
-    ripgrep = collect_ripgrep_licenses(destination, args.rg_archive, target)
+    ripgrep = collect_ripgrep_licenses(destination, args.rg_archive, target, offline=args.offline)
     commit = command("git", "rev-parse", "HEAD").strip()
     source = None
     if linux:
