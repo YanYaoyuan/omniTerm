@@ -28,7 +28,8 @@ if (!inside) {
   const expectedRoot = realpathSync(path.join(resources, 'app/node_modules/node-pty'));
   assert.ok(ptyEntry.startsWith(expectedRoot + path.sep), 'Native PTY must come from the application');
   const pty = require(ptyEntry);
-  const scratch = mkdtempSync(path.join(os.tmpdir(), 'omniterm-release-pty-'));
+  // Shells report the long path; Windows runners set TEMP to an 8.3 short path.
+  const scratch = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), 'omniterm-release-pty-')));
   const env = { ...process.env, TERM: 'xterm-256color' };
   delete env.ELECTRON_RUN_AS_NODE; delete env.NODE_OPTIONS; delete env.NODE_PATH;
   if (process.platform !== 'win32') env.LANG = env.LC_ALL = process.platform === 'darwin' ? 'en_US.UTF-8' : 'C.UTF-8';
@@ -77,6 +78,9 @@ if (!inside) {
     console.log(`PASS: packaged Electron ${process.versions.electron}, native PTY, shell/pwd/Unicode, resize request, Ctrl+C, close, and bundled Agent --version (${process.platform}/${process.arch})`);
   } finally {
     for (const terminal of live) { try { terminal.handle.kill(); } catch {} }
-    rmSync(scratch, { recursive: true, force: true });
+    // Windows holds the directory briefly after its last shell exits.
+    rmSync(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   }
+  // A ConPTY whose process exited on its own keeps node-pty's output worker alive.
+  process.exit(0);
 }
