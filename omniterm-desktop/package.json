@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "productName": "omniTerm",
-  "description": "Cross-platform terminal workspace with a local Codex Agent",
+  "description": "Cross-platform terminal workspace with omniTerm Agent",
   "license": "Apache-2.0",
   "type": "module",
   "main": "build/main.mjs",
@@ -12,18 +12,15 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
+    "build:native": "node scripts/build-native.mjs",
     "start": "npm run build && node scripts/start.mjs",
     "package": "npm run build && node scripts/package.mjs",
-    "rebuild": "electron-rebuild -f -w node-pty",
     "test": "node --test electron/*.test.mjs src/*.test.mjs",
+    "test:native": "cargo test --locked --manifest-path native/terminal-host/Cargo.toml",
     "test:pty": "node scripts/test-pty.mjs"
-  },
-  "dependencies": {
-    "node-pty": "1.1.0"
   },
   "devDependencies": {
     "@electron/packager": "20.3.0",
-    "@electron/rebuild": "4.2.1",
     "@phosphor-icons/react": "2.1.10",
     "@xterm/addon-fit": "0.11.0",
     "@xterm/addon-search": "0.16.0",

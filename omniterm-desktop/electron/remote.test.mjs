@@ -135,13 +135,13 @@ test("control sockets use private directories and leave room for OpenSSH tempora
 
 test("the session manager reports start and close to the remote layer", async () => {
   const events = [];
-  const pty = { pid: 1, onData: () => ({ dispose() {} }), onExit: () => ({ dispose() {} }), kill() {} };
+  const host = { request: async (method) => method === "session.close" ? true : { id: "s1", status: "running" }, dispose() {} };
   const plan = { kind: "ssh", title: "x", cwd: "/", args: [], remote: { destination: "h" } };
-  const manager = new SessionManager({ planner: async () => plan, spawnPty: () => pty, terminate: () => {}, onStart: (id, started) => events.push(["start", id, started.remote.destination]), onClose: (id) => events.push(["close", id]) });
+  const manager = new SessionManager({ planner: async () => plan, host, onStart: (id, started) => events.push(["start", id, started.remote.destination]), onClose: (id) => events.push(["close", id]) });
   const session = await manager.create({});
   assert.equal(session.remote, true);
-  manager.start(session.id);
-  manager.close(session.id);
+  await manager.start(session.id);
+  await manager.close(session.id);
   assert.deepEqual(events, [["start", session.id, "h"], ["close", session.id]]);
 });
 

@@ -1,6 +1,5 @@
 // Copyright 2026 omniTerm contributors. SPDX-License-Identifier: Apache-2.0
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell } from "electron";
-import * as nodePty from "node-pty";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, safeStorage, shell } from "electron";
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { copyFile, mkdir, readdir, rm, stat } from "node:fs/promises";
@@ -8,14 +7,22 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { buildCommandPlan, externalUrl, resolveDesktopAgent, validateProfile } from "./command-plan.mjs";
+import { AgentService } from "./agent-service.mjs";
 import { ProfileStore } from "./profile-store.mjs";
+import { CredentialVault, PROVIDER_PRESETS, ProviderStore } from "./provider-store.mjs";
 import { RemoteManager } from "./remote-manager.mjs";
 import { SessionManager } from "./session-manager.mjs";
+import { shellIntegrationScript } from "./shell-integration.mjs";
 import { hostSummary, readSshHosts } from "./ssh-config.mjs";
+import { TerminalHost, resolveTerminalHost } from "./terminal-host.mjs";
 
 let window;
 let manager;
 let remote;
+let host;
+let agent;
+let providers;
+let vault;
 let profiles;
 let planOptions;
 let rendererUrl;
@@ -70,9 +77,16 @@ function trustedSender(event) {
 // Remote first: it stops each SSH master synchronously through its control
 // socket, which must still exist when the terminals behind them go away.
 function disposeSessions() {
+  agent?.dispose();
   remote?.dispose();
   manager?.dispose();
 }
+
+const providerState = () => ({
+  presets: PROVIDER_PRESETS,
+  profiles: providers.list().map((profile) => ({ ...profile, hasCredential: profile.auth === "api-key" ? vault.has(profile.id) : true })),
+  credentialStorage: vault.persistent ? "os" : "session",
+});
 
 function registerHandlers() {
   const handlers = {
@@ -89,6 +103,33 @@ function registerHandlers() {
     "create-session": (request) => manager.create(request),
     "start-session": (id) => manager.start(id),
     "write-session": (request) => manager.write(request),
+    "stage-shell-integration": async (id) => {
+      await manager.write({ id, data: shellIntegrationScript(manager.shellNonce(id)) });
+      return true;
+    },
+    "workspace-update": (layout) => host.request("workspace.update", layout),
+    "workspace-list": () => host.request("workspace.list"),
+    "provider-state": providerState,
+    "provider-save": ({ profile, apiKey }) => {
+      const saved = providers.save(profile);
+      if (apiKey) vault.set(saved.id, apiKey);
+      return { saved, state: providerState() };
+    },
+    "provider-delete": async (id) => {
+      if (agent.conversation?.profile.id === id) await agent.reset();
+      providers.delete(id);
+      vault.delete(id);
+      return providerState();
+    },
+    "provider-test": async (id) => { await agent.testProvider(id); return providerState(); },
+    "agent-send": (request) => agent.send(request),
+    "agent-cancel": () => agent.cancel(),
+    "agent-pause": ({ paused, context, targets }) => agent.pause(paused, { context, targets }),
+    "agent-reset": () => agent.reset(),
+    // Approval has no tool: it exists only on this trusted window path.
+    "operation-approve": (request) => host.request("operation.approve", request),
+    "operation-deny": (operationId) => host.request("operation.deny", { operationId }),
+    "operation-cancel": (operationId) => host.request("operation.cancel", { operationId }),
     "resize-session": (request) => manager.resize(request),
     "close-session": (id) => manager.close(id),
     "get-session-buffer": (id) => manager.buffer(id),
@@ -143,14 +184,32 @@ function createWindow() {
   const repositoryRoot = path.resolve(appPath, "..");
   planOptions = { platform: process.platform, env: process.env, repositoryRoot, packaged: app.isPackaged, resourcesPath: process.resourcesPath, defaultCwd: app.isPackaged ? os.homedir() : repositoryRoot };
   profiles = new ProfileStore(path.join(app.getPath("userData"), "profiles.json"));
+  const onExit = (payload) => { remote.detach(payload.id); send("omniterm:session-exit", payload); };
   remote = new RemoteManager({ onState: (payload) => send("omniterm:remote-state", payload), onTransfer: (payload) => send("omniterm:remote-transfer", payload), onMetrics: (payload) => send("omniterm:remote-metrics", payload) });
+  host = new TerminalHost({
+    executable: resolveTerminalHost({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, desktopRoot: appPath }),
+    onData: ({ id, data }) => send("omniterm:session-data", { id, data }),
+    onEvent: (event, params) => {
+      if (event === "session.exit") onExit(params);
+      else if (event === "operation.update") agent.operationChanged(params);
+    },
+    onExit: () => manager.hostStopped(onExit),
+  });
   manager = new SessionManager({
+    host,
     planner: (request) => buildCommandPlan(request, { ...planOptions, controlPath: () => remote.controlPath() }),
-    spawnPty: (executable, args, options) => nodePty.spawn(executable, args, options),
-    onData: (payload) => send("omniterm:session-data", payload),
     onStart: (id, plan) => { if (plan.remote) remote.attach(id, plan.remote); },
-    onExit: (payload) => { remote.detach(payload.id); send("omniterm:session-exit", payload); },
     onClose: (id) => remote.detach(id),
+  });
+  providers = new ProviderStore(path.join(app.getPath("userData"), "model-providers.json"));
+  vault = new CredentialVault({ filename: path.join(app.getPath("userData"), "model-credentials.json"), safeStorage });
+  agent = new AgentService({
+    host, providers, vault,
+    resolveCommand: () => resolveDesktopAgent(planOptions),
+    env: process.env,
+    agentHome: path.join(app.getPath("userData"), "agent-home"),
+    clientVersion: app.getVersion(),
+    emit: (event) => send("omniterm:agent-event", event),
   });
   const renderer = path.join(appPath, "build-renderer", "index.html");
   rendererUrl = pathToFileURL(renderer).href;

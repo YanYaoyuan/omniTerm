@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, readdirSync, writeFileSyn
 import os from "node:os";
 import path from "node:path";
 import { buildCommandPlan, externalUrl, resolveDesktopAgent, validateProfile } from "./command-plan.mjs";
-import { SessionManager, terminatePty } from "./session-manager.mjs";
+import { SessionManager } from "./session-manager.mjs";
 import { ProfileStore } from "./profile-store.mjs";
 import { hostSummary, readSshHosts } from "./ssh-config.mjs";
 
@@ -44,6 +44,7 @@ test("SSH and SFTP use their different port flags and literal argv", async () =>
   const ssh = await buildCommandPlan({ kind: "ssh", profile }, options);
   const sftp = await buildCommandPlan({ kind: "sftp", profile }, options);
   assert.deepEqual(ssh.args, ["-p", "2222", "-i", "/keys/my key;echo bad", "alice@server-alias"]);
+  assert.deepEqual(ssh.connection, { host: "server-alias", user: "alice", port: 2222 });
   assert.deepEqual(sftp.args, ["-P", "2222", "-i", "/keys/my key;echo bad", "alice@server-alias"]);
   const ipv6 = await buildCommandPlan({ kind: "sftp", profile: { host: "alice@::1" } }, options);
   assert.deepEqual(ipv6.args, ["alice@[::1]"]);
@@ -75,113 +76,79 @@ test("invalid destinations, secret fields, ports, and cwd are rejected", async (
   await assert.rejects(buildCommandPlan({ kind: "shell" }, { ...options, isDirectory: () => false }), /does not exist/);
 });
 
-function fixture(planner = async () => ({ executable: "/bin/sh", args: ["-l"], kind: "shell", title: "Terminal", cwd: "/work", env: {} })) {
-  const events = { data: [], exit: [], writes: [], sizes: [], kills: 0, spawns: [] };
-  let dataCallback, exitCallback;
-  const manager = new SessionManager({ planner, terminate: (pty) => pty.kill(), onData: (event) => events.data.push(event), onExit: (event) => events.exit.push(event), spawnPty: (...args) => {
-    events.spawns.push(args);
-    return { pid: 42, onData: (callback) => { dataCallback = callback; return { dispose() {} }; }, onExit: (callback) => { exitCallback = callback; return { dispose() {} }; }, write: (data) => events.writes.push(data), resize: (...size) => events.sizes.push(size), kill: () => events.kills++ };
-  } });
-  return { manager, events, emitData: (data) => dataCallback(data), emitExit: (event) => exitCallback(event) };
+// Stands in for the Rust host, whose PTY behavior has its own tests.
+function fixture(planner = async () => ({ executable: "/bin/sh", args: ["-l"], kind: "shell", title: "Terminal", cwd: "/work", env: {}, connection: {}, remote: { destination: "x" } })) {
+  const requests = [];
+  let created = 0;
+  const host = {
+    request: async (method, params) => {
+      requests.push([method, params]);
+      if (method === "session.create") return { id: `s${++created}`, title: params.title, kind: params.kind, cwd: params.cwd, status: "pending", epoch: 0, shellNonce: "n" };
+      if (method === "session.start") return { id: params.id, title: "Terminal", kind: "shell", cwd: "/work", status: "running", epoch: 1, pid: 42 };
+      return true;
+    },
+    dispose() { this.disposed = true; },
+  };
+  const started = [];
+  const closed = [];
+  const manager = new SessionManager({ planner, host, onStart: (id, plan) => started.push([id, plan.remote]), onClose: (id) => closed.push(id) });
+  return { manager, host, requests, started, closed };
 }
 
-test("create is pending, early resize applies at start, and start is idempotent", async () => {
-  const { manager, events, emitData, emitExit } = fixture();
+test("sessions are created in the host without leaking main-process plan details", async () => {
+  const { manager, requests, started } = fixture();
   const session = await manager.create({ kind: "shell" });
-  assert.equal(session.status, "pending");
-  assert.equal(events.spawns.length, 0);
-  manager.resize({ id: session.id, cols: 90, rows: 30 });
-  assert.equal(manager.start(session.id).status, "running");
-  manager.start(session.id);
-  assert.equal(events.spawns.length, 1);
-  assert.equal(events.spawns[0][2].cols, 90);
-  emitData("hello\r\n");
-  manager.write({ id: session.id, data: "ls\r" });
-  emitExit({ exitCode: 7, signal: 0 });
-  assert.deepEqual(manager.buffer(session.id), { data: "hello\r\n", exited: true, exitCode: 7 });
-  assert.deepEqual(events.writes, ["ls\r"]);
-  assert.equal(manager.write({ id: session.id, data: "ignored" }), false);
-  manager.start(session.id);
-  assert.equal(events.spawns.length, 1);
-  manager.close(session.id);
-  assert.equal(events.kills, 0);
+  assert.deepEqual([session.status, session.remote, "shellNonce" in session], ["pending", true, false]);
+  assert.deepEqual(Object.keys(requests[0][1]).sort(), ["args", "connection", "cwd", "env", "executable", "kind", "title"]);
+  const running = await manager.start(session.id);
+  assert.deepEqual([running.status, running.pid, running.epoch], ["running", 42, 1]);
+  assert.deepEqual(started, [[session.id, { destination: "x" }]]);
 });
 
-test("buffer keeps the latest two MiB without splitting Unicode", async () => {
-  const { manager, emitData } = fixture();
+test("terminal replies are marked so they do not count as user input", async () => {
+  const { manager, requests } = fixture();
   const { id } = await manager.create({});
-  manager.start(id);
-  emitData("discard this");
-  emitData("中文🙂".repeat(300000));
-  const data = manager.buffer(id).data;
-  assert.ok(Buffer.byteLength(data) <= 2 * 1024 * 1024);
-  assert.ok(!data.includes("discard this"));
-  assert.ok(!data.includes("�"));
-  assert.ok(data.endsWith("中文🙂"));
+  await manager.write({ id, data: "ls\r" });
+  await manager.write({ id, data: "\x1b[1;1R", reply: true });
+  assert.deepEqual(requests.slice(-2).map(([, params]) => params.reply), [false, true]);
 });
 
-test("output is coalesced per flush and flushed before exit", async () => {
-  const events = { data: [], exit: [] };
-  const timers = [];
-  let dataCallback, exitCallback;
-  const manager = new SessionManager({
-    planner: async () => ({ executable: "/bin/sh", args: [], kind: "shell", title: "Terminal", cwd: "/work", env: {} }),
-    onData: (event) => events.data.push(event), onExit: (event) => events.exit.push({ ...event, dataBefore: events.data.length }),
-    schedule: (callback) => { timers.push(callback); return timers.length; }, cancel: () => {},
-    spawnPty: () => ({ pid: 1, onData: (callback) => { dataCallback = callback; return { dispose() {} }; }, onExit: (callback) => { exitCallback = callback; return { dispose() {} }; }, write() {}, resize() {}, kill() {} }),
-  });
-  const { id } = await manager.create({});
-  manager.start(id);
-  dataCallback("a"); dataCallback("b"); dataCallback("c");
-  assert.equal(events.data.length, 0);
-  assert.equal(timers.length, 1);
-  timers.shift()();
-  assert.deepEqual(events.data, [{ id, data: "abc" }]);
-  dataCallback("tail");
-  exitCallback({ exitCode: 0 });
-  assert.deepEqual(events.data.at(-1), { id, data: "tail" });
-  assert.equal(events.exit[0].dataBefore, 2);
+test("unknown sessions are refused before reaching the host", async () => {
+  const { manager, requests } = fixture();
+  assert.throws(() => manager.write({ id: "missing", data: "x" }), /not found/);
+  assert.throws(() => manager.resize({ id: "missing", cols: 80, rows: 24 }), /not found/);
+  assert.equal(await manager.close("missing"), false);
+  assert.equal(requests.length, 0);
 });
 
-test("session limit cannot be bypassed by concurrent create and disposal kills PTYs", async () => {
-  const { manager, events } = fixture();
-  const results = await Promise.allSettled(Array.from({ length: 24 }, () => manager.create({})));
-  assert.equal(results.filter((result) => result.status === "fulfilled").length, 20);
-  for (const result of results) if (result.status === "fulfilled") manager.start(result.value.id);
+test("closing and disposal release remote state and the host", async () => {
+  const { manager, host, closed } = fixture();
+  const first = await manager.create({});
+  const second = await manager.create({});
+  assert.equal(await manager.close(first.id), true);
+  assert.equal(await manager.close(first.id), false);
   manager.dispose();
-  assert.equal(events.kills, 20);
-  assert.equal(manager.sessions.size, 0);
+  assert.deepEqual(closed, [first.id, second.id]);
+  assert.equal(host.disposed, true);
   await assert.rejects(manager.create({}), /closing/);
 });
 
 test("pending async planning cannot add a session after shutdown", async () => {
   let finish;
-  const { manager } = fixture(() => new Promise((resolve) => { finish = resolve; }));
+  const { manager, requests } = fixture(() => new Promise((resolve) => { finish = resolve; }));
   const pending = manager.create({});
   manager.dispose();
   finish({});
   await assert.rejects(pending, /closing/);
-  assert.equal(manager.sessions.size, 0);
+  assert.equal(requests.length, 0);
 });
 
-test("invalid input and resize are rejected, closing an unknown session is harmless", async () => {
+test("every tab learns its session ended when the host stops", async () => {
   const { manager } = fixture();
   const { id } = await manager.create({});
-  assert.throws(() => manager.resize({ id, cols: Infinity, rows: 1 }), /Terminal size/);
-  assert.throws(() => manager.write({ id, data: Buffer.alloc(10) }), /Terminal input/);
-  assert.throws(() => manager.write({ id, data: "a".repeat(1024 * 1024 + 1) }), /Terminal input/);
-  assert.equal(manager.close(id), true);
-  assert.equal(manager.close(id), false);
-});
-
-test("Unix termination signals the PTY process group; Windows uses ConPTY kill", () => {
-  const signals = [];
-  let killed = 0;
-  const pty = { pid: 42, kill: () => killed++ };
-  terminatePty(pty, "darwin", (...args) => signals.push(args));
-  terminatePty(pty, "win32", (...args) => signals.push(args));
-  assert.deepEqual(signals, [[-42, "SIGHUP"]]);
-  assert.equal(killed, 2);
+  const exits = [];
+  manager.hostStopped((event) => exits.push(event));
+  assert.deepEqual(exits, [{ id, exitCode: 1, signal: null }]);
 });
 
 test("profiles round-trip atomically with generated ids and no passwords", () => {
