@@ -69,7 +69,7 @@ Choose omniTerm when you want its **Apache-2.0 codebase, bundled Codex foundatio
 | Desktop | Electron 45 | Native windows, packaging and isolated preload IPC |
 | Interface | React 19, CSS | Tabs, pane layouts, connection forms, file browser and settings |
 | Terminal | xterm.js 6 + WebGL/fit/search/Unicode addons | Terminal emulation, rendering, resizing and search |
-| Processes | node-pty 1.1 | Real Unix PTYs / Windows ConPTY |
+| Terminal backend | Rust (portable-pty, vt100) | PTY sessions, screen model and the Agent's terminal broker, run outside the Electron main process |
 | Remote access | System OpenSSH + SFTP protocol | SSH configuration, jump hosts, forwarding and remote files |
 | Agent | Rust Codex + code-mode host | Locally running Agent engine and execution support, packaged from this repository |
 | Serial | Python 3 + pyserial miniterm | Optional serial-device sessions |
@@ -79,7 +79,7 @@ The renderer uses `contextIsolation: true`, `nodeIntegration: false` and Electro
 
 ## Run from source
 
-Install Node.js **22.12+**, npm and your platform's native build tools: Xcode Command Line Tools on macOS, a C/C++ toolchain on Linux, or MSVC Build Tools and Windows SDK on Windows.
+Install Node.js **22.12+**, npm, Rust 1.85+ and your platform's native build tools: Xcode Command Line Tools on macOS, a C/C++ toolchain on Linux, or MSVC Build Tools and Windows SDK on Windows.
 
 ```sh
 git clone https://github.com/YanYaoyuan/omniTerm.git
@@ -91,18 +91,18 @@ Use the [Agent build guide](docs/omniterm/local-build.md) to compile `codex` and
 ```sh
 cd omniterm-desktop
 npm ci
-npm run rebuild
+npm run build:native
 npm start
 ```
 
-`npm run rebuild` rebuilds node-pty for Electron's ABI. Repeat it after changing Electron or the target platform. A local shell can run without an Agent package; the Agent pane and application packaging need a compatible Agent build.
+`npm run build:native` compiles the terminal host; repeat it after changing `native/terminal-host` or the target platform. A local shell can run without an Agent package; omniTerm Agent and application packaging need a compatible Agent build.
 
 ```sh
 # From omniterm-desktop/: create a native application package
 npm run package
 ```
 
-Output goes to `dist/desktop/` at the repository root. Electron, node-pty and the Agent must match the target OS and architecture. See the [desktop guide](omniterm-desktop/README.md) for controls and packaging, and the [architecture](docs/omniterm/architecture.md) for component boundaries.
+Output goes to `dist/desktop/` at the repository root. Electron, the terminal host and the Agent must match the target OS and architecture. See the [desktop guide](omniterm-desktop/README.md) for controls and packaging, and the [architecture](docs/omniterm/architecture.md) for component boundaries.
 
 ## Development and validation
 

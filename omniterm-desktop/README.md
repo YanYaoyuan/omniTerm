@@ -1,7 +1,7 @@
 # omniTerm Desktop
 
-omniTerm 的桌面工作台使用 Electron、React、xterm.js 和 node-pty，将本地终端、
-远程工具入口与基于 Codex 的 Agent 放在同一个窗口中。
+omniTerm 的桌面工作台使用 Electron、React、xterm.js 和 Rust 终端后端，将本地终端、
+远程工具入口与 omniTerm Agent 放在同一个窗口中。
 这是早期桌面版本；构建、打包与真实交互验证的结果分别记录。
 已有 macOS GUI、Ubuntu 安装与原生 PTY、隔离服务器 SSH/SFTP/跳板机检查；
 每个平台的具体覆盖以 [Release 说明](https://github.com/YanYaoyuan/omniTerm/releases)
@@ -55,14 +55,15 @@ Linux 安装器会安装声明的运行依赖，并推荐中文字体；macOS/Wi
 SSH、SFTP 与转发使用系统 OpenSSH；串口使用 Python / pyserial miniterm。
 这些客户端仍需安装在本机。会话进程不会在应用退出后保留。
 
-Agent 分栏运行独立引擎会话；它不会自动读取其他标签中的 SSH、串口或 shell
-上下文。普通终端会话也不受 Codex Agent 的沙箱和审批机制管理。
+omniTerm Agent 面板顶部显示上下文范围、执行目标和供应商/模型。Agent 只读取选定的终端，
+命令须经你批准，且只在选定的目标终端运行，见[实现状态](../docs/omniterm/agent-workspace-status.md)。
+你手动在普通终端中运行的命令不受这套审批管理。
 
 ## 从源码运行
 
-需要 Node.js **22.12 或更新版本**、npm 和当前平台的原生模块编译环境。
-`node-pty` 需要匹配 Electron 的原生模块 ABI：macOS 使用 Xcode Command Line
-Tools，Linux 使用 C/C++ 编译工具链，Windows 使用 MSVC Build Tools 与 Windows SDK。
+需要 Node.js **22.12 或更新版本**、npm、Rust 1.85+ 和当前平台的原生编译环境：
+macOS 使用 Xcode Command Line Tools，Linux 使用 C/C++ 编译工具链，
+Windows 使用 MSVC Build Tools 与 Windows SDK。
 
 先在仓库根目录按 [Agent 源码构建指南](../docs/omniterm/local-build.md)
 生成 `dist/omniterm-agent/`。该包包括从 Rust 源码构建的 `codex`、
@@ -74,14 +75,14 @@ Tools，Linux 使用 C/C++ 编译工具链，Windows 使用 MSVC Build Tools 与
 ```sh
 cd omniterm-desktop
 npm install
-npm run rebuild
+npm run build:native
 npm start
 ```
 
-`npm run rebuild` 为当前 Electron 重建 node-pty；更换 Electron 版本或平台后
-需要重新执行。`npm start` 先构建主进程、preload 和 React 界面，再启动 Electron。
+`npm run build:native` 编译 `native/terminal-host` 并放到 `dist/terminal-host/`；
+修改它或更换平台后需要重新执行。`npm start` 先构建主进程、preload 和 React 界面，再启动 Electron。
 桌面依赖和构建输出位于此目录，Agent 构建产物位于仓库根目录的 `dist/`。
-完成依赖安装与原生模块重建后，也可以在仓库根目录运行 `npm run desktop`。
+完成依赖安装与终端后端构建后，也可以在仓库根目录运行 `npm run desktop`。
 
 ## 本机打包
 
@@ -91,14 +92,14 @@ npm start
 npm run package
 ```
 
-打包脚本要求仓库根目录已有完整的 `dist/omniterm-agent/`，并将其复制为应用的
-`resources/omniterm-agent/` 资源目录（macOS 位于 `.app/Contents/Resources/`）。
+打包脚本要求仓库根目录已有完整的 `dist/omniterm-agent/` 和 `dist/terminal-host/`，
+并将其复制为应用的 `resources/` 下同名目录（macOS 位于 `.app/Contents/Resources/`）。
 打包后的 Agent 使用随应用提供的本地源码构建包。
 
 输出位于仓库根目录 `dist/desktop/`，按本机操作系统和架构生成应用目录。
 仓库根目录的 `npm run desktop:package` 是同一打包流程的入口。
 这一步生成开发应用包；签名、公证、安装器和自动更新尚需独立配置。
-Electron、node-pty 原生模块与 Agent 包必须面向同一目标平台和架构。
+Electron、终端后端与 Agent 包必须面向同一目标平台和架构。
 应在对应系统分别构建并验收，不能把单个平台的包视为跨平台发行完成。
 
 ## 交互与连接

@@ -56,7 +56,67 @@ jobs:
           cache-dependency-path: omniterm-desktop/package-lock.json
       - name: Install desktop dependencies without native or Electron setup
         run: npm ci --ignore-scripts
-      - name: Test desktop backend with mocked PTYs
+      - name: Test desktop backend with a mocked terminal host
         run: npm test
       - name: Build desktop main process and renderer
         run: npm run build
+
+  terminal-host:
+    name: Terminal host / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: omniterm-desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install the repository Rust toolchain
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+      - name: Test sessions, screen model and operation broker
+        run: cargo test --locked --manifest-path native/terminal-host/Cargo.toml
+      - name: Build the terminal host
+        run: node scripts/build-native.mjs
+      - name: Exercise a real PTY through the host
+        run: node scripts/test-pty.mjs
+
+  engine:
+    name: Agent engine / ubuntu-latest
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: codex-rs
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free runner disk space
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libcap-dev pkg-config
+      - name: Install the repository Rust toolchain
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component rust-src
+          rustup default 1.95.0
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: omniterm-engine-cargo-${{ hashFiles('codex-rs/Cargo.lock') }}
+      - name: Test provider protocols and configuration
+        run: cargo test --locked -p codex-api -p codex-model-provider-info -p codex-features -p codex-config
+      - name: Test the dynamic-tools-only boundary
+        run: cargo test --locked -p codex-core --lib dynamic_tools_only
+      - name: Check the app-server binary
+        run: cargo check --locked -p codex-cli

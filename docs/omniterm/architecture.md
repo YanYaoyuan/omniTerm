@@ -1,6 +1,6 @@
 # omniTerm 架构
 
-omniTerm 使用 Electron、React、xterm.js 和 node-pty 实现桌面终端工作台，
+omniTerm 使用 Electron、React、xterm.js 和 Rust 终端后端实现桌面终端工作台，
 将本地终端、远程工具与 Agent 分栏放在同一个窗口中。
 目标系统为 macOS、Linux 和 Windows。本文区分现有实现与后续设计；
 原生运行、GUI 交互和三平台发行需要分别验收。
@@ -17,7 +17,7 @@ omniTerm 使用 Electron、React、xterm.js 和 node-pty 实现桌面终端工�
 | 模块 | 仓库位置 | 当前职责 |
 | --- | --- | --- |
 | 桌面 renderer | [`omniterm-desktop/src`](../../omniterm-desktop/src) | React 工作台、xterm.js 多标签终端、Agent 分栏、连接表单、搜索与显示设置 |
-| Electron 主进程 | [`omniterm-desktop/electron`](../../omniterm-desktop/electron) | 窗口、受限 IPC、命令参数校验、node-pty 会话生命周期与连接配置保存 |
+| Electron 主进程 | [`omniterm-desktop/electron`](../../omniterm-desktop/electron) | 窗口、受限 IPC、命令参数校验、连接配置保存、Agent 运行时与模型配置 |
 | 可选 CLI | [`omniterm-cli`](../../omniterm-cli) | 在现有终端启动 Agent、shell、SSH、SFTP、转发与串口；桌面复用其底层命令解析 |
 | Agent 包构建 | [`scripts/codex_package`](../../scripts/codex_package) | 从 Rust 源码编译 codex、code-mode host 与必要平台资源，组装完整包 |
 | Agent CLI / TUI | [`codex-rs/cli`](../../codex-rs/cli)、[`codex-rs/tui`](../../codex-rs/tui) | 当前桌面 Agent 分栏运行的交互入口 |
@@ -32,7 +32,7 @@ flowchart TB
     Bridge[受限 preload / IPC]
     Sessions[主进程会话管理]
     Profiles[本地连接配置]
-    PTY[node-pty：Unix PTY / Windows ConPTY]
+    PTY[Rust 终端后端：Unix PTY / Windows ConPTY]
     Shell[本地 Shell]
     Remote[系统 OpenSSH / SFTP / pyserial]
     Agent[源码构建的 Codex TUI 与辅助程序]
@@ -45,7 +45,8 @@ flowchart TB
     PTY --> Agent
 ```
 
-桌面 PTY 层当前使用 node-pty，不直接复用 Codex Rust PTY API。
+桌面 PTY 层是独立的 Rust 进程 `omniterm-desktop/native/terminal-host`，
+同时负责屏幕模型、工作区目录和 Agent 操作代理，见 [实现状态](agent-workspace-status.md)。
 继承的 Rust PTY、沙箱和执行组件继续服务于 Agent 内部工具执行。
 普通终端标签与 Agent 会话具有独立的权限、进程和执行目标。
 
@@ -121,7 +122,7 @@ Codex Agent 的审批和隔离由引擎及其配置管理。
 
 桌面 CI 在三种操作系统上运行后端模拟测试和前端/主进程构建，跳过 Electron
 下载与原生模块编译。另有原生 Windows 发布流水线，以及 macOS/Ubuntu 本机打包和运行验证。
-真实 Electron、node-pty、输入法、快捷键、进程清理和完整 Agent 需要区分自动化与人工验收范围；
+真实 Electron、终端后端、输入法、快捷键、进程清理和完整 Agent 需要区分自动化与人工验收范围；
 Windows 原生验收不能由 WSL 替代，包内工具检查也不等于模型任务已通过。
 
 项目沿用 [Apache-2.0](../../LICENSE)，保留 [NOTICE](../../NOTICE) 与第三方许可。

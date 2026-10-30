@@ -69,7 +69,7 @@ omniTerm 的实用优势在于 **开源 Agent 与远程工具处于同一个工�
 | 桌面运行时 | Electron 45 | 原生窗口、打包与隔离的 preload IPC |
 | 界面 | React 19、CSS | 标签、分屏布局、连接表单、文件面板与设置 |
 | 终端 | xterm.js 6 + WebGL/fit/search/Unicode 插件 | 终端模拟、渲染、尺寸调整与搜索 |
-| 进程 | node-pty 1.1 | 真实 Unix PTY / Windows ConPTY |
+| 终端后端 | Rust（portable-pty、vt100） | PTY 会话、屏幕模型与 Agent 终端代理，运行在 Electron 主进程之外 |
 | 远程访问 | 系统 OpenSSH + SFTP 协议 | SSH 配置、跳板机、端口转发和远程文件 |
 | Agent | Rust Codex + code-mode host | 在本机运行的 Agent 引擎及执行支持，从本仓库构建并打包 |
 | 串口 | Python 3 + pyserial miniterm | 可选串口设备会话 |
@@ -91,18 +91,18 @@ cd omniTerm
 ```sh
 cd omniterm-desktop
 npm ci
-npm run rebuild
+npm run build:native
 npm start
 ```
 
-`npm run rebuild` 为 Electron 的 ABI 重建 node-pty；更换 Electron 版本或目标平台后需重新执行。没有 Agent 包时仍可使用本地 Shell；Agent 分栏及应用打包需要兼容的 Agent 构建。
+`npm run build:native` 编译终端后端（需要 Rust 1.85+）；修改 `native/terminal-host` 或更换目标平台后需重新执行。没有 Agent 包时仍可使用本地 Shell；omniTerm Agent 及应用打包需要兼容的 Agent 构建。
 
 ```sh
 # 在 omniterm-desktop/ 目录中生成本机应用包
 npm run package
 ```
 
-输出位于仓库根目录的 `dist/desktop/`。Electron、node-pty 和 Agent 必须匹配目标系统与架构。操作与打包细节见 [桌面指南](omniterm-desktop/README.md)，组件边界见 [架构设计](docs/omniterm/architecture.md)。
+输出位于仓库根目录的 `dist/desktop/`。Electron、终端后端和 Agent 必须匹配目标系统与架构。操作与打包细节见 [桌面指南](omniterm-desktop/README.md)，组件边界见 [架构设计](docs/omniterm/architecture.md)。
 
 ## 开发与验证
 
