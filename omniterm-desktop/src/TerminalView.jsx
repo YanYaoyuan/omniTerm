@@ -36,18 +36,22 @@ function loadWebgl(term) {
   }
 }
 
-export function TerminalView({ session, visible, focused = false, dimmed = false, style, settings, platform, api, register, onState, onError, onFocus, onInput, onCwd, onTitle }) {
+export function TerminalView({ session, visible, selected = false, focused = false, dimmed = false, style, settings, platform, hostname, api, register, onState, onError, onFocus, onInput, onCwd, onTitle }) {
   const host = useRef(null);
   const terminal = useRef(null);
   const fitRef = useRef(null);
   const webglRef = useRef(null);
   const settingsRef = useRef(settings);
   const callbacks = useRef({ onState, onError, onFocus, onInput, onCwd, onTitle });
+  const selectedRef = useRef(selected);
+  const hostnameRef = useRef(hostname);
   const [state, setState] = useState("opening");
   const [failure, setFailure] = useState("");
   const [dragging, setDragging] = useState(false);
   callbacks.current = { onState, onError, onFocus, onInput, onCwd, onTitle };
   settingsRef.current = settings;
+  selectedRef.current = selected;
+  hostnameRef.current = hostname;
 
   useEffect(() => {
     let disposed = false;
@@ -103,10 +107,14 @@ export function TerminalView({ session, visible, focused = false, dimmed = false
       navigator.clipboard.writeText(term.getSelection()).catch(() => {});
     });
     const osc7 = term.parser.registerOscHandler(7, (data) => {
-      const cwd = cwdFromOsc7(data, platform);
+      const cwd = cwdFromOsc7(data, platform, hostnameRef.current);
       if (cwd) callbacks.current.onCwd?.(session.id, cwd);
       return true;
     });
+    // Keyboard focus is the source of truth: whatever gives this terminal focus,
+    // selection, the breadcrumb and the close target must follow it.
+    const focused = () => callbacks.current.onFocus(session.id);
+    term.textarea?.addEventListener("focus", focused);
     const resize = () => {
       if (disposed || !host.current?.offsetWidth || !host.current?.offsetHeight) return;
       try {
@@ -188,7 +196,8 @@ export function TerminalView({ session, visible, focused = false, dimmed = false
         if (!disposed && !exited) {
           setState("running");
           callbacks.current.onState(session.id, "running");
-          if (host.current?.offsetWidth) term.focus();
+          // Panes finish starting in any order; only the selected one takes focus.
+          if (selectedRef.current && host.current?.offsetWidth) term.focus();
         }
       } catch (error) {
         if (!disposed) {
@@ -204,6 +213,7 @@ export function TerminalView({ session, visible, focused = false, dimmed = false
       disposed = true;
       cancelAnimationFrame(frame);
       observer.disconnect();
+      term.textarea?.removeEventListener("focus", focused);
       offData(); offExit(); write.dispose(); resized.dispose(); titled.dispose(); selected.dispose(); osc7.dispose();
       register(session.id, null);
       webglRef.current = null;
@@ -253,7 +263,7 @@ export function TerminalView({ session, visible, focused = false, dimmed = false
     const files = [...(event.dataTransfer?.files || [])];
     const paths = files.map((file) => api.pathForFile?.(file)).filter(Boolean);
     if (!paths.length || state !== "running") return;
-    callbacks.current.onInput?.(session.id, paths.map((filename) => quotePath(filename, platform)).join(" ") + " ");
+    callbacks.current.onInput?.(session.id, paths.map((filename) => quotePath(filename, platform, session.powershell)).join(" ") + " ");
     terminal.current?.focus();
   };
 

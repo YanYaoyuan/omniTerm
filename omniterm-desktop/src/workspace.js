@@ -9,7 +9,9 @@ export const WORKSPACE_KEY = "omniterm-workspace";
 export const WORKSPACE_VERSION = 1;
 // The session manager allows 20 sessions; leave room for the Agent and new tabs.
 export const MAX_RESTORED_PANES = 16;
-const MAX_DEPTH = 12;
+// A binary tree of n panes is at most n - 1 deep, so this never truncates a
+// layout the pane budget would otherwise keep.
+const MAX_DEPTH = MAX_RESTORED_PANES;
 const MAX_TITLE = 60;
 const MAX_PATH = 4096;
 

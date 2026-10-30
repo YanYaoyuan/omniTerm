@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   ArrowDown, ArrowRight, ArrowUp, ArrowsLeftRight, ArrowsOut, ArrowsIn, Broadcast, CaretRight, Check, Circle,
   CircleNotch, Code, Command, Copy, Cpu, DotsThree, FolderOpen, FolderSimple,
@@ -9,15 +9,21 @@ import {
 import { TerminalView } from "./TerminalView.jsx";
 import { ConnectionDialog, connectionLabels } from "./ConnectionDialog.jsx";
 import { CommandPalette } from "./CommandPalette.jsx";
+import { MetricsBar, SftpPanel } from "./RemotePanels.jsx";
+import { createRemoteStore } from "./remote-utils.js";
+import { isTerminalReply } from "./terminal-utils.js";
 import { computeLayout, equalize, neighborPane, pane, paneIds, removePane, setRatio, splitPane } from "./layout.js";
 import { SHORTCUTS, matchShortcut, shortcutLabel, tabCycle, tabNumber } from "./shortcuts.js";
 import { THEMES, themeFor } from "./themes.js";
 import { WORKSPACE_KEY, parseWorkspace, restoreTree, serializeWorkspace } from "./workspace.js";
 
 const api = window.omniterm;
+const remoteStore = api ? createRemoteStore(api) : null;
+const noRemote = () => null;
+const ignoreRemote = () => () => {};
 export const defaults = {
   fontSize: 13, fontFamily: "system", lineHeight: 1.22, scrollback: 10000, cursorBlink: true, cursorStyle: "bar",
-  theme: "midnight", gpu: true, copyOnSelect: false, optionAsMeta: false, dimInactive: true, restoreWorkspace: true,
+  theme: "midnight", gpu: true, copyOnSelect: false, optionAsMeta: false, dimInactive: true, restoreWorkspace: true, remotePanels: true,
 };
 const kindIcons = { shell: TerminalWindow, agent: Robot, ssh: HardDrives, sftp: FolderOpen, serial: PlugsConnected, tunnel: ArrowsLeftRight };
 const platformNames = { darwin: "macOS", win32: "Windows", linux: "Linux" };
@@ -83,6 +89,7 @@ function SettingsDialog({ settings, setSettings, info, onClose }) {
       <div className="setting-row"><div><strong>选中即复制</strong><span>选择文本后自动写入剪贴板</span></div><Toggle value={settings.copyOnSelect} label="选中即复制" onChange={update("copyOnSelect")} /></div>
       {info.platform === "darwin" && <div className="setting-row"><div><strong>Option 作为 Meta 键</strong><span>用于 Emacs、readline 的 Alt 组合键</span></div><Toggle value={settings.optionAsMeta} label="Option 作为 Meta 键" onChange={update("optionAsMeta")} /></div>}
       <div className="setting-row"><div><strong>启动时恢复工作区</strong><span>重新打开本地标签、分屏布局和各窗格目录，不会重新执行命令</span></div><Toggle value={settings.restoreWorkspace} label="启动时恢复工作区" onChange={update("restoreWorkspace")} /></div>
+      <div className="setting-row"><div><strong>SSH 文件面板与主机监控</strong><span>新建 SSH 连接时共享登录、显示 SFTP 文件和远程主机指标；对已打开的连接不生效</span></div><Toggle value={settings.remotePanels} label="SSH 文件面板与主机监控" onChange={update("remotePanels")} /></div>
       <div className="setting-row"><div><strong>回滚缓冲区</strong><span>保留每个终端的历史输出行数</span></div><select value={settings.scrollback} onChange={(event) => update("scrollback")(Number(event.target.value))}><option value="1000">1,000 行</option><option value="5000">5,000 行</option><option value="10000">10,000 行</option><option value="50000">50,000 行</option><option value="100000">100,000 行</option></select></div>
       <div className="settings-section-label">键盘快捷键</div>
       {Object.entries(SHORTCUTS).map(([name, definition]) => <div className="shortcut-row" key={name}><span>{definition.label}</span><kbd>{shortcutLabel(name, info.platform)}</kbd></div>)}
@@ -108,10 +115,10 @@ function DeleteDialog({ profile, onClose, onConfirm }) {
   </dialog>;
 }
 
-function TabTitle({ tab, title, onRename }) {
+function TabTitle({ tab, title, onEdit, onRename }) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(title);
-  if (!editing) return <span onDoubleClick={(event) => { event.stopPropagation(); setValue(title); setEditing(true); }} title="双击重命名">{title}</span>;
+  if (!editing) return <span onDoubleClick={(event) => { event.stopPropagation(); onEdit(); setValue(title); setEditing(true); }} title="双击重命名">{title}</span>;
   const commit = () => { setEditing(false); onRename(tab.id, value.trim()); };
   return <input className="tab-rename" autoFocus value={value} maxLength={60} onChange={(event) => setValue(event.target.value)} onBlur={commit} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { event.stopPropagation(); if (event.key === "Enter") commit(); if (event.key === "Escape") setEditing(false); }} />;
 }
@@ -140,7 +147,10 @@ export function App() {
   const [searchFound, setSearchFound] = useState(true);
   const [searchOptions, setSearchOptions] = useState({ caseSensitive: false, regex: false });
   const [draggedTab, setDraggedTab] = useState(null);
+  const [sidebarView, setSidebarView] = useState("files");
   const controls = useRef(new Map());
+  const remoteMemory = useRef(new Map());
+  const focusFrame = useRef(0);
   const toastTimer = useRef(null);
   const searchInput = useRef(null);
   const stackRef = useRef(null);
@@ -167,7 +177,15 @@ export function App() {
   const onState = useCallback((id, status, exitCode) => patchSession(id, { status, exitCode }), [patchSession]);
   const onCwd = useCallback((id, liveCwd) => patchSession(id, { liveCwd }), [patchSession]);
   const onTitle = useCallback((id, termTitle) => patchSession(id, { termTitle }), [patchSession]);
-  const focusLater = useCallback((id) => requestAnimationFrame(() => controls.current.get(id)?.focus()), []);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  // Only the latest request runs, and an editor that wants the keyboard can
+  // cancel one still queued by the click that preceded it.
+  const cancelFocus = useCallback(() => cancelAnimationFrame(focusFrame.current), []);
+  const focusLater = useCallback((id) => {
+    cancelAnimationFrame(focusFrame.current);
+    focusFrame.current = requestAnimationFrame(() => controls.current.get(id)?.focus());
+  }, []);
   const tabOf = useCallback((id) => tabsRef.current.find((tab) => paneIds(tab.root).includes(id)), []);
 
   const focusPane = useCallback((id) => {
@@ -189,7 +207,7 @@ export function App() {
   }, [tabOf, focusPane, focusLater]);
 
   const startSession = useCallback(async (kind = "shell", profile, directory) => {
-    const session = await api.createSession({ kind, cwd: directory || cwd, ...(profile ? { profile } : {}) });
+    const session = await api.createSession({ kind, cwd: directory || cwd, ...(profile ? { profile } : {}), ...(["ssh", "sftp"].includes(kind) ? { companion: settingsRef.current.remotePanels } : {}) });
     const title = profile?.name || (kind === "shell" ? `本地终端 ${nextTerminal.current++}` : connectionLabels[kind] || session.title);
     const entry = { ...session, title, ...(profile ? { profile } : {}) };
     setSessions((previous) => [...previous, entry]);
@@ -268,7 +286,9 @@ export function App() {
 
   const onInput = useCallback((id, data) => {
     const tab = tabOf(id);
-    const targets = tab?.broadcast ? paneIds(tab.root).filter((target) => target === id || !controls.current.get(target)?.isExited?.()) : [id];
+    // Replies the terminal generates (cursor reports, focus events, mouse
+    // reports) describe this pane alone and would corrupt the others.
+    const targets = tab?.broadcast && !isTerminalReply(data) ? paneIds(tab.root).filter((target) => target === id || !controls.current.get(target)?.isExited?.()) : [id];
     for (const target of targets) Promise.resolve(api.writeSession({ id: target, data })).catch((error) => notify(error.message));
   }, [tabOf, notify]);
 
@@ -345,6 +365,9 @@ export function App() {
   const agentFocused = Boolean(agentSession && agentVisible && focusedId === agentSession.id);
   const selectedSession = agentFocused ? agentSession : activeSession;
   const searchId = selectedSession?.id;
+  const remoteSession = settings.remotePanels && activeSession?.remote ? activeSession : null;
+  const remote = useSyncExternalStore(remoteSession ? remoteStore.subscribe : ignoreRemote, remoteSession ? () => remoteStore.state(remoteSession.id) : noRemote);
+  const filesView = Boolean(remote) && sidebarView === "files";
   const theme = themeFor(settings.theme);
   const modifier = info?.platform === "darwin" ? "⌘" : "Ctrl";
   const key = (name) => shortcutLabel(name, info?.platform);
@@ -413,15 +436,20 @@ export function App() {
     if (!activeTab) return;
     if (agentFocused) { if (direction === "left") activatePane(activeTab.focus); return; }
     const next = neighborPane(activeTab.root, activeTab.focus, direction);
-    if (next) activatePane(next);
-    else if (direction === "right" && agentSession && agentVisible) { setFocusedId(agentSession.id); focusLater(agentSession.id); }
+    if (next) {
+      if (activeTab.zoomed) setTabs((previous) => previous.map((tab) => tab.id === activeTab.id ? { ...tab, zoomed: next } : tab));
+      activatePane(next);
+    } else if (direction === "right" && agentSession && agentVisible) { setFocusedId(agentSession.id); focusLater(agentSession.id); }
   }, [activeTab, agentFocused, agentSession, agentVisible, activatePane, focusLater]);
   const selectTab = useCallback((tabId) => {
     const tab = tabsRef.current.find((item) => item.id === tabId);
     if (!tab) return;
     setActiveTabId(tab.id); setFocusedId(tab.focus); focusLater(tab.focus);
   }, [focusLater]);
-  const renameTab = (tabId, title) => setTabs((previous) => previous.map((tab) => tab.id === tabId ? { ...tab, title } : tab));
+  const renameTab = (tabId, title) => {
+    setTabs((previous) => previous.map((tab) => tab.id === tabId ? { ...tab, title } : tab));
+    if (tabId === activeTabId && selectedSession) focusLater(selectedSession.id);
+  };
   const reorderTab = (fromId, toId) => setTabs((previous) => {
     const from = previous.findIndex((tab) => tab.id === fromId);
     const to = previous.findIndex((tab) => tab.id === toId);
@@ -546,7 +574,7 @@ export function App() {
     const focused = sessions.find((session) => session.id === tab.focus);
     return tab.title || focused?.termTitle || focused?.title || "终端";
   };
-  const viewProps = { settings, platform: info.platform, api, register, onState, onError: notify, onInput, onCwd, onTitle };
+  const viewProps = { settings, platform: info.platform, hostname: info.hostname, api, register, onState, onError: notify, onInput, onCwd, onTitle };
   const shownCwd = activeSession?.liveCwd || activeSession?.cwd || cwd;
 
   return <div className={`app-shell platform-${info.platform} ${theme.light ? "terminal-light" : ""}`} style={{ "--term-bg": theme.chrome }}>
@@ -559,8 +587,10 @@ export function App() {
       </div>
     </header>
 
-    <div className="workspace-layout">
+    <div className={`workspace-layout ${filesView ? "with-files" : ""}`}>
       <aside className="sidebar">
+        {remote && <div className="sidebar-views" role="tablist" aria-label="侧边栏视图"><button role="tab" aria-selected={filesView} className={filesView ? "active" : ""} onClick={() => setSidebarView("files")}><FolderOpen size={14} />文件</button><button role="tab" aria-selected={!filesView} className={filesView ? "" : "active"} onClick={() => setSidebarView("connections")}><HardDrives size={14} />工作区</button></div>}
+        {filesView ? <SftpPanel key={remoteSession.id} session={remoteSession} remote={remote} store={remoteStore} api={api} notify={notify} memory={remoteMemory.current} /> : <>
         <div className="sidebar-section-heading"><span>工作区</span><IconButton label="打开工作文件夹" onClick={chooseDirectory}><FolderOpen size={16} /></IconButton></div>
         <button className="workspace-switcher" onClick={chooseDirectory} title={cwd}><span className="workspace-avatar"><FolderSimple size={20} /></span><span><strong>{basename(cwd)}</strong><small>{pathLabel(cwd, info.home)}</small></span><CaretRight size={13} /></button>
         <nav className="workspace-nav" aria-label="工作区导航">
@@ -575,6 +605,7 @@ export function App() {
           }) : <div className="connections-empty"><HardDrives size={23} /><p>你的连接，会在这里</p><span>保存常用主机，一键连接。</span><button className="text-button" onClick={() => setDialog({ kind: "ssh" })}><Plus size={13} />添加第一个连接</button></div>}
         </div>
         <div className="sidebar-bottom"><div className="sidebar-section-heading"><span>连接工具</span></div><div className="connection-tools">{Object.entries(connectionLabels).map(([kind, label]) => { const Icon = kindIcons[kind]; return <button key={kind} onClick={() => { setProfileMenu(null); setDialog({ kind }); }}><Icon size={16} /><span>{label}</span></button>; })}</div><button className="settings-button" onClick={() => setSettingsOpen(true)}><GearSix size={18} /><span>设置</span><span className="version-label">v{info.version}</span></button></div>
+        </>}
       </aside>
 
       <main className="main-workspace">
@@ -589,7 +620,7 @@ export function App() {
               return <div key={tab.id} className={`tab ${activeTabId === tab.id ? "active" : ""} ${draggedTab === tab.id ? "dragging" : ""}`} draggable onDragStart={(event) => { setDraggedTab(tab.id); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/omniterm-tab", tab.id); }} onDragEnd={() => setDraggedTab(null)} onDragOver={(event) => { if (draggedTab) event.preventDefault(); }} onDrop={(event) => { event.preventDefault(); if (draggedTab) reorderTab(draggedTab, tab.id); setDraggedTab(null); }} onAuxClick={(event) => { if (event.button === 1) closeTab(tab.id); }}>
                 <button role="tab" aria-selected={activeTabId === tab.id} onClick={() => selectTab(tab.id)} title={`${tabLabel(tab)}${index < 9 ? `（${info.platform === "darwin" ? "⌘" : "Alt+"}${index + 1}）` : ""}`}>
                   <Icon size={15} />
-                  <TabTitle tab={tab} title={tabLabel(tab)} onRename={renameTab} />
+                  <TabTitle tab={tab} title={tabLabel(tab)} onEdit={cancelFocus} onRename={renameTab} />
                   {ids.length > 1 && <span className="tab-badge" title={`${ids.length} 个窗格`}>{ids.length}</span>}
                   {tab.broadcast && <Broadcast size={12} className="broadcast-indicator" />}
                   {allDone && <Circle size={6} weight="fill" className="inactive-indicator" />}
@@ -623,7 +654,7 @@ export function App() {
                 const visible = place.tab.id === activeTabId && !place.hidden;
                 const multiple = paneIds(place.tab.root).length > 1 && !place.tab.zoomed;
                 const isFocused = multiple && place.tab.focus === session.id && !agentFocused;
-                return <TerminalView key={session.id} session={session} visible={visible} focused={isFocused} dimmed={multiple && settings.dimInactive && place.tab.focus !== session.id} style={place.style} onFocus={focusPane} {...viewProps} />;
+                return <TerminalView key={session.id} session={session} visible={visible} selected={visible && place.tab.focus === session.id && !agentFocused} focused={isFocused} dimmed={multiple && settings.dimInactive && place.tab.focus !== session.id} style={place.style} onFocus={focusPane} {...viewProps} />;
               })}
               {activeTab && !activeTab.zoomed && layouts.get(activeTab.id)?.dividers.map((divider) => {
                 const row = divider.direction === "row";
@@ -634,13 +665,14 @@ export function App() {
               })}
               {!tabs.length && <div className="terminal-empty"><div className="empty-terminal-icon"><TerminalWindow size={34} weight="light" /></div><h2>开始一个新的会话</h2><p>打开本地终端，或连接到你的远程主机。</p><button className="button primary" onClick={() => safely(() => addTab())}><Plus size={16} />新建终端<kbd>{key("newTab")}</kbd></button><p className="empty-hint">按 <kbd>{key("palette")}</kbd> 打开命令面板</p></div>}
             </div>
+            {remote && <MetricsBar key={remoteSession.id} session={remoteSession} remote={remote} store={remoteStore} api={api} notify={notify} />}
             <div className="terminal-footnote"><span>{pathLabel(shownCwd, info.home)}</span><span>{theme.name} · {settings.gpu ? "GPU" : "DOM"} · UTF-8</span></div>
           </section>
 
           <aside className={`agent-pane ${agentVisible ? "is-visible" : ""} ${agentFocused ? "is-focused" : ""}`} aria-label="Agent 面板">
             <div className="agent-heading"><Robot size={18} /><strong>Agent</strong><span className="agent-model-label">Codex</span><div className="agent-heading-actions">{agentSession && <IconButton label={`发送终端选中内容（${key("sendToAgent")}）`} onClick={sendSelectionToAgent}><PaperPlaneTilt size={15} /></IconButton>}{agentSession && <IconButton label="结束 Agent 会话" onClick={() => closePane(agentSession.id)}><Trash size={15} /></IconButton>}<IconButton label="隐藏 Agent 面板" onClick={() => setAgentVisible(false)}><SidebarSimple size={17} /></IconButton></div></div>
             <div className="agent-context"><FolderSimple size={14} /><span title={agentSession?.cwd || cwd}>{basename(agentSession?.cwd || cwd)}</span><span className="context-local">本地工作区</span></div>
-            {agentSession ? <div className="agent-terminal-stack"><TerminalView session={agentSession} visible={agentVisible} onFocus={setFocusedId} {...viewProps} />{finished(agentSession.status) && <div className="agent-restart"><button className="button secondary" onClick={startAgent} disabled={agentStarting}><ArrowClockwise size={15} />重新启动 Agent</button></div>}</div> : <div className="agent-invitation"><div className="agent-symbol"><Robot size={32} weight="light" /><span className={`agent-availability ${info.agent?.available ? "available" : ""}`} /></div><span className="agent-eyebrow">你的终端搭档</span><h2>从一个想法开始。</h2><p>让 Agent 理解代码、处理任务。<br />你掌握每一步的决定权。</p><button className="button primary launch-agent" onClick={startAgent} disabled={!info.agent?.available || agentStarting}>{agentStarting ? <CircleNotch className="spin" size={17} /> : <Robot size={17} />}启动 Agent<ArrowRight size={15} /></button><div className="agent-local-note"><Cpu size={13} /><span>{info.agent?.available ? "Codex 运行于本机，在当前终端目录启动" : "本地 Agent 暂不可用"}</span></div>{!info.agent?.available && <div className="agent-unavailable"><Info size={15} /><span>{info.agent?.error || "未找到 Agent 程序，请完成本地 Agent 安装。"}</span></div>}<div className="agent-explanation"><div><Code size={17} /><span>理解当前项目与终端环境</span></div><div><PaperPlaneTilt size={17} /><span>选中终端输出，按 {key("sendToAgent")} 发给 Agent</span></div><div><TerminalWindow size={17} /><span>编写代码，执行经你批准的操作</span></div></div></div>}
+            {agentSession ? <div className="agent-terminal-stack"><TerminalView session={agentSession} visible={agentVisible} selected={agentFocused} onFocus={setFocusedId} {...viewProps} />{finished(agentSession.status) && <div className="agent-restart"><button className="button secondary" onClick={startAgent} disabled={agentStarting}><ArrowClockwise size={15} />重新启动 Agent</button></div>}</div> : <div className="agent-invitation"><div className="agent-symbol"><Robot size={32} weight="light" /><span className={`agent-availability ${info.agent?.available ? "available" : ""}`} /></div><span className="agent-eyebrow">你的终端搭档</span><h2>从一个想法开始。</h2><p>让 Agent 理解代码、处理任务。<br />你掌握每一步的决定权。</p><button className="button primary launch-agent" onClick={startAgent} disabled={!info.agent?.available || agentStarting}>{agentStarting ? <CircleNotch className="spin" size={17} /> : <Robot size={17} />}启动 Agent<ArrowRight size={15} /></button><div className="agent-local-note"><Cpu size={13} /><span>{info.agent?.available ? "Codex 运行于本机，在当前终端目录启动" : "本地 Agent 暂不可用"}</span></div>{!info.agent?.available && <div className="agent-unavailable"><Info size={15} /><span>{info.agent?.error || "未找到 Agent 程序，请完成本地 Agent 安装。"}</span></div>}<div className="agent-explanation"><div><Code size={17} /><span>理解当前项目与终端环境</span></div><div><PaperPlaneTilt size={17} /><span>选中终端输出，按 {key("sendToAgent")} 发给 Agent</span></div><div><TerminalWindow size={17} /><span>编写代码，执行经你批准的操作</span></div></div></div>}
             <div className="agent-footer"><span className={`status-dot ${info.agent?.available ? "" : "muted"}`} /><span>{agentSession?.status === "running" ? "Agent 会话运行中" : "由本地 Codex 提供支持"}</span><span className="agent-footer-label">Agent 模式</span></div>
           </aside>
         </div>

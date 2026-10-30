@@ -9,7 +9,7 @@ const FLUSH_DELAY_MS = 4;
 const FLUSH_BYTES = 256 * 1024;
 
 function descriptor(session) {
-  return { id: session.id, title: session.plan.title, kind: session.plan.kind, cwd: session.plan.cwd, ...(session.pty ? { pid: session.pty.pid } : {}), status: session.status };
+  return { id: session.id, title: session.plan.title, kind: session.plan.kind, cwd: session.plan.cwd, ...(session.pty ? { pid: session.pty.pid } : {}), ...(session.plan.remote ? { remote: true } : {}), ...(session.plan.powershell ? { powershell: true } : {}), status: session.status };
 }
 
 export function terminatePty(pty, platform = process.platform, signalProcess = process.kill) {
@@ -23,13 +23,15 @@ export function terminatePty(pty, platform = process.platform, signalProcess = p
 }
 
 export class SessionManager {
-  constructor({ planner, spawnPty, onData = () => {}, onExit = () => {}, terminate = terminatePty, schedule = (callback) => setTimeout(callback, FLUSH_DELAY_MS), cancel = clearTimeout }) {
+  constructor({ planner, spawnPty, onData = () => {}, onExit = () => {}, onStart = () => {}, onClose = () => {}, terminate = terminatePty, schedule = (callback) => setTimeout(callback, FLUSH_DELAY_MS), cancel = clearTimeout }) {
     this.planner = planner;
     this.schedule = schedule;
     this.cancel = cancel;
     this.spawnPty = spawnPty;
     this.onData = onData;
     this.onExit = onExit;
+    this.onStart = onStart;
+    this.onClose = onClose;
     this.terminate = terminate;
     this.sessions = new Map();
     this.disposed = false;
@@ -93,6 +95,7 @@ export class SessionManager {
         session.exitCode = exitCode ?? 0;
         this.onExit({ id, exitCode: session.exitCode, signal: signal ?? null });
       }));
+      this.onStart(id, session.plan);
       return descriptor(session);
     } catch (error) {
       session.exited = true;
@@ -130,6 +133,7 @@ export class SessionManager {
     if (session.timer !== null) { this.cancel(session.timer); session.timer = null; }
     session.pending = [];
     this.sessions.delete(id);
+    this.onClose(id);
     for (const listener of session.listeners) listener?.dispose();
     if (session.pty && !session.exited) { try { this.terminate(session.pty); } catch { /* The child may have exited concurrently. */ } }
     return true;

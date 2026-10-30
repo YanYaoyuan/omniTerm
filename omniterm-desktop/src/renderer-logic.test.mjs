@@ -3,7 +3,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { computeLayout, equalize, MIN_RATIO, neighborPane, pane, paneIds, removePane, setRatio, splitPane } from "./layout.js";
 import { isAppShortcut, matchShortcut, shortcutLabel, tabCycle, tabNumber } from "./shortcuts.js";
-import { cwdFromOsc7, fuzzyScore, quotePath } from "./terminal-utils.js";
+import { createRemoteStore, formatBytes, formatUptime, joinRemote, nextSelection, parentRemote, percent, sortEntries, validEntryName } from "./remote-utils.js";
+import { cwdFromOsc7, fuzzyScore, isTerminalReply, quotePath } from "./terminal-utils.js";
 import { MAX_RESTORED_PANES, WORKSPACE_VERSION, parseWorkspace, restoreTree, serializeWorkspace } from "./workspace.js";
 
 const key = (code, modifiers = {}) => ({ type: "keydown", code, key: "", metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, isComposing: false, ...modifiers });
@@ -138,4 +139,86 @@ test("restoring a tree opens panes in order and collapses failures", async () =>
   assert.deepEqual(opened, ["/a", "/gone", "/c"]);
   assert.deepEqual(root, { type: "split", direction: "row", ratio: 0.4, children: [{ type: "pane", sessionId: "id/a" }, { type: "pane", sessionId: "id/c" }] });
   assert.equal(await restoreTree({ type: "pane", cwd: "/x" }, async () => null), null);
+});
+
+test("a 16 pane chain survives a save and restore", () => {
+  let root = pane("p0");
+  const sessions = [{ id: "p0", kind: "shell", cwd: "/0" }];
+  for (let index = 1; index < MAX_RESTORED_PANES; index++) {
+    root = splitPane(root, `p${index - 1}`, `p${index}`, "row");
+    sessions.push({ id: `p${index}`, kind: "shell", cwd: `/${index}` });
+  }
+  const parsed = parseWorkspace(JSON.stringify(serializeWorkspace([{ id: "t", root, title: "" }], sessions, "t")));
+  const count = (node) => node.type === "pane" ? 1 : count(node.children[0]) + count(node.children[1]);
+  assert.equal(count(parsed.tabs[0].root), MAX_RESTORED_PANES);
+});
+
+test("OSC 7 reports from another host are not local directories", () => {
+  assert.equal(cwdFromOsc7("file://remote.example/remote/path", "linux", "laptop"), null);
+  assert.equal(cwdFromOsc7("file://laptop.local/home/me", "linux", "laptop"), "/home/me");
+  assert.equal(cwdFromOsc7("file://LAPTOP/home/me", "linux", "laptop.lan"), "/home/me");
+  assert.equal(cwdFromOsc7("file://localhost/home/me", "linux", "laptop"), "/home/me");
+  assert.equal(cwdFromOsc7("file:///home/me", "linux", "laptop"), "/home/me");
+});
+
+test("PowerShell paths stay literal", () => {
+  assert.equal(quotePath("C:\\My Files\\$(1+1).txt", "win32", true), "'C:\\My Files\\$(1+1).txt'");
+  assert.equal(quotePath("C:\\it's.txt", "win32", true), "'C:\\it''s.txt'");
+  assert.equal(quotePath("C:\\plain\\a.txt", "win32", true), "C:\\plain\\a.txt");
+  assert.equal(quotePath("C:\\My Files\\a.txt", "win32"), '"C:\\My Files\\a.txt"');
+});
+
+test("terminal generated replies are told apart from typed input", () => {
+  for (const reply of ["\x1b[24;80R", "\x1b[?1;2c", "\x1b[>0;276;0c", "\x1b[0n", "\x1b[I", "\x1b[O", "\x1b[<0;10;5M", "\x1b]11;rgb:1c1c/2222/2b2b\x07", "\x1b]10;rgb:0/0/0\x1b\\", "\x1bP1$r0m\x1b\\", "\x1b[?2004;1$y"]) assert.equal(isTerminalReply(reply), true, JSON.stringify(reply));
+  for (const typed of ["a", "ls -la\r", "\x1b", "\x1b[A", "\x1b[D", "\x1b[3~", "\x03", "\x1bOP", "粘贴"]) assert.equal(isTerminalReply(typed), false, JSON.stringify(typed));
+});
+
+test("byte, uptime and percent formatting", () => {
+  assert.deepEqual([formatBytes(0), formatBytes(1023), formatBytes(1536), formatBytes(1048576 * 250), formatBytes(NaN)], ["0 B", "1023 B", "1.5 KiB", "250 MiB", "—"]);
+  assert.deepEqual([formatUptime(59), formatUptime(3700), formatUptime(90000)], ["0分", "1时 1分", "1天 1时"]);
+  assert.deepEqual([percent(1, 4), percent(9, 4), percent(1, 0)], [25, 100, null]);
+});
+
+test("remote paths join and climb without doubling separators", () => {
+  assert.deepEqual([joinRemote("/", "a"), joinRemote("/a", "b"), joinRemote("/a/", "b")], ["/a", "/a/b", "/a/b"]);
+  assert.deepEqual([parentRemote("/a/b"), parentRemote("/a"), parentRemote("/"), parentRemote("/a/b/")], ["/a", "/", "/", "/a"]);
+  assert.deepEqual(["a", "a b", ".x"].map(validEntryName), [true, true, true]);
+  assert.deepEqual(["", ".", "..", "a/b", "a\0b"].map(validEntryName), [false, false, false, false, false]);
+});
+
+test("entries list folders first in natural order and can hide dotfiles", () => {
+  const entries = [{ name: "file10", directory: false }, { name: ".env", directory: false }, { name: "file9", directory: false }, { name: "zdir", directory: true }];
+  assert.deepEqual(sortEntries(entries, false).map((entry) => entry.name), ["zdir", "file9", "file10"]);
+  assert.equal(sortEntries(entries, true).length, 4);
+});
+
+test("row clicks replace, toggle and extend the selection", () => {
+  const names = ["a", "b", "c", "d"];
+  assert.deepEqual([...nextSelection(new Set(["a"]), names, "b")], ["b"]);
+  assert.deepEqual([...nextSelection(new Set(["a"]), names, "b", { toggle: true })], ["a", "b"]);
+  assert.deepEqual([...nextSelection(new Set(["a", "b"]), names, "b", { toggle: true })], ["a"]);
+  assert.deepEqual([...nextSelection(new Set(["d"]), names, "b", { range: true }, "d")], ["b", "c", "d"]);
+});
+
+test("the remote store keeps snapshots stable and forgets closed sessions", () => {
+  const handlers = {};
+  const store = createRemoteStore({ onRemoteState: (f) => { handlers.state = f; }, onRemoteTransfer: (f) => { handlers.transfer = f; }, onRemoteMetrics: (f) => { handlers.metrics = f; } });
+  let changes = 0;
+  store.subscribe(() => changes++);
+  assert.equal(store.transfers("s"), store.transfers("other"));
+  handlers.state({ id: "s", state: "ready" });
+  handlers.transfer({ id: "s", transferId: "t", status: "running", bytes: 1 });
+  const snapshot = store.transfers("s");
+  assert.equal(store.transfers("s"), snapshot);
+  handlers.transfer({ id: "s", transferId: "t", status: "done", bytes: 2 });
+  assert.deepEqual(store.transfers("s").map((item) => item.bytes), [2]);
+  handlers.metrics({ id: "s", available: true, sample: { cpu: 1 } });
+  assert.equal(store.metrics("s").sample.cpu, 1);
+  store.clearFinished("s");
+  assert.equal(store.transfers("s").length, 0);
+  for (let index = 0; index < 30; index++) handlers.transfer({ id: "s", transferId: `t${index}`, status: "done", bytes: 0 });
+  assert.equal(store.transfers("s").length, 20);
+  handlers.state({ id: "s", state: "closed" });
+  assert.deepEqual([store.state("s"), store.metrics("s"), store.transfers("s").length], [null, null, 0]);
+  assert.ok(changes > 5);
 });

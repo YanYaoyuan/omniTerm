@@ -7,6 +7,7 @@ import { findExecutable, planCommand, resolveCodex, resolveShell } from "../../o
 export const SESSION_KINDS = Object.freeze(["shell", "agent", "ssh", "sftp", "serial", "tunnel"]);
 const PROFILE_FIELDS = new Set(["id", "kind", "name", "host", "username", "port", "keyPath", "device", "baud", "forwardType", "bindPort", "targetHost", "targetPort"]);
 const CONTROL = /[\u0000-\u001f\u007f]/;
+const CONTROL_PERSIST_SECONDS = 30;
 
 export function plainObject(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object.`);
@@ -124,26 +125,33 @@ function destination(profile, kind) {
 
 export async function buildCommandPlan(request, options = {}) {
   plainObject(request, "Session request");
-  for (const key of Object.keys(request)) if (!["kind", "cwd", "profile"].includes(key)) throw new Error(`Unsupported session field: ${key}.`);
+  for (const key of Object.keys(request)) if (!["kind", "cwd", "profile", "companion"].includes(key)) throw new Error(`Unsupported session field: ${key}.`);
   if (!SESSION_KINDS.includes(request.kind)) throw new Error("Unknown session kind.");
-  const { platform = process.platform, env = process.env, defaultCwd = process.cwd(), isDirectory = (filename) => statSync(filename).isDirectory(), serialProbe = probePyserial } = options;
+  if (request.companion !== undefined && typeof request.companion !== "boolean") throw new Error("Session companion must be a boolean.");
+  const { platform = process.platform, env = process.env, defaultCwd = process.cwd(), isDirectory = (filename) => statSync(filename).isDirectory(), serialProbe = probePyserial, controlPath = () => null } = options;
   const paths = platform === "win32" ? path.win32 : path.posix;
   const cwd = request.cwd === undefined || request.cwd === "" ? defaultCwd : text(request.cwd, "Working directory", 4096);
   if (!paths.isAbsolute(cwd)) throw new Error("Working directory must be an absolute path.");
   try { if (!isDirectory(cwd)) throw new Error(); } catch { throw new Error(`Working directory does not exist or is not a directory: ${cwd}`); }
   const profile = validateProfile(request.profile, { kind: request.kind, requireConnection: true });
+  const companion = ["ssh", "sftp"].includes(request.kind) && request.companion !== false;
   let command;
+  let remote;
   if (request.kind === "agent") {
     const agent = resolveDesktopAgent(options);
     command = { executable: agent.executable, args: [...agent.args, "--no-daemon", "--no-alt-screen"] };
   } else if (request.kind === "shell") {
     const shell = resolveShell({ ...options, env, platform });
-    command = { ...shell, args: platform === "win32" ? shell.args : ["-l"] };
+    command = { ...shell, args: platform === "win32" ? shell.args : ["-l"], ...(/(?:^|[\\/])(?:pwsh|powershell)(?:\.exe)?$/i.test(shell.executable) ? { powershell: true } : {}) };
   } else if (request.kind === "serial") {
     command = planCommand("serial", [profile.device, String(profile.baud ?? 115200)], { ...options, env, platform });
     if (!await serialProbe(command.python, env)) throw new Error(`Python 3 with pyserial is required for serial connections. Install pyserial for ${command.python.executable} (python -m pip install pyserial).`);
   } else {
     const args = [];
+    const socket = companion ? controlPath() : null;
+    // A persisting master lets the file panel share this login, and its timeout
+    // bounds how long the connection survives if omniTerm itself dies.
+    if (socket) args.push("-o", "ControlMaster=auto", "-o", `ControlPath=${socket}`, "-o", `ControlPersist=${CONTROL_PERSIST_SECONDS}`);
     if (profile.port) args.push(request.kind === "sftp" ? "-P" : "-p", String(profile.port));
     if (profile.keyPath) args.push("-i", profile.keyPath);
     if (request.kind === "tunnel") {
@@ -156,6 +164,8 @@ export async function buildCommandPlan(request, options = {}) {
     }
     args.push(destination(profile, request.kind));
     command = planCommand(request.kind, args, { ...options, env, platform });
+    if (companion) remote = { executable: planCommand("ssh", [], { ...options, env, platform }).executable, destination: destination(profile, "ssh"), controlPath: socket, args: [...(profile.port ? ["-p", String(profile.port)] : []), ...(profile.keyPath ? ["-i", profile.keyPath] : [])] };
   }
-  return { ...command, kind: request.kind, cwd, title: profile.name || ({ shell: "Terminal", agent: "Agent", ssh: `SSH · ${profile.host}`, sftp: `SFTP · ${profile.host}`, serial: `Serial · ${profile.device}`, tunnel: `Tunnel · ${profile.host}` })[request.kind], env: Object.fromEntries(Object.entries({ ...env, TERM: "xterm-256color", COLORTERM: "truecolor", TERM_PROGRAM: "omniTerm" }).filter(([, value]) => typeof value === "string")) };
+  const sessionEnv = Object.fromEntries(Object.entries({ ...env, TERM: "xterm-256color", COLORTERM: "truecolor", TERM_PROGRAM: "omniTerm" }).filter(([, value]) => typeof value === "string"));
+  return { ...command, kind: request.kind, cwd, title: profile.name || ({ shell: "Terminal", agent: "Agent", ssh: `SSH · ${profile.host}`, sftp: `SFTP · ${profile.host}`, serial: `Serial · ${profile.device}`, tunnel: `Tunnel · ${profile.host}` })[request.kind], env: sessionEnv, ...(remote ? { remote: { ...remote, env: sessionEnv } } : {}) };
 }

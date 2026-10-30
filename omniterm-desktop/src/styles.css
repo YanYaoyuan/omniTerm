@@ -344,3 +344,70 @@ kbd { font-family: var(--mono); font-size: 10px; background: #ffffff04; border: 
 .palette-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .palette-icon-placeholder { width: 16px; }
 .palette-empty { padding: 26px; text-align: center; color: var(--faint); font-size: 12px; }
+
+/* SFTP file panel */
+.workspace-layout.with-files { grid-template-columns: 320px minmax(0, 1fr); }
+.sidebar-views { flex-shrink: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 3px; padding: 3px; margin-bottom: 10px; border-radius: 7px; background: #ffffff05; }
+.sidebar-views button { display: flex; align-items: center; justify-content: center; gap: 6px; height: 27px; border-radius: 5px; color: #99a8bd; font-size: 11px; }
+.sidebar-views button.active { background: #283242; color: #c2d5f5; }
+.sftp-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; margin: 0 -12px; padding: 0 12px 8px; border: 1px solid transparent; position: relative; }
+.sftp-panel.is-drop-target { border-color: var(--accent); background: var(--accent-soft); }
+.sftp-placeholder { align-items: center; justify-content: center; gap: 12px; text-align: center; color: var(--muted); font-size: 12px; }
+.sftp-placeholder p { margin: 0; line-height: 1.6; }
+.sftp-placeholder pre { max-width: 100%; max-height: 120px; margin: 0; overflow: auto; white-space: pre-wrap; word-break: break-word; font-family: var(--mono); font-size: 10px; color: var(--faint); user-select: text; }
+.sftp-toolbar { flex-shrink: 0; display: flex; align-items: center; gap: 2px; }
+.sftp-toolbar .icon-button { width: 28px; height: 28px; color: #93a3b9; }
+.sftp-toolbar .icon-button.is-active { color: var(--accent); }
+.sftp-path { flex-shrink: 0; margin: 6px 0; }
+.sftp-path input { width: 100%; height: 27px; padding: 0 8px; border: 1px solid #ffffff12; border-radius: 5px; background: #ffffff04; font-family: var(--mono); font-size: 11px; outline-offset: 0; }
+.sftp-error { flex-shrink: 0; display: flex; gap: 6px; padding: 7px 8px; margin-bottom: 6px; border-radius: 5px; background: #e9959b0a; border: 1px solid #e9959b25; color: #edabb0; font-size: 11px; line-height: 1.4; word-break: break-word; }
+.sftp-list { flex: 1; min-height: 80px; overflow-y: auto; margin: 0 -4px; }
+.sftp-row { display: flex; align-items: center; gap: 8px; height: 27px; padding: 0 8px; border-radius: 5px; color: #b6c2d3; font-size: 12px; cursor: default; }
+.sftp-row:hover { background: #ffffff06; }
+.sftp-row:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.sftp-row.selected { background: #8db4ff18; color: #d3e0f5; }
+.sftp-row.is-drop-target { background: #8db4ff2a; box-shadow: inset 0 0 0 1px var(--accent); }
+.sftp-row svg { color: #8495ad; }
+.sftp-row svg.sftp-folder { color: #e0bb72; }
+.sftp-row svg.sftp-link { color: var(--faint); }
+.sftp-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sftp-size { flex-shrink: 0; color: var(--faint); font-size: 10px; font-variant-numeric: tabular-nums; }
+.sftp-ready { flex-shrink: 0; padding: 1px 5px; border-radius: 4px; background: #8db4ff1c; color: var(--accent); font-size: 10px; }
+.sftp-name-input { flex: 1; min-width: 0; height: 22px; padding: 0 5px; border: 1px solid var(--accent); border-radius: 4px; background: #14181f; font-size: 12px; outline: none; }
+.sftp-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 32px 0; color: var(--faint); font-size: 11px; }
+.sftp-selection { flex-shrink: 0; display: flex; align-items: center; gap: 2px; padding: 4px 8px; margin-top: 6px; border-radius: 5px; background: #ffffff05; color: var(--muted); font-size: 11px; }
+.sftp-selection span { flex: 1; }
+.sftp-selection .icon-button { width: 25px; height: 25px; }
+.sftp-transfers { flex-shrink: 0; max-height: 170px; overflow-y: auto; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border); }
+.sftp-transfers-heading { display: flex; justify-content: space-between; padding: 0 4px 4px; color: var(--muted); font-size: 10px; }
+.sftp-transfers-heading button { color: var(--accent); font-size: 10px; }
+.sftp-transfer { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 2px 6px; min-height: 22px; padding: 2px 4px; font-size: 11px; color: #a5b0c1; }
+.sftp-transfer svg { color: #8495ad; }
+.sftp-transfer .icon-button { width: 18px; height: 18px; }
+.sftp-transfer-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sftp-transfer-status { color: var(--faint); font-size: 10px; font-variant-numeric: tabular-nums; }
+.sftp-transfer.failed .sftp-transfer-status { color: #edabb0; }
+.sftp-transfer-bar { grid-column: 1 / -1; height: 3px; border-radius: 2px; background: #ffffff0a; overflow: hidden; }
+.sftp-transfer-bar span { display: block; height: 100%; border-radius: 2px; background: var(--accent); transition: width .15s linear; }
+.sftp-transfer-error { grid-column: 1 / -1; color: #edabb0; font-size: 10px; line-height: 1.4; word-break: break-word; }
+.sftp-hint { flex-shrink: 0; display: flex; align-items: center; gap: 5px; padding: 7px 4px 0; color: var(--faint); font-size: 10px; }
+.sftp-menu { position: fixed; z-index: 30; width: 150px; padding: 4px; border: 1px solid #ffffff17; border-radius: 7px; background: #252d39; box-shadow: 0 8px 24px #0006; }
+.sftp-menu button { width: 100%; display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 4px; font-size: 11px; color: #c0cee1; text-align: left; }
+.sftp-menu button:hover { background: #ffffff0a; }
+.sftp-confirm-detail { max-height: 180px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
+
+/* Remote host metrics */
+.metrics-bar { flex-shrink: 0; height: 32px; padding: 0 14px; display: flex; align-items: center; gap: 16px; overflow-x: auto; overflow-y: hidden; white-space: nowrap; border-top: 1px solid var(--border); background: #1c222b; color: var(--muted); font-size: 11px; scrollbar-width: none; user-select: none; }
+.metrics-bar > svg { color: #8495ad; margin-right: -9px; }
+.metrics-host { flex-shrink: 0; max-width: 160px; overflow: hidden; text-overflow: ellipsis; color: #c0cee1; }
+.metrics-note { display: inline-flex; align-items: center; gap: 6px; color: var(--faint); }
+.metrics-retry { color: var(--accent); font-size: 11px; }
+.metric { flex-shrink: 0; display: flex; align-items: center; gap: 6px; }
+.metric svg { color: #8495ad; }
+.metric-label { color: var(--faint); }
+.metric-meter { width: 46px; height: 4px; border-radius: 2px; background: #ffffff10; overflow: hidden; }
+.metric-meter span { display: block; height: 100%; border-radius: 2px; background: var(--accent); transition: width .3s ease; }
+.metric-value { color: #c0cee1; font-variant-numeric: tabular-nums; }
+.metric-detail { color: var(--faint); font-size: 10px; font-variant-numeric: tabular-nums; }
+.terminal-pane { container-type: inline-size; }
+@container (max-width: 900px) { .metric-detail { display: none; } .metrics-bar { gap: 12px; } }
