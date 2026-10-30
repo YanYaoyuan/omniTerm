@@ -3,7 +3,7 @@
 omniTerm 的 Agent 基础位于本仓库的 `codex-rs/`。使用
 [`scripts/build_codex_package.py`](../../scripts/build_codex_package.py)
 编译并组装完整的本地 Agent 包，输出到 `dist/omniterm-agent/`。
-Node.js 命令入口负责发现和启动这个包，编译工作由 Rust 工具链完成。
+桌面应用和可选的 Node.js 命令入口负责发现和启动这个包，编译工作由 Rust 工具链完成。
 
 本文说明构建步骤与检查方式，不代表所有平台已经完成构建或端到端验收。
 跨平台 launcher 测试与 Rust Agent 构建是独立的验证工作。
@@ -14,7 +14,7 @@ Node.js 命令入口负责发现和启动这个包，编译工作由 Rust 工具
   [`codex-rs/rust-toolchain.toml`](../../codex-rs/rust-toolchain.toml) 为准。
   安装 rustup，并确保 `cargo`、`rustc` 在 `PATH` 中。
 - **Python 3.11 或更新版本：** 用于运行打包脚本。
-- **Node.js 22 或更新版本：** 用于通过 omniTerm 命令入口运行 Agent。
+- **Node.js 22.12 或更新版本：** 用于桌面开发；可选 CLI 要求 Node.js 22 或更新版本。
 - **macOS：** 安装 Xcode Command Line Tools，确保 `xcrun` 和 C/C++ 编译器可用；
   原生依赖构建还需要 CMake。
 - **Linux：** 准备目标平台的 C/C++ 编译器、链接器、CMake、`pkg-config` 和所需开发库。
@@ -104,7 +104,7 @@ Windows PowerShell：
 & .\dist\omniterm-agent\bin\codex.exe --version
 ```
 
-然后从仓库根目录检查 omniTerm 选择的 Agent：
+然后从仓库根目录通过可选 CLI 检查 omniTerm 选择的 Agent：
 
 ```sh
 node omniterm-cli/bin/omniterm.js doctor
@@ -121,3 +121,7 @@ node omniterm-cli/bin/omniterm.js agent
 版本检查验证二进制可启动。模型认证、工具执行与真实 Agent 会话需要另外验证；
 认证、模型和审批配置仍由所选 Codex 引擎管理。更多命令与依赖说明见
 [CLI 指南](../../omniterm-cli/README.md)。
+
+桌面应用的启动、Electron 原生模块重建和打包步骤见
+[桌面指南](../../omniterm-desktop/README.md)。桌面打包会将此完整 Agent 包复制到
+应用资源目录；Agent 与应用必须使用匹配的平台和架构。

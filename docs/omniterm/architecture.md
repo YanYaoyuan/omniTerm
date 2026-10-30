@@ -1,82 +1,113 @@
 # omniTerm 架构
 
-omniTerm 的目标是把日常终端、远程连接和 Agent 工作流放进同一个跨平台工作台。终端交互体验以 iTerm2 为参考，远程运维工具覆盖以 MobaXterm 为参考；首个 Agent 引擎使用本仓库的 Codex。
+omniTerm 使用 Electron、React、xterm.js 和 node-pty 实现桌面终端工作台，
+将本地终端、远程工具入口与 Codex Agent 分栏放在同一个窗口中。
+目标系统为 macOS、Linux 和 Windows。本文区分现有实现与后续设计；
+原生运行、GUI 交互和三平台发行需要分别验收。
+当前已在 macOS arm64 打包并打开应用窗口，真实 Electron PTY 测试通过；
+已验证范围和未执行项目见 [验收记录](desktop-test-plan.md#验收记录)。
 
-本文区分已经继承的代码能力与计划中的产品架构。这里的架构图不是已发布功能清单，具体里程碑见 [roadmap.md](roadmap.md)。
+## 当前模块
 
-## 现有基础
+| 模块 | 仓库位置 | 当前职责 |
+| --- | --- | --- |
+| 桌面 renderer | [`omniterm-desktop/src`](../../omniterm-desktop/src) | React 工作台、xterm.js 多标签终端、Agent 分栏、连接表单、搜索与显示设置 |
+| Electron 主进程 | [`omniterm-desktop/electron`](../../omniterm-desktop/electron) | 窗口、受限 IPC、命令参数校验、node-pty 会话生命周期与连接配置保存 |
+| 可选 CLI | [`omniterm-cli`](../../omniterm-cli) | 在现有终端启动 Agent、shell、SSH、SFTP、转发与串口；桌面复用其底层命令解析 |
+| Agent 包构建 | [`scripts/codex_package`](../../scripts/codex_package) | 从 Rust 源码编译 codex、code-mode host 与必要平台资源，组装完整包 |
+| Agent CLI / TUI | [`codex-rs/cli`](../../codex-rs/cli)、[`codex-rs/tui`](../../codex-rs/tui) | 当前桌面 Agent 分栏运行的交互入口 |
+| Agent 核心 | [`codex-rs/core`](../../codex-rs/core) 及相关 crate | 模型、工具执行、会话、认证、配置、审批与平台隔离 |
+| 后续结构化接口 | [`codex-rs/app-server`](../../codex-rs/app-server)、[`app-server-protocol`](../../codex-rs/app-server-protocol) | 可用于后续原生 Agent 界面；当前桌面分栏尚未使用 app-server 协议 |
 
-| 模块              | 仓库位置                                                                                                         | 可复用能力与边界                                                                           |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| omniTerm 命令入口 | [`omniterm-cli`](../../omniterm-cli)                                                                             | Node.js 22+ 的轻量启动器；统一启动 Agent、shell、SSH、SFTP、转发与串口客户端，不提供 GUI。 |
-| Codex CLI / TUI   | [`codex-rs/cli`](../../codex-rs/cli)、[`codex-rs/tui`](../../codex-rs/tui)                                       | 交互式 Agent、命令行执行与会话入口；它本身不是桌面终端模拟器。                             |
-| Agent 服务        | [`codex-rs/app-server`](../../codex-rs/app-server)、[`app-server-protocol`](../../codex-rs/app-server-protocol)  | 初始化、线程、回合、事件流和审批协议；外部客户端可使用 stdio / WebSocket 传输。            |
-| Agent 核心        | [`codex-rs/core`](../../codex-rs/core) 及相关 crate                                                              | 模型交互、工具执行、上下文、配置及现有权限机制。                                           |
-| PTY 与进程        | [`codex-rs/utils/pty`](../../codex-rs/utils/pty)                                                                 | 交互式进程、输入输出、窗口尺寸、终止及退出状态；含 Unix PTY 与 Windows ConPTY 实现。       |
-| 平台执行与隔离    | [`codex-rs/sandboxing`](../../codex-rs/sandboxing)、[`windows-sandbox-rs`](../../codex-rs/windows-sandbox-rs) 等 | 复用现有平台能力；不能据此宣称远程 SSH 或串口操作已获得同等隔离。                          |
-
-保留 `codex-*` crate、协议字段和兼容性名称，产品名称使用 **omniTerm**。内部模块名的全面替换会扩大上游合并和协议兼容成本，不是建立产品品牌的前提。
-
-首个启动器没有 npm 运行时依赖。`agent` 使用 `OMNITERM_CODEX_BIN`、本仓库构建产物或 PATH 中的 Codex；`shell` 使用系统 shell；`ssh`、`sftp` 和 `tunnel` 调用系统 OpenSSH。`tunnel` 使用 `ssh -N -o ExitOnForwardFailure=yes`，转发参数交给 OpenSSH。`serial` 使用可选的 Python / pyserial miniterm；`doctor` 用于检查本机依赖。命令入口复用已有程序，不等同于内建协议栈、连接管理器或文件管理器。
-
-## 目标分层
+## 当前数据流
 
 ```mermaid
 flowchart TB
-    UI[omniTerm 工作台：标签、分屏、连接、文件、Agent]
-    Sessions[会话管理：目标、工作目录、连接状态、生命周期]
-    Terminal[终端适配器：PTY / SSH / 串口]
-    Files[文件适配器：本地 / SFTP]
-    Agent[Agent 适配器：首个实现为 Codex]
-    Server[Codex app-server]
-    Core[Codex Agent 核心与现有审批机制]
-    UI --> Sessions
-    Sessions --> Terminal
-    Sessions --> Files
-    Sessions --> Agent
-    Agent --> Server
-    Server --> Core
+    UI[React 工作台与 xterm.js]
+    Bridge[受限 preload / IPC]
+    Sessions[主进程会话管理]
+    Profiles[本地连接配置]
+    PTY[node-pty：Unix PTY / Windows ConPTY]
+    Shell[本地 Shell]
+    Remote[系统 OpenSSH / SFTP / pyserial]
+    Agent[源码构建的 Codex TUI 与辅助程序]
+    UI --> Bridge
+    Bridge --> Sessions
+    Bridge --> Profiles
+    Sessions --> PTY
+    PTY --> Shell
+    PTY --> Remote
+    PTY --> Agent
 ```
 
-桌面 UI、会话管理和终端适配器是待建设的产品层。桌面框架与终端渲染组件应通过三平台原型验证后确定，重点检查输入法、Unicode、长输出、快捷键和可访问性。不要把某个平台的原型等同于跨平台发布。
+桌面 PTY 层当前使用 node-pty，不直接复用 Codex Rust PTY API。
+继承的 Rust PTY、沙箱和执行组件继续服务于 Agent 内部工具执行。
+普通终端标签与 Agent 会话具有独立的权限、进程和执行目标。
 
-### 终端与连接
+## 终端会话
 
-每个会话拥有稳定 ID、类型、明确的执行目标、状态与进程或连接句柄。连接配置和运行状态分离，关闭标签时能清理所属进程、隧道和文件传输。
+主进程为每个会话分配 ID，并记录类型、工作目录、命令计划和状态。
+创建会话后先保持 pending，renderer 注册数据与退出监听，再请求启动 PTY。
+启动操作幂等；输出按会话 ID 分发，窗口尺寸和字号变化同步 PTY 行列数。
+每个标签保留自己的终端实例、输出与焦点状态。
 
-- **本地终端：** 基于 PTY 接入用户 shell，支持尺寸同步、输入输出和退出状态；终端渲染、滚屏和分屏由产品层实现。
-- **SSH：** 首个命令入口调用系统 OpenSSH，保留已有 SSH 配置、密钥代理和主机密钥校验行为。连接管理器随后提供可编辑配置、跳板机和断线状态。
-- **端口转发：** 区分本地、远程和动态转发。显示监听地址、监听端口和目标，提供启动失败与停止反馈；不能仅以子进程存在判断隧道可用。
-- **SFTP：** 首个命令入口调用系统客户端，后续实现目录浏览、传输进度、取消、冲突处理和失败重试。SFTP 文件操作与终端执行保持独立状态。
-- **串口：** 管理设备路径、波特率、数据位、停止位、校验位和流控。设备断开、被占用或无权限时显示可操作错误；日志记录应由用户选择开启。
+会话管理器限制同时存在的会话数量，并为每个会话保留有界输出缓冲。
+关闭标签清理该会话的监听和 PTY，关闭窗口或退出应用清理所属会话。
+进程退出保留可见输出，直到标签关闭。进程组和 shell job-control 存在平台差异，
+必须通过 [真实交互清单](desktop-test-plan.md) 检查子进程和监听端口的退出结果。
+目前没有应用重启后的会话恢复，也没有任意终端分屏；右侧分栏专用于 Agent。
 
-SSH 主机密钥校验不能静默关闭。连接配置引用系统凭据存储或密钥路径，不把密码、私钥和令牌写进仓库或普通配置导出文件。
+## Agent 分栏与包布局
 
-### Agent 集成
+用户点击启动后，Agent 在独立 PTY 中运行 Codex TUI。
+现有 TUI 负责模型交互、工具调用、审批和取消；桌面提供终端渲染与按键通道。
+这不是静态聊天示例，也尚不是通过 app-server 构建的结构化聊天界面。
 
-第一阶段通过 `omniterm agent` 使用现有 Codex CLI/TUI 作为 Agent 入口。未来工作台通过独立的 Codex 适配器连接 `codex app-server`，避免让 UI 直接依赖 Agent 核心内部结构。
+开发环境使用仓库内 `dist/omniterm-agent/` 等引擎发现路径。
+打包应用使用 `resources/omniterm-agent/` 中随应用提供的完整原生包，
+主程序、`codex-code-mode-host` 和必要工具必须保留在对应包布局中。
+源码构建步骤见 [local-build.md](local-build.md)，桌面打包步骤见
+[桌面指南](../../omniterm-desktop/README.md)。
 
-根据仓库现有 [协议定义](../../codex-rs/app-server-protocol/src/protocol/common.rs)，适配器需要处理初始化、`thread/start` / 恢复线程、`turn/start`、增量通知、取消和服务端审批请求。优先采用本地子进程的 stdio 连接，并把引擎版本与协议版本一起纳入兼容性检查。实验性接口只在明确启用和测试后使用。
+普通终端输出不会自动作为 Agent 上下文传递。打开 SSH 标签也不会让本地
+Agent 自动拥有远程文件系统或远程执行环境。后续上下文共享需要明确的选择入口，
+远程 Agent 需要独立的执行模型与权限验收。
 
-Agent 模式应让用户明确知道：
+后续可通过 Codex app-server 适配器处理初始化、线程、回合、增量通知、审批、
+取消与恢复，见现有 [协议定义](../../codex-rs/app-server-protocol/src/protocol/common.rs)。
+UI 应显示当前目录、实际执行主机和共享内容，并将引擎及协议版本纳入兼容性检查。
 
-1. 当前操作针对哪台主机、哪个目录和哪个会话。
-2. 哪些选中输出、文件或终端上下文会交给模型。
-3. 哪条命令或文件修改正在等待审批、执行、完成或失败。
-4. 如何中断任务，以及中断后哪些外部操作可能已经完成。
+## 连接工具与配置
 
-打开 SSH 标签并不意味着本地 Codex 自动获得远程文件系统或远程执行能力。远程 Agent 必须作为独立里程碑实现，明确选择远端运行引擎或受控远程工具适配方式，并验证审批、目录映射和取消行为。不要把终端输出中的文本直接当成用户授权或可信指令。
+- **SSH：** 图形表单收集目标、用户名、端口和可选密钥路径，启动系统 OpenSSH。
+  保留 SSH 配置、密钥代理与主机密钥确认；认证提示在终端中交互。
+- **端口转发：** 支持本地、远程和动态模式，构造 OpenSSH 的 `-L`、`-R`、`-D`
+  参数并使用 `ExitOnForwardFailure=yes`。默认监听回环地址；连接终端显示错误与退出状态。
+- **SFTP：** 图形入口打开系统交互式 SFTP 客户端；图形目录浏览、传输队列和进度界面尚未实现。
+- **串口：** 图形表单收集设备与波特率，启动可选的 Python / pyserial miniterm。
+  自动设备发现、更多串口参数与图形收发视图属于后续工作。
 
-后续引擎可以实现同一个产品侧适配接口，但不同引擎的认证、模型选择和权限语义需要分别声明，不能假定完全兼容。
+连接配置可保存、编辑和删除，主进程在 Electron 用户数据目录中原子写入 JSON。
+支持字段经过白名单校验，配置不接受密码或令牌字段。密钥路径可保存，私钥和
+密码继续由系统工具管理。连接收藏可在重启后读取，但不保存运行中的 PTY 会话。
 
-## 跨平台边界
+## IPC 与执行边界
 
-目标系统为 macOS、Linux 和 Windows 原生环境。Windows 的 WSL 连接可以作为额外会话类型，不能替代原生 Windows 的验收。
+renderer 不启用 Node 集成；上下文隔离和 sandbox 开启。
+preload 仅暴露明确的会话、目录选择和配置接口，不暴露任意 shell 执行字符串。
+主进程校验调用窗口、主 frame 与本地 renderer URL，并校验会话类型、
+连接参数、工作目录、输入大小和 PTY 尺寸。命令以可执行文件与参数数组传递。
 
-产品层需要统一会话状态和操作语义，同时保留平台差异：shell 发现、进程组和信号、ConPTY 可用性、路径格式、SSH 客户端安装、串口权限、系统凭据存储及安装包签名。现有源码包含平台实现，不代表 omniTerm 已完成三平台构建和端到端验证。
+窗口拒绝外部导航、弹窗与 webview。剪贴板读写只对可信主窗口开放所需权限。
+这些桌面边界不等于给用户 shell 添加沙箱；终端命令仍使用当前用户权限。
+Codex Agent 的审批和隔离由引擎及其配置管理。
 
-## 开源与上游关系
+## 跨平台验证与上游
 
-项目沿用 [Apache-2.0](../../LICENSE)，保留 [NOTICE](../../NOTICE) 与第三方许可。omniTerm 是基于 OpenAI Codex 的独立项目；继承源码与品牌、托管服务、账号权益应分别说明。
+桌面 CI 在三种操作系统上运行后端模拟测试和前端/主进程构建，跳过 Electron
+下载与原生模块编译。真实 Electron、node-pty、输入法、快捷键、进程清理和
+完整 Agent 必须另外在各平台验证；Windows 原生验收不能由 WSL 替代。
 
-上游历史和内部命名用于追踪来源与后续同步。面向用户的文档、发行物和连接工作台逐步采用 omniTerm 品牌；上游专属发布、签名和组织自动化需要先适配，再由 omniTerm 启用。
+项目沿用 [Apache-2.0](../../LICENSE)，保留 [NOTICE](../../NOTICE) 与第三方许可。
+内部 `codex-*` crate、协议字段和兼容名称继续保留，以降低上游同步成本。
+桌面与 Agent 发行需要匹配平台/架构，并独立处理签名、安装器和更新流程。

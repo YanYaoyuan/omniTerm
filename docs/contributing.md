@@ -9,13 +9,19 @@ scope, and cross-platform behavior.
 
 ## Development
 
-The current omniTerm command launcher lives in `omniterm-cli/`. It requires
-Node.js 22 or newer and has no npm runtime dependencies. From the repository
-root, run:
+The desktop app is the main product and lives in `omniterm-desktop/`.
+Follow the [desktop guide](../omniterm-desktop/README.md) to install dependencies
+and rebuild node-pty for Electron before starting the app. It uses its own npm
+lockfile, separately from the inherited Codex pnpm workspace.
+
+The optional launcher lives in `omniterm-cli/` and has no npm runtime
+dependencies. From the repository root, run the relevant checks:
 
 ```sh
 node omniterm-cli/bin/omniterm.js --help
 node --test omniterm-cli/test/cli.test.js
+npm --prefix omniterm-desktop test
+npm --prefix omniterm-desktop run build
 ```
 
 Read the [architecture](omniterm/architecture.md) and
@@ -24,11 +30,16 @@ which features are implemented and which remain proposals. Changes should
 account for macOS, Linux, and Windows; identify any platform limitations in the
 pull request and relevant documentation.
 
+Desktop backend tests use mocked PTYs. Follow the
+[interaction checklist](omniterm/desktop-test-plan.md) for changes to keyboard
+handling, terminal layout, connections, or process lifecycle, and record which
+platforms and real services/devices were tested.
+
 The inherited Rust Agent engine remains under `codex-rs/`. Keep changes to that
 engine focused so upstream improvements remain practical to merge. For Rust
-changes, follow the build instructions in [install.md](install.md), run
-formatting and the affected crate's tests, and report the results. The current
-omniTerm launcher CI does not replace Rust-core validation.
+changes, follow the [local package build guide](omniterm/local-build.md), run
+formatting and the affected crate's tests, and report the results. Desktop and
+launcher CI do not replace Rust-core validation.
 
 ## Pull requests
 

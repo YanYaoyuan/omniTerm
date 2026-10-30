@@ -1,76 +1,82 @@
 # omniTerm
 
-**An open-source, cross-platform terminal workspace with an Agent at its core.**
+**An open-source desktop terminal with a Codex Agent beside your sessions.**
 
-[简体中文](README.zh-CN.md) · [Architecture](docs/omniterm/architecture.md) · [Roadmap](docs/omniterm/roadmap.md) · [Contributing](CONTRIBUTING.md)
+[简体中文](README.zh-CN.md) · [Desktop guide](omniterm-desktop/README.md) · [Architecture](docs/omniterm/architecture.md) · [Roadmap](docs/omniterm/roadmap.md) · [Contributing](CONTRIBUTING.md)
 
-omniTerm aims to bring the terminal experience of iTerm2 and the remote-work toolbox of MobaXterm to **macOS, Linux, and Windows**, with a Codex-based Agent working alongside your sessions.
+omniTerm brings a graphical terminal workspace and remote connection tools together, taking inspiration from iTerm2 and MobaXterm and targeting **macOS, Linux, and Windows**. Its first Agent engine is built from the Codex Rust source in this repository.
 
-**Status: early CLI prototype.** This repository contains the Codex source foundation and an omniTerm command launcher. It uses your existing terminal and installed tools. A desktop terminal emulator, tabs, split panes, connection manager, and graphical SFTP browser are planned; they are not shipped yet.
+**Status: early desktop implementation.** A local macOS arm64 application package has been built and opened with a visible shell prompt. Real PTY checks passed under Electron for command input, `pwd`, resize, Ctrl+C, and process cleanup. GUI keyboard/Agent interaction, live remote connections, and other operating systems remain unverified; this is not yet a validated three-platform release. See the [validation record](docs/omniterm/desktop-test-plan.md#验收记录).
 
-## What works today
+## Desktop features
 
-| Command           | Initial implementation                                                              |
-| ----------------- | ----------------------------------------------------------------------------------- |
-| `omniterm agent`  | Launch Codex with its existing authentication, configuration, and approval controls |
-| `omniterm shell`  | Start a local shell in the current terminal                                         |
-| `omniterm ssh`    | Launch the system OpenSSH client                                                    |
-| `omniterm tunnel` | SSH local, remote, and dynamic forwarding (`-L`, `-R`, `-D`)                        |
-| `omniterm sftp`   | Start the system SFTP client                                                        |
-| `omniterm serial` | Serial console through optional Python `pyserial` miniterm                          |
-| `omniterm doctor` | Check locally available dependencies                                                |
+| Area | Current implementation |
+| --- | --- |
+| Local terminals | Independent shell tabs, folder selection, terminal search, copy/paste, and terminal display settings |
+| Agent pane | A separate interactive Codex TUI alongside the terminal; keyboard input, approvals, and cancellation use the engine's existing interface |
+| Connections | Graphical forms and saved profiles for SSH, SFTP, serial devices, and SSH forwarding |
+| SSH / forwarding | System OpenSSH sessions with local, remote, or dynamic forwarding |
+| SFTP | An interactive system SFTP client in a terminal tab |
+| Serial | A terminal session running optional Python / pyserial miniterm |
+| Local packaging | Packages the desktop app with the complete source-built Agent directory |
 
-These commands are separate sessions. Agent access to SSH or serial session context is a future integration. Shell, SSH, SFTP, and serial commands are ordinary local tools and are not routed through the Agent's sandbox or approval system.
+A graphical SFTP file browser, arbitrary terminal pane splitting, automatic session restoration, and structured Agent context sharing are still planned. The Agent does not automatically read other terminal tabs or acquire a remote SSH environment. Ordinary shell and connection sessions run with the user's permissions, separately from Codex's Agent sandbox and approval controls.
 
-## Try the prototype
+## Run the desktop app from source
 
-Install **Node.js 22 or later**, then:
+Install **Node.js 22.12 or later**, npm, and the native build tools required by Electron/node-pty. Clone the repository:
 
 ```sh
 git clone https://github.com/YanYaoyuan/omniTerm.git
 cd omniTerm
-node omniterm-cli/bin/omniterm.js --help
-node omniterm-cli/bin/omniterm.js doctor
-
-# Optional: install the command from local source
-npm install -g ./omniterm-cli
-omniterm --help
 ```
 
-No omniTerm npm package or desktop installer has been published yet. The launcher has no npm runtime dependencies. Install the tools you need:
+Follow the [local Agent build guide](docs/omniterm/local-build.md) to compile Rust `codex` and its companion programs into `dist/omniterm-agent/`. The desktop app discovers this package during development and includes it when packaging. A local shell can be used without a model account; Agent use requires the engine's authentication and configuration.
 
-- **Agent:** build the Rust Agent and its companion programs from this checkout using the [local source-build guide](docs/omniterm/local-build.md). The launcher discovers the resulting `dist/omniterm-agent/` package. An existing Codex executable can also be selected with `OMNITERM_CODEX_BIN`; see the [launcher guide](omniterm-cli/README.md).
-- **SSH, tunnels, SFTP:** system OpenSSH clients. Windows offers an OpenSSH Client optional feature.
-- **Serial:** Python 3 with `pyserial` installed in the selected Python environment; see the launcher guide.
+Then start the desktop app:
 
 ```sh
-omniterm agent "Explain this repository"
-omniterm shell
-omniterm ssh user@example.com
-omniterm tunnel -L 127.0.0.1:8080:localhost:80 user@example.com
-omniterm tunnel -D 127.0.0.1:1080 user@example.com
-omniterm sftp user@example.com
-omniterm serial /dev/ttyUSB0 115200
-# Windows: omniterm serial COM3 115200
+cd omniterm-desktop
+npm ci
+npm run rebuild
+npm start
 ```
 
-## Product direction
+`npm run rebuild` builds node-pty for Electron's native module ABI. Repeat it after changing Electron versions or platforms. The desktop has its own npm lockfile; its dependencies are separate from the inherited Codex pnpm workspace.
 
-1. **Terminal workspace:** desktop distribution for macOS, Linux, and Windows; tabs, panes, search, profiles, and PTY/ConPTY sessions.
-2. **Agent mode:** conversation alongside the active terminal, explicit context sharing, visible execution targets, approvals, and execution history, initially using the Codex app-server protocol.
-3. **Remote toolbox:** saved SSH connections, jump hosts, forwarding management, SFTP transfers, and serial profiles.
+SSH, forwarding, and SFTP require system OpenSSH clients. Serial connections require Python 3 with `pyserial`. See the [desktop guide](omniterm-desktop/README.md) for platform prerequisites, controls, and packaging.
 
-See the [roadmap and acceptance criteria](docs/omniterm/roadmap.md).
+To build a local application package from `omniterm-desktop/`:
 
-## Development
+```sh
+npm run package
+```
+
+Output is written to `dist/desktop/` at the repository root. The Agent package must match the application's platform and architecture. Signing, notarization, installers, and automatic updates are separate release work; no three-platform release is claimed here.
+
+## Optional command-line entry
+
+The lightweight CLI remains available for use in an existing terminal:
+
+```sh
+node omniterm-cli/bin/omniterm.js --help
+node omniterm-cli/bin/omniterm.js doctor
+node omniterm-cli/bin/omniterm.js agent --version
+```
+
+It provides `agent`, `shell`, `ssh`, `sftp`, `tunnel`, and `serial` commands. See the [CLI guide](omniterm-cli/README.md). No omniTerm npm package has been published.
+
+## Development and verification
 
 ```sh
 node --test omniterm-cli/test/cli.test.js
+npm --prefix omniterm-desktop test
+npm --prefix omniterm-desktop run build
 ```
 
-`codex-rs/`, `codex-cli/`, and `sdk/` retain the inherited Agent foundation. Internal `codex-*` names and protocols remain intact to make upstream updates practical. New code lives in `omniterm-cli/`; product design lives in `docs/omniterm/`.
+CI is configured to test the CLI and build/test desktop code on macOS, Linux, and Windows. Desktop CI uses mocked backend tests and skips Electron downloads and native module build scripts. It does not launch the GUI, exercise real PTYs, build the Rust engine, or test remote servers and serial hardware. Use the [desktop interaction checklist](docs/omniterm/desktop-test-plan.md) for native runtime acceptance and record untested cases explicitly.
 
-The new CI checks the launcher on macOS, Linux, and Windows. It does not certify every Codex feature, remote server, or serial device. Upstream infrastructure and release workflows are [archived](.github/upstream-workflows/README.md); the full inherited Rust workspace is not covered by this initial CI.
+`omniterm-desktop/` contains the desktop app, `omniterm-cli/` the optional launcher, and `docs/omniterm/` the product documentation. The inherited `codex-rs/`, `codex-cli/`, and `sdk/` retain their internal names to keep upstream updates practical. Upstream organization-specific workflows are [archived](.github/upstream-workflows/README.md).
 
 ## License and origin
 

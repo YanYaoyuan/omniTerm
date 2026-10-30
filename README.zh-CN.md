@@ -1,73 +1,85 @@
 # omniTerm
 
-**以 Agent 为核心的开源跨平台终端工作台。**
+**让 Codex Agent 与终端会话并肩工作的开源桌面终端。**
 
-[English](README.md) · [架构设计](docs/omniterm/architecture.md) · [开发路线图](docs/omniterm/roadmap.md) · [参与贡献](CONTRIBUTING.md)
+[English](README.md) · [桌面指南](omniterm-desktop/README.md) · [架构设计](docs/omniterm/architecture.md) · [开发路线图](docs/omniterm/roadmap.md) · [参与贡献](CONTRIBUTING.md)
 
-omniTerm 面向 **macOS、Linux 和 Windows**，以 iTerm2 的终端体验、MobaXterm 的远程工具集为产品对标，核心亮点是与终端会话结合的 **Agent 模式**。第一阶段使用本仓库的 Codex 作为 Agent 基础。
+omniTerm 面向 **macOS、Linux 和 Windows**，以 iTerm2 的终端体验、MobaXterm 的远程工具集为参考，在图形工作台中整合终端与 Agent。首个 Agent 引擎来自本仓库的 Codex Rust 源码。
 
-**当前阶段：CLI 原型。** 已保留完整 Codex 源码并增加统一命令入口，通过现有终端和外部工具提供基础能力。桌面终端模拟器、多标签、分屏、连接管理器和图形 SFTP 浏览器尚未实现。
+**当前阶段：桌面初版实现。** 已完成 macOS arm64 本机应用打包并实际打开窗口，能看到真实 Shell 提示符。在 Electron 中通过了真实 PTY 的命令输入、`pwd`、尺寸变化、Ctrl+C 与进程清理检查。GUI 键盘与 Agent 交互、真实远程连接及其他操作系统仍未验收，尚未完成三平台发行验证。详见 [验证记录](docs/omniterm/desktop-test-plan.md#验收记录)。
 
-## 当前能力
+## 桌面能力
 
-| 命令              | 当前实现                                    |
-| ----------------- | ------------------------------------------- |
-| `omniterm agent`  | 启动 Codex，沿用其认证、配置和审批能力      |
-| `omniterm shell`  | 在当前终端启动本地 Shell                    |
-| `omniterm ssh`    | 调用系统 OpenSSH 客户端                     |
-| `omniterm tunnel` | SSH 本地、远程和动态端口转发                |
-| `omniterm sftp`   | 调用系统 SFTP 客户端                        |
-| `omniterm serial` | 通过可选的 Python `pyserial` 打开串口控制台 |
-| `omniterm doctor` | 检查所需工具是否可用                        |
+| 功能 | 当前实现 |
+| --- | --- |
+| 本地终端 | 独立 Shell 多标签、目录选择、终端搜索、复制粘贴与终端显示设置 |
+| Agent 分栏 | 在终端旁运行独立 Codex TUI，通过键盘完成输入、审批与取消 |
+| 连接管理 | SSH、SFTP、串口与 SSH 转发的图形表单和已保存连接配置 |
+| SSH / 端口转发 | 调用系统 OpenSSH，提供本地、远程及动态转发 |
+| SFTP | 在终端标签中运行系统交互式 SFTP 客户端 |
+| 串口 | 通过可选的 Python / pyserial miniterm 建立终端会话 |
+| 本机打包 | 将桌面应用与从源码构建的完整 Agent 包一同打包 |
 
-这些命令目前是独立会话。Agent 不会自动读取 SSH 或串口会话内容；上下文共享与远程执行审批属于后续集成工作。普通终端命令也不受 Codex 的沙箱和审批机制管理。
+图形 SFTP 文件浏览、任意终端分屏、会话自动恢复和结构化 Agent 上下文共享仍待开发。Agent 不会自动读取其他终端标签，也不会因打开 SSH 标签而获得远程执行环境。普通 Shell 和连接会话使用当前用户权限，独立于 Codex Agent 的沙箱与审批机制。
 
-## 快速开始
+## 从源码启动桌面应用
 
-需要 **Node.js 22 或更新版本**：
+准备 **Node.js 22.12 或更新版本**、npm，以及 Electron/node-pty 所需的原生编译工具，然后克隆仓库：
 
 ```sh
 git clone https://github.com/YanYaoyuan/omniTerm.git
 cd omniTerm
-node omniterm-cli/bin/omniterm.js --help
-node omniterm-cli/bin/omniterm.js doctor
-
-# 可选：从本地源码安装命令
-npm install -g ./omniterm-cli
-omniterm --help
 ```
 
-尚未发布 omniTerm npm 包或桌面安装包。命令入口不依赖其他 npm 运行库；按需准备 Codex、OpenSSH，以及安装了 `pyserial` 的 Python 3 环境。Windows 可安装系统的 OpenSSH Client 可选功能。
+按照 [本地 Agent 构建指南](docs/omniterm/local-build.md) 编译 Rust `codex` 和辅助程序，生成 `dist/omniterm-agent/`。开发时桌面应用会发现该包，打包时会将它放入应用资源目录。本地 Shell 不要求模型账号；使用 Agent 需要完成引擎的认证与配置。
+
+随后启动桌面应用：
 
 ```sh
-omniterm agent "解释这个仓库的架构"
-omniterm shell
-omniterm ssh user@example.com
-omniterm tunnel -L 127.0.0.1:8080:localhost:80 user@example.com
-omniterm tunnel -D 127.0.0.1:1080 user@example.com
-omniterm sftp user@example.com
-omniterm serial /dev/ttyUSB0 115200
-# Windows: omniterm serial COM3 115200
+cd omniterm-desktop
+npm ci
+npm run rebuild
+npm start
 ```
 
-按照 [本地源码构建指南](docs/omniterm/local-build.md) 编译 Rust Agent 及辅助程序后，命令入口会发现 `dist/omniterm-agent/` 中的完整包。也可通过 `OMNITERM_CODEX_BIN` 指定已有 Codex 可执行文件。详细依赖、平台差异和参数见 [CLI 指南](omniterm-cli/README.md)。
+`npm run rebuild` 为 Electron 的原生模块 ABI 重建 node-pty；更换 Electron 版本或平台后需要重新执行。桌面应用使用独立的 npm 锁文件，与继承的 Codex pnpm workspace 分开管理。
 
-## 下一步
+SSH、转发和 SFTP 需要系统 OpenSSH 客户端；串口需要安装了 `pyserial` 的 Python 3。平台前提、操作方式与打包细节见 [桌面指南](omniterm-desktop/README.md)。
 
-1. **桌面终端：** 跨平台窗口、多标签、分屏、搜索、主题、PTY/ConPTY 和会话生命周期。
-2. **Agent 工作区：** 终端旁的 Agent 面板、明确的上下文共享、执行目标、审批和操作记录，优先对接 Codex app-server。
-3. **远程工具箱：** SSH 连接配置、跳板机、端口转发管理、SFTP 文件传输和串口配置。
+在 `omniterm-desktop/` 目录中生成本机应用包：
 
-具体范围和验收标准见 [路线图](docs/omniterm/roadmap.md)。CI 覆盖新命令入口的 macOS、Linux、Windows 测试，不代表所有 Agent 功能、服务器和串口硬件已完成兼容性验证。
+```sh
+npm run package
+```
+
+输出位于仓库根目录 `dist/desktop/`。Agent 包必须与应用的平台和架构一致。签名、公证、安装器与自动更新属于后续发行工作，当前不宣称三平台已经发布。
+
+## 可选 CLI 入口
+
+仍可在已有终端中使用轻量命令入口：
+
+```sh
+node omniterm-cli/bin/omniterm.js --help
+node omniterm-cli/bin/omniterm.js doctor
+node omniterm-cli/bin/omniterm.js agent --version
+```
+
+它提供 `agent`、`shell`、`ssh`、`sftp`、`tunnel` 和 `serial` 命令，详见 [CLI 指南](omniterm-cli/README.md)。尚未发布 omniTerm npm 包。
+
+## 开发与验证
+
+```sh
+node --test omniterm-cli/test/cli.test.js
+npm --prefix omniterm-desktop test
+npm --prefix omniterm-desktop run build
+```
+
+CI 配置覆盖 macOS、Linux、Windows 的 CLI 测试，以及桌面代码构建和后端模拟测试。桌面 CI 跳过 Electron 下载与原生模块构建脚本，不启动 GUI、不连接真实 PTY，也不编译 Rust 引擎或验证远程服务器与串口设备。原生运行验收请按 [桌面交互清单](docs/omniterm/desktop-test-plan.md) 执行，并明确记录未测试项目。
+
+桌面代码位于 `omniterm-desktop/`，可选命令入口位于 `omniterm-cli/`，产品文档位于 `docs/omniterm/`。`codex-rs/`、`codex-cli/`、`sdk/` 保留上游内部命名，便于持续同步。具体后续范围见 [路线图](docs/omniterm/roadmap.md)。
 
 ## 开源与贡献
 
 项目采用 [Apache-2.0](LICENSE)，保留 [NOTICE](NOTICE) 和第三方声明。欢迎通过 [Issues](https://github.com/YanYaoyuan/omniTerm/issues) 和 PR 参与。
-
-`codex-rs/`、`codex-cli/`、`sdk/` 保留为上游 Agent 基础；`codex-*` 内部名称暂不改动，以便持续同步上游。新增代码位于 `omniterm-cli/`。
-
-```sh
-node --test omniterm-cli/test/cli.test.js
-```
 
 omniTerm 是基于 OpenAI Codex 的独立项目，不是 OpenAI、iTerm2 或 MobaXterm 的官方产品。[来源与改动记录](docs/omniterm/upstream.md)。

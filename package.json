@@ -7,7 +7,10 @@
     "format:fix": "prettier --write *.json *.md docs/*.md .github/workflows/*.yml **/*.js",
     "write-hooks-schema": "cargo run --manifest-path ./codex-rs/Cargo.toml -p codex-hooks --bin write_hooks_schema_fixtures",
     "omniterm": "node omniterm-cli/bin/omniterm.js",
-    "test:omniterm": "node --test omniterm-cli/test/cli.test.js"
+    "test:omniterm": "node --test omniterm-cli/test/cli.test.js",
+    "desktop": "npm --prefix omniterm-desktop start",
+    "desktop:build": "npm --prefix omniterm-desktop run build",
+    "desktop:package": "npm --prefix omniterm-desktop run package"
   },
   "devDependencies": {
     "prettier": "^3.5.3"

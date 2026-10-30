@@ -12,6 +12,10 @@ their individual licenses and notices.
 
 - Replaced the product README and added a Chinese README.
 - Added the independent `omniterm-cli/` launcher and tests.
+- Added the `omniterm-desktop/` Electron/React application with xterm.js,
+  node-pty sessions, connection forms, saved profiles, and a Codex TUI pane.
+- Added desktop packaging that includes the complete source-built Agent package,
+  a native interaction test plan, and separate desktop code CI.
 - Renamed root workspace metadata, added launcher commands, and registered the
   dependency-free package in the workspace and lockfile.
 - Added architecture and roadmap documents.

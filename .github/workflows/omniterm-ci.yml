@@ -33,3 +33,30 @@ jobs:
         run: node --test omniterm-cli/test/cli.test.js
       - name: Check the command entry point
         run: node omniterm-cli/bin/omniterm.js --help
+
+  desktop:
+    name: Desktop code / ${{ matrix.os }} / Node 24
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: omniterm-desktop
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: omniterm-desktop/package-lock.json
+      - name: Install desktop dependencies without native or Electron setup
+        run: npm ci --ignore-scripts
+      - name: Test desktop backend with mocked PTYs
+        run: npm test
+      - name: Build desktop main process and renderer
+        run: npm run build
