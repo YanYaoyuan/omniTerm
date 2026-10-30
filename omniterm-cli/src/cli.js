@@ -135,6 +135,11 @@ export function resolveCodex(inputOptions = {}) {
   }
   const paths = pathFor(options.platform);
   const name = options.platform === "win32" ? "codex.exe" : "codex";
+  const packaged = executableCommand(
+    paths.join(options.repositoryRoot, "dist", "omniterm-agent", "bin", name),
+    options,
+  );
+  if (packaged) return packaged;
   for (const profile of ["debug", "release"]) {
     const command = executableCommand(
       paths.join(options.repositoryRoot, "codex-rs", "target", profile, name),

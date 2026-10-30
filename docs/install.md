@@ -5,6 +5,10 @@
 > [omniterm-cli](../omniterm-cli/README.md). The requirements below come from the
 > upstream Codex documentation; desktop omniTerm packaging is still planned.
 
+For a complete Agent package that the omniTerm launcher discovers automatically,
+follow [the local source build guide](omniterm/local-build.md). It builds the
+Agent and its required helper together and includes runtime resources.
+
 ### System requirements
 
 | Requirement                 | Details                                                         |
@@ -36,11 +40,11 @@ cargo install --locked dotslash
 # Install nextest for the `just test` helper.
 cargo install --locked cargo-nextest
 
-# Build Codex.
-cargo build
+# Build the Agent and its required code-mode helper, without unrelated workspace binaries.
+cargo build --locked --bin codex --bin codex-code-mode-host
 
 # Launch the TUI with a sample prompt.
-cargo run --bin codex -- "explain this codebase to me"
+cargo run --bin codex -- --no-daemon "explain this codebase to me"
 
 # After making changes, use the root justfile helpers (they default to codex-rs):
 just fmt

@@ -39,7 +39,7 @@ omniterm --help
 
 No omniTerm npm package or desktop installer has been published yet. The launcher has no npm runtime dependencies. Install the tools you need:
 
-- **Agent:** a Codex executable built from this repository or already installed. Set `OMNITERM_CODEX_BIN` to choose an executable explicitly. See the [launcher guide](omniterm-cli/README.md) and [Agent build instructions](docs/install.md).
+- **Agent:** build the Rust Agent and its companion programs from this checkout using the [local source-build guide](docs/omniterm/local-build.md). The launcher discovers the resulting `dist/omniterm-agent/` package. An existing Codex executable can also be selected with `OMNITERM_CODEX_BIN`; see the [launcher guide](omniterm-cli/README.md).
 - **SSH, tunnels, SFTP:** system OpenSSH clients. Windows offers an OpenSSH Client optional feature.
 - **Serial:** Python 3 with `pyserial` installed in the selected Python environment; see the launcher guide.
 

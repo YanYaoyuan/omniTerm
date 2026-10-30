@@ -50,7 +50,7 @@ omniterm serial /dev/ttyUSB0 115200
 # Windows: omniterm serial COM3 115200
 ```
 
-可通过 `OMNITERM_CODEX_BIN` 指定 Codex 可执行文件。详细依赖、平台差异和参数见 [CLI 指南](omniterm-cli/README.md)；从源码编译 Agent 见 [构建说明](docs/install.md)。
+按照 [本地源码构建指南](docs/omniterm/local-build.md) 编译 Rust Agent 及辅助程序后，命令入口会发现 `dist/omniterm-agent/` 中的完整包。也可通过 `OMNITERM_CODEX_BIN` 指定已有 Codex 可执行文件。详细依赖、平台差异和参数见 [CLI 指南](omniterm-cli/README.md)。
 
 ## 下一步
 

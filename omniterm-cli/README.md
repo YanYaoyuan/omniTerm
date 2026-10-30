@@ -72,8 +72,11 @@ On Windows, serial connections prefer `VIRTUAL_ENV\Scripts\python.exe`, then `py
 The launcher searches in this order:
 
 1. `OMNITERM_CODEX_BIN`, when set (a single executable path or Codex's `.js` entrypoint).
-2. This checkout's `codex-rs/target/debug/codex` then `codex-rs/target/release/codex` (`.exe` on Windows).
-3. `codex` on `PATH` (including the standard global npm JS entrypoint on Windows).
+2. This checkout's source-built package at `dist/omniterm-agent/bin/codex` (`codex.exe` on Windows).
+3. This checkout's raw `codex-rs/target/debug/codex` then `codex-rs/target/release/codex` (`.exe` on Windows).
+4. `codex` on `PATH` (including the standard global npm JS entrypoint on Windows).
+
+After building and packaging the Rust Agent into `dist/omniterm-agent`, the launcher discovers it without any Codex installation on `PATH`. Keep that package directory intact, including its auxiliary executables and bundled tools. `scripts/build_codex_package.py` assembles the package from source-built artifacts; the Node launcher itself does not compile or download the Rust engine. Run `omniterm doctor` to check which executable was selected, then `omniterm agent --version` to verify that executable starts. This lookup support does not by itself establish that a Rust build or an authenticated Agent session has passed.
 
 For custom Cargo target directories or a separately installed launcher, set `OMNITERM_CODEX_BIN` explicitly. It is a path, not a command string containing arguments. Windows `.cmd`/`.bat` overrides are rejected; point to the native executable or `@openai/codex/bin/codex.js` instead. Agent authentication, model configuration, approvals, and sandbox behavior remain those of the selected Codex installation, including its existing Codex home/configuration.
 

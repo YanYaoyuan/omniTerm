@@ -40,9 +40,15 @@ test("agent uses explicit executable and preserves all argument boundaries", () 
   const result = planCommand(
     "agent",
     args,
-    environment(["/custom/codex"], {
-      env: { OMNITERM_CODEX_BIN: "/custom/codex", PATH: "/tools" },
-    }),
+    environment(
+      [
+        "/custom/codex",
+        "/repo/dist/omniterm-agent/bin/codex",
+        "/repo/codex-rs/target/debug/codex",
+        "/tools/codex",
+      ],
+      { env: { OMNITERM_CODEX_BIN: "/custom/codex", PATH: "/tools" } },
+    ),
   );
   assert.deepEqual(result, { executable: "/custom/codex", args });
 });
@@ -59,8 +65,9 @@ test("explicit missing Agent override fails instead of silently using another bi
   );
 });
 
-test("Agent resolution prefers the local debug build, release build, then PATH", () => {
+test("Agent resolution prefers the packaged build, raw debug/release builds, then PATH", () => {
   const files = [
+    "/repo/dist/omniterm-agent/bin/codex",
     "/repo/codex-rs/target/debug/codex",
     "/repo/codex-rs/target/release/codex",
     "/tools/codex",
@@ -71,6 +78,32 @@ test("Agent resolution prefers the local debug build, release build, then PATH",
       files[index],
     );
   }
+});
+
+test("the packaged Agent is available without any Codex on PATH", () => {
+  const executable = "/repo/dist/omniterm-agent/bin/codex";
+  const options = environment([executable], { env: { PATH: "" } });
+  assert.deepEqual(planCommand("agent", ["--version"], options), {
+    executable,
+    args: ["--version"],
+  });
+});
+
+test("Windows packaged Agent paths with spaces remain a single executable path", () => {
+  const executable =
+    "C:\\my projects\\omniTerm\\dist\\omniterm-agent\\bin\\codex.exe";
+  const options = environment([executable], {
+    platform: "win32",
+    env: { Path: "" },
+    repositoryRoot: "C:\\my projects\\omniTerm",
+  });
+  assert.deepEqual(
+    planCommand("agent", ["exec", "explain this project"], options),
+    {
+      executable,
+      args: ["exec", "explain this project"],
+    },
+  );
 });
 
 test("Windows npm Codex entrypoint runs via Node without using a .cmd shell", () => {
