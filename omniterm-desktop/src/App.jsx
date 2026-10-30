@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   ArrowDown, ArrowRight, ArrowUp, ArrowsLeftRight, ArrowsOut, ArrowsIn, Broadcast, CaretRight, Check, Circle,
   CircleNotch, Code, Command, Copy, Cpu, DotsThree, FolderOpen, FolderSimple,
@@ -7,14 +7,14 @@ import {
   ClipboardText, WarningCircle, SlidersHorizontal, ArrowClockwise, TextAa,
 } from "@phosphor-icons/react";
 import { TerminalView } from "./TerminalView.jsx";
-import { ConnectionDialog, connectionLabels } from "./ConnectionDialog.jsx";
+import { ConnectionDialog, SshImportDialog, connectionLabels, markSshHostsSeen, seenSshHosts } from "./ConnectionDialog.jsx";
 import { CommandPalette } from "./CommandPalette.jsx";
 import { MetricsBar, SftpPanel } from "./RemotePanels.jsx";
 import { createRemoteStore } from "./remote-utils.js";
 import { isTerminalReply } from "./terminal-utils.js";
 import { computeLayout, equalize, neighborPane, pane, paneIds, removePane, setRatio, splitPane } from "./layout.js";
 import { SHORTCUTS, matchShortcut, shortcutLabel, tabCycle, tabNumber } from "./shortcuts.js";
-import { THEMES, themeFor } from "./themes.js";
+import { THEMES, backdrop, themeFor, themeTokens } from "./themes.js";
 import { WORKSPACE_KEY, parseWorkspace, restoreTree, serializeWorkspace } from "./workspace.js";
 
 const api = window.omniterm;
@@ -24,7 +24,10 @@ const ignoreRemote = () => () => {};
 export const defaults = {
   fontSize: 13, fontFamily: "system", lineHeight: 1.22, scrollback: 10000, cursorBlink: true, cursorStyle: "bar",
   theme: "midnight", gpu: true, copyOnSelect: false, optionAsMeta: false, dimInactive: true, restoreWorkspace: true, remotePanels: true,
+  sshConfigPrompt: true, backgroundMode: "opaque", backgroundOpacity: 0.8, backgroundImage: null, backgroundImageOpacity: 0.3, backgroundImageFit: "cover",
 };
+const backgroundModes = { opaque: "不透明", translucent: "半透明", transparent: "透明" };
+const backgroundFits = { cover: { label: "铺满", size: "cover", repeat: "no-repeat" }, contain: { label: "适应", size: "contain", repeat: "no-repeat" }, tile: { label: "平铺", size: "auto", repeat: "repeat" } };
 const kindIcons = { shell: TerminalWindow, agent: Robot, ssh: HardDrives, sftp: FolderOpen, serial: PlugsConnected, tunnel: ArrowsLeftRight };
 const platformNames = { darwin: "macOS", win32: "Windows", linux: "Linux" };
 const fontNames = { system: "系统等宽字体", jetbrains: "JetBrains Mono", fira: "Fira Code", cascadia: "Cascadia Code", sarasa: "Sarasa Mono（中英等宽）" };
@@ -62,11 +65,43 @@ function Toggle({ value, label, onChange }) {
   return <button className={`switch ${value ? "on" : ""}`} role="switch" aria-checked={value} aria-label={label} onClick={() => onChange(!value)}><span /></button>;
 }
 
-function SettingsDialog({ settings, setSettings, info, onClose }) {
+function Slider({ value, minimum, maximum, label, onChange }) {
+  return <div className="setting-slider"><input type="range" aria-label={label} min={minimum} max={maximum} step="5" value={Math.round(value * 100)} onChange={(event) => onChange(Number(event.target.value) / 100)} /><span>{Math.round(value * 100)}%</span></div>;
+}
+
+function ThemeMenu({ current, onSelect }) {
+  const [open, setOpen] = useState(false);
+  const wrap = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (event) => { if (!wrap.current?.contains(event.target)) setOpen(false); };
+    const escape = (event) => { if (event.key === "Escape") setOpen(false); };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("keydown", escape);
+    return () => { window.removeEventListener("pointerdown", close); window.removeEventListener("keydown", escape); };
+  }, [open]);
+  return <div className="theme-menu-wrap" ref={wrap}>
+    <button className="titlebar-button" title="切换主题" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)}><Palette size={15} /><span>主题</span></button>
+    {open && <div className="theme-menu" role="menu">{Object.entries(THEMES).map(([id, item]) => <button key={id} role="menuitemradio" aria-checked={current === id} className={current === id ? "active" : ""} onClick={() => { onSelect(id); setOpen(false); }}><span className="theme-dot" style={{ background: item.terminal.background }} /><span>{item.name}</span>{current === id && <Check size={13} />}</button>)}</div>}
+  </div>;
+}
+
+function SettingsDialog({ settings, setSettings, info, notify, onImportSsh, onClose }) {
   const dialog = useRef(null);
   useEffect(() => { dialog.current.showModal(); }, []);
   const update = (key) => (value) => setSettings((previous) => ({ ...previous, [key]: value }));
   const theme = themeFor(settings.theme);
+  const needsRestart = (settings.backgroundMode !== "opaque") !== info.windowTransparent;
+  async function chooseImage() {
+    try {
+      const image = await api.chooseBackgroundImage();
+      if (image) setSettings((previous) => ({ ...previous, backgroundImage: image }));
+    } catch (error) { notify(error.message); }
+  }
+  async function clearImage() {
+    setSettings((previous) => ({ ...previous, backgroundImage: null }));
+    try { await api.clearBackgroundImage(); } catch (error) { notify(error.message); }
+  }
   return <dialog className="modal settings-modal" ref={dialog} onCancel={(event) => { event.preventDefault(); onClose(); }} onClick={(event) => { if (event.target === dialog.current) onClose(); }}>
     <div className="modal-heading"><div className="modal-heading-icon"><SlidersHorizontal size={22} /></div><div><h2>终端设置</h2><p>让工作区更适合你的习惯</p></div><IconButton className="modal-close" label="关闭设置" onClick={onClose}><X size={18} /></IconButton></div>
     <div className="settings-content">
@@ -77,6 +112,14 @@ function SettingsDialog({ settings, setSettings, info, onClose }) {
           <span>{item.name}</span>
         </button>)}
       </div>
+      <div className="setting-row"><div><strong>窗口背景</strong><span>半透明和透明会透出桌面；Linux 需要桌面合成器</span></div><div className="segmented" role="radiogroup" aria-label="窗口背景">{Object.entries(backgroundModes).map(([id, label]) => <button key={id} role="radio" aria-checked={settings.backgroundMode === id} className={settings.backgroundMode === id ? "active" : ""} onClick={() => update("backgroundMode")(id)}>{label}</button>)}</div></div>
+      {settings.backgroundMode === "translucent" && <div className="setting-row"><div><strong>背景不透明度</strong><span>数值越低，透出的桌面越多</span></div><Slider label="背景不透明度" value={settings.backgroundOpacity} minimum={10} maximum={95} onChange={update("backgroundOpacity")} /></div>}
+      {needsRestart && <div className="setting-notice"><span>切换{settings.backgroundMode === "opaque" ? "回不透明窗口" : "到透明窗口"}需要重启应用，当前会话会结束。</span><button className="button secondary" onClick={() => api.relaunch()}>立即重启</button></div>}
+      <div className="setting-row"><div><strong>背景图片</strong><span>{settings.backgroundImage?.name || "支持 PNG、JPEG、WebP、GIF、AVIF、BMP，最大 32 MB"}</span></div><div className="setting-buttons"><button className="button secondary" onClick={chooseImage}>选择图片…</button>{settings.backgroundImage && <button className="button ghost" onClick={clearImage}>移除</button>}</div></div>
+      {settings.backgroundImage && <>
+        <div className="setting-row"><div><strong>图片强度</strong><span>降低后文字更清晰</span></div><Slider label="图片强度" value={settings.backgroundImageOpacity} minimum={5} maximum={100} onChange={update("backgroundImageOpacity")} /></div>
+        <div className="setting-row"><div><strong>图片填充</strong><span>图片在窗口中的显示方式</span></div><select value={settings.backgroundImageFit} onChange={(event) => update("backgroundImageFit")(event.target.value)}>{Object.entries(backgroundFits).map(([id, item]) => <option key={id} value={id}>{item.label}</option>)}</select></div>
+      </>}
       <div className="setting-row"><div><strong>字体</strong><span>未安装的字体会回退到系统等宽字体</span></div><select value={settings.fontFamily} onChange={(event) => update("fontFamily")(event.target.value)}>{Object.entries(fontNames).map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select></div>
       <div className="setting-row"><div><strong>字体大小</strong><span>应用到所有终端和 Agent 会话</span></div><div className="number-stepper"><button onClick={() => update("fontSize")(Math.max(9, settings.fontSize - 1))} disabled={settings.fontSize <= 9} aria-label="缩小字体">−</button><span>{settings.fontSize} px</span><button onClick={() => update("fontSize")(Math.min(28, settings.fontSize + 1))} disabled={settings.fontSize >= 28} aria-label="放大字体">+</button></div></div>
       <div className="setting-row"><div><strong>行高</strong><span>行与行之间的距离</span></div><select value={settings.lineHeight} onChange={(event) => update("lineHeight")(Number(event.target.value))}>{[1, 1.1, 1.22, 1.35, 1.5].map((value) => <option key={value} value={value}>{value}</option>)}</select></div>
@@ -90,6 +133,7 @@ function SettingsDialog({ settings, setSettings, info, onClose }) {
       {info.platform === "darwin" && <div className="setting-row"><div><strong>Option 作为 Meta 键</strong><span>用于 Emacs、readline 的 Alt 组合键</span></div><Toggle value={settings.optionAsMeta} label="Option 作为 Meta 键" onChange={update("optionAsMeta")} /></div>}
       <div className="setting-row"><div><strong>启动时恢复工作区</strong><span>重新打开本地标签、分屏布局和各窗格目录，不会重新执行命令</span></div><Toggle value={settings.restoreWorkspace} label="启动时恢复工作区" onChange={update("restoreWorkspace")} /></div>
       <div className="setting-row"><div><strong>SSH 文件面板与主机监控</strong><span>新建 SSH 连接时共享登录、显示 SFTP 文件和远程主机指标；对已打开的连接不生效</span></div><Toggle value={settings.remotePanels} label="SSH 文件面板与主机监控" onChange={update("remotePanels")} /></div>
+      <div className="setting-row"><div><strong>启动时检查 SSH 配置</strong><span>~/.ssh/config 中出现新主机时询问是否导入</span></div><div className="setting-buttons"><button className="button secondary" onClick={onImportSsh}>立即导入…</button><Toggle value={settings.sshConfigPrompt} label="启动时检查 SSH 配置" onChange={update("sshConfigPrompt")} /></div></div>
       <div className="setting-row"><div><strong>回滚缓冲区</strong><span>保留每个终端的历史输出行数</span></div><select value={settings.scrollback} onChange={(event) => update("scrollback")(Number(event.target.value))}><option value="1000">1,000 行</option><option value="5000">5,000 行</option><option value="10000">10,000 行</option><option value="50000">50,000 行</option><option value="100000">100,000 行</option></select></div>
       <div className="settings-section-label">键盘快捷键</div>
       {Object.entries(SHORTCUTS).map(([name, definition]) => <div className="shortcut-row" key={name}><span>{definition.label}</span><kbd>{shortcutLabel(name, info.platform)}</kbd></div>)}
@@ -98,7 +142,7 @@ function SettingsDialog({ settings, setSettings, info, onClose }) {
       <div className="shortcut-row"><span>打开链接</span><kbd>{info.platform === "darwin" ? "⌘" : "Ctrl"}+点击</kbd></div>
       <div className="settings-about"><div className="mini-logo"><TerminalWindow size={20} /></div><div><strong>omniTerm <span>{info.version}</span></strong><p>你的终端，你的 Agent。</p></div><span className="platform-pill">{platformNames[info.platform] || info.platform}</span></div>
     </div>
-    <div className="modal-actions"><button className="button ghost" onClick={() => setSettings(defaults)}>恢复默认</button><button className="button primary" onClick={onClose}>完成<Check size={15} /></button></div>
+    <div className="modal-actions"><button className="button ghost" onClick={() => { if (settings.backgroundImage) clearImage(); setSettings(defaults); }}>恢复默认</button><button className="button primary" onClick={onClose}>完成<Check size={15} /></button></div>
   </dialog>;
 }
 
@@ -140,6 +184,7 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [deleting, setDeleting] = useState(null);
+  const [sshImport, setSshImport] = useState(null);
   const [settings, setSettings] = useState(readSettings);
   const [toast, setToast] = useState(null);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -340,6 +385,12 @@ export function App() {
         }
         // A failed start must not overwrite the saved layout with an empty one.
         ready.current = true;
+        if (readSettings().sshConfigPrompt) {
+          const seen = seenSshHosts();
+          const config = await api.sshConfigHosts();
+          const hosts = config.hosts.filter(({ alias }) => !seen.has(alias) && !details.profiles?.some((profile) => profile.kind === "ssh" && profile.host === alias));
+          if (hosts.length) setSshImport({ ...config, hosts, startup: true });
+        }
       } catch (error) { setBootError(error.message || String(error)); }
     }
     initialize();
@@ -359,6 +410,21 @@ export function App() {
     try { localStorage.setItem("omniterm-terminal-settings", JSON.stringify(settings)); }
     catch { notify("无法保存终端外观设置，本次会话中仍然生效。"); }
   }, [settings, notify]);
+
+  const windowTransparent = Boolean(info?.windowTransparent);
+  useEffect(() => {
+    if (!info) return;
+    Promise.resolve(api.setWindowTransparency(settings.backgroundMode !== "opaque")).catch((error) => notify(error.message));
+  }, [info, settings.backgroundMode, notify]);
+  const scene = backdrop(settings, windowTransparent);
+  const tokens = themeTokens(themeFor(settings.theme));
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    for (const [name, value] of Object.entries(tokens)) root.style.setProperty(name, value);
+    root.style.setProperty("--panel-alpha", `${Math.round(scene.panelAlpha * 100)}%`);
+    root.style.setProperty("background", windowTransparent ? "transparent" : "var(--bg)");
+    document.querySelector('meta[name="color-scheme"]')?.setAttribute("content", tokens["color-scheme"]);
+  }, [settings.theme, scene.panelAlpha, windowTransparent]);
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
   const activeSession = sessions.find((session) => session.id === activeTab?.focus);
@@ -414,6 +480,20 @@ export function App() {
       notify("已将选中内容发送到 Agent 输入框，补充问题后按回车提交。", "success");
     } catch (error) { notify(error.message); }
   }, [activeTab, agentSession, notify, focusLater]);
+  const openSshImport = useCallback(async () => {
+    try {
+      const config = await api.sshConfigHosts();
+      if (config.error) { notify(config.error); return; }
+      const hosts = config.hosts.filter(({ alias }) => !profiles.some((profile) => profile.kind === "ssh" && profile.host === alias));
+      if (hosts.length) { setSettingsOpen(false); setSshImport({ ...config, hosts }); }
+      else notify(config.hosts.length ? "~/.ssh/config 中的主机都已导入。" : "~/.ssh/config 中没有可导入的主机。", "success");
+    } catch (error) { notify(error.message); }
+  }, [profiles, notify]);
+  const finishSshImport = () => {
+    markSshHostsSeen(sshImport.hosts.map((host) => host.alias));
+    setSshImport(null);
+    if (selectedSession) focusLater(selectedSession.id);
+  };
   const toggleBroadcast = useCallback(() => {
     if (!activeTab) return;
     const enabled = !activeTab.broadcast;
@@ -489,7 +569,7 @@ export function App() {
 
   useEffect(() => {
     const handler = (event) => {
-      if (dialog || settingsOpen || deleting || paletteOpen || !info) return;
+      if (dialog || settingsOpen || deleting || paletteOpen || sshImport || !info) return;
       const cycle = tabCycle(event);
       const number = tabNumber(event, info.platform);
       const name = matchShortcut(event, info.platform);
@@ -504,7 +584,7 @@ export function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [dialog, settingsOpen, deleting, paletteOpen, info, activeTabId, selectTab]);
+  }, [dialog, settingsOpen, deleting, paletteOpen, sshImport, info, activeTabId, selectTab]);
 
   // Built only while the palette is open so every command sees current state.
   const commands = !info || !paletteOpen ? [] : [
@@ -527,6 +607,7 @@ export function App() {
       { id: "font-reset", group: "外观", label: "重置字体大小", icon: TextAa, shortcut: key("fontReset"), run: actions.fontReset },
       ...Object.entries(THEMES).map(([id, item]) => ({ id: `theme-${id}`, group: "主题", label: item.name, keywords: "theme color 配色", icon: Palette, run: () => setSettings((previous) => ({ ...previous, theme: id })) })),
       { id: "settings", group: "设置", label: "打开终端设置", icon: GearSix, shortcut: key("settings"), run: actions.settings },
+      { id: "ssh-import", group: "连接", label: "从 ~/.ssh/config 导入主机…", keywords: "ssh config import 导入", icon: HardDrives, run: openSshImport },
       ...Object.entries(connectionLabels).map(([kind, label]) => ({ id: `new-${kind}`, group: "新建连接", label, keywords: kind, icon: kindIcons[kind], run: () => setDialog({ kind }) })),
       ...profiles.map((profile) => ({ id: `profile-${profile.id}`, group: "连接", label: profile.name, keywords: `${profile.kind} ${profile.host || ""} ${profile.device || ""}`, icon: kindIcons[profile.kind] || HardDrives, run: () => safely(() => addTab(profile.kind, profile)) })),
       ...tabs.map((tab, index) => {
@@ -574,14 +655,17 @@ export function App() {
     const focused = sessions.find((session) => session.id === tab.focus);
     return tab.title || focused?.termTitle || focused?.title || "终端";
   };
-  const viewProps = { settings, platform: info.platform, hostname: info.hostname, api, register, onState, onError: notify, onInput, onCwd, onTitle };
+  const viewProps = { settings, clear: scene.clear, platform: info.platform, hostname: info.hostname, api, register, onState, onError: notify, onInput, onCwd, onTitle };
+  const fit = backgroundFits[settings.backgroundImageFit] || backgroundFits.cover;
   const shownCwd = activeSession?.liveCwd || activeSession?.cwd || cwd;
 
-  return <div className={`app-shell platform-${info.platform} ${theme.light ? "terminal-light" : ""}`} style={{ "--term-bg": theme.chrome }}>
+  return <div className={`app-shell platform-${info.platform}`} style={{ "--term-bg": scene.clear ? "transparent" : theme.chrome }}>
+    <div className="app-backdrop" aria-hidden="true" style={{ background: scene.base < 1 ? `color-mix(in srgb, var(--bg) ${Math.round(scene.base * 100)}%, transparent)` : "var(--bg)" }}>{scene.image && <div className="app-backdrop-image" style={{ backgroundImage: `url("${scene.image}")`, backgroundSize: fit.size, backgroundRepeat: fit.repeat, opacity: scene.imageOpacity }} />}</div>
     <header className="titlebar">
       <div className="window-brand"><TerminalWindow size={19} weight="duotone" /><strong>omniTerm</strong></div>
       <div className="window-title"><FolderSimple size={13} /><span>{basename(shownCwd)}</span><span className="title-divider">/</span><span>{activeTab ? tabLabel(activeTab) : "工作区"}</span></div>
       <div className="titlebar-actions">
+        <ThemeMenu current={settings.theme} onSelect={(id) => setSettings((previous) => ({ ...previous, theme: id }))} />
         <button className="titlebar-button" title={`命令面板（${key("palette")}）`} onClick={() => setPaletteOpen(true)}><Command size={15} /><span>命令</span><kbd>{key("palette")}</kbd></button>
         <button className={`titlebar-button ${agentVisible ? "active" : ""}`} title={`${agentVisible ? "隐藏 Agent 面板（会话继续运行）" : "显示 Agent 面板"}（${key("toggleAgent")}）`} onClick={() => setAgentVisible((visible) => !visible)}><Robot size={16} /><span>Agent</span><SidebarSimple size={15} /></button>
       </div>
@@ -601,8 +685,8 @@ export function App() {
         <div className="saved-connections">
           {profiles.length ? profiles.map((profile) => {
             const Icon = kindIcons[profile.kind] || HardDrives;
-            return <div className="profile-wrap" key={profile.id}><div className="profile-row"><button className="profile-connect" onClick={() => safely(() => addTab(profile.kind, profile))} title={`连接 ${profile.name}`}><Icon size={17} /><span><strong>{profile.name}</strong><small>{profile.kind === "serial" ? profile.device : `${profile.username ? `${profile.username}@` : ""}${profile.host}`}</small></span></button><IconButton label={`${profile.name}的选项`} onClick={() => setProfileMenu(profileMenu === profile.id ? null : profile.id)}><DotsThree size={19} /></IconButton></div>{profileMenu === profile.id && <div className="profile-menu"><button onClick={() => { setProfileMenu(null); setDialog({ kind: profile.kind, profile }); }}><PencilSimple size={14} />编辑连接</button><button onClick={() => { setProfileMenu(null); setDeleting(profile); }}><Trash size={14} />删除连接</button></div>}</div>;
-          }) : <div className="connections-empty"><HardDrives size={23} /><p>你的连接，会在这里</p><span>保存常用主机，一键连接。</span><button className="text-button" onClick={() => setDialog({ kind: "ssh" })}><Plus size={13} />添加第一个连接</button></div>}
+            return <div className="profile-wrap" key={profile.id}><div className="profile-row"><button className="profile-connect" onClick={() => safely(() => addTab(profile.kind, profile))} title={`连接 ${profile.name}`}><Icon size={17} /><span><strong>{profile.name}</strong><small>{profile.kind === "serial" ? profile.device : profile.summary || `${profile.username ? `${profile.username}@` : ""}${profile.host}${profile.proxyJump ? ` · 经 ${profile.proxyJump}` : ""}`}</small></span></button><IconButton label={`${profile.name}的选项`} onClick={() => setProfileMenu(profileMenu === profile.id ? null : profile.id)}><DotsThree size={19} /></IconButton></div>{profileMenu === profile.id && <div className="profile-menu"><button onClick={() => { setProfileMenu(null); setDialog({ kind: profile.kind, profile }); }}><PencilSimple size={14} />编辑连接</button><button onClick={() => { setProfileMenu(null); setDeleting(profile); }}><Trash size={14} />删除连接</button></div>}</div>;
+          }) : <div className="connections-empty"><HardDrives size={23} /><p>你的连接，会在这里</p><span>保存常用主机，一键连接。</span><button className="text-button" onClick={() => setDialog({ kind: "ssh" })}><Plus size={13} />添加第一个连接</button><button className="text-button" onClick={openSshImport}><HardDrives size={13} />从 ~/.ssh/config 导入</button></div>}
         </div>
         <div className="sidebar-bottom"><div className="sidebar-section-heading"><span>连接工具</span></div><div className="connection-tools">{Object.entries(connectionLabels).map(([kind, label]) => { const Icon = kindIcons[kind]; return <button key={kind} onClick={() => { setProfileMenu(null); setDialog({ kind }); }}><Icon size={16} /><span>{label}</span></button>; })}</div><button className="settings-button" onClick={() => setSettingsOpen(true)}><GearSix size={18} /><span>设置</span><span className="version-label">v{info.version}</span></button></div>
         </>}
@@ -680,9 +764,10 @@ export function App() {
     </div>
     <footer className="statusbar"><div><Monitor size={13} /><span>{platformNames[info.platform] || info.platform}</span><span className="statusbar-separator" /><span className="status-dot" /><span>{runningCount} 个活动会话</span>{activeTab?.broadcast && <><span className="statusbar-separator" /><Broadcast size={12} /><span>广播输入中</span></>}</div><div><span className={`status-dot ${info.agent?.available ? "" : "muted"}`} /><span>本地 Agent {info.agent?.available ? "已就绪" : "未就绪"}</span><span className="statusbar-separator" /><button onClick={() => setPaletteOpen(true)} title="命令面板"><Command size={12} /><span>{key("palette")}</span></button></div></footer>
     {dialog && <ConnectionDialog initial={dialog} onClose={() => setDialog(null)} onSave={async (profile) => setProfiles(await api.saveProfile(profile))} onConnect={addTab} />}
-    {settingsOpen && <SettingsDialog settings={settings} setSettings={setSettings} info={info} onClose={() => setSettingsOpen(false)} />}
+    {settingsOpen && <SettingsDialog settings={settings} setSettings={setSettings} info={info} notify={notify} onImportSsh={openSshImport} onClose={() => setSettingsOpen(false)} />}
     {paletteOpen && <CommandPalette commands={commands} onClose={() => { setPaletteOpen(false); if (selectedSession) focusLater(selectedSession.id); }} />}
     {deleting && <DeleteDialog profile={deleting} onClose={() => setDeleting(null)} onConfirm={async (id) => setProfiles(await api.deleteProfile(id))} />}
+    {sshImport && <SshImportDialog request={sshImport} onClose={finishSshImport} onNever={sshImport.startup ? () => { setSettings((previous) => ({ ...previous, sshConfigPrompt: false })); finishSshImport(); } : undefined} onImport={async (aliases) => { setProfiles(await api.importSshHosts(aliases)); finishSshImport(); notify(`已导入 ${aliases.length} 个 SSH 主机。`, "success"); }} />}
     {toast && <div className={`toast ${toast.type}`} role="alert">{toast.type === "error" ? <WarningCircle size={19} /> : <Check size={19} />}<span>{toast.message}</span><IconButton label="关闭提示" onClick={() => setToast(null)}><X size={15} /></IconButton></div>}
     {bootError && info && <div className="toast error" role="alert"><WarningCircle size={19} /><span>{bootError}</span><IconButton label="关闭启动提示" onClick={() => setBootError("")}><X size={15} /></IconButton></div>}
   </div>;

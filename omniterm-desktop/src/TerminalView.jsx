@@ -7,7 +7,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { CircleNotch, WarningCircle } from "@phosphor-icons/react";
 import { isAppShortcut } from "./shortcuts.js";
-import { themeFor } from "./themes.js";
+import { terminalTheme, themeFor } from "./themes.js";
 import { cwdFromOsc7, quotePath } from "./terminal-utils.js";
 
 export const FONT_STACKS = {
@@ -36,7 +36,7 @@ function loadWebgl(term) {
   }
 }
 
-export function TerminalView({ session, visible, selected = false, focused = false, dimmed = false, style, settings, platform, hostname, api, register, onState, onError, onFocus, onInput, onCwd, onTitle }) {
+export function TerminalView({ session, visible, selected = false, focused = false, dimmed = false, style, settings, clear = false, platform, hostname, api, register, onState, onError, onFocus, onInput, onCwd, onTitle }) {
   const host = useRef(null);
   const terminal = useRef(null);
   const fitRef = useRef(null);
@@ -71,7 +71,8 @@ export function TerminalView({ session, visible, selected = false, focused = fal
       macOptionClickForcesSelection: true,
       rightClickSelectsWord: platform === "darwin",
       smoothScrollDuration: 0,
-      theme: themeFor(settings.theme).terminal,
+      allowTransparency: clear,
+      theme: terminalTheme(themeFor(settings.theme), clear),
     });
     const fit = new FitAddon();
     const search = new SearchAddon();
@@ -233,14 +234,20 @@ export function TerminalView({ session, visible, selected = false, focused = fal
     term.options.cursorStyle = settings.cursorStyle;
     term.options.scrollback = settings.scrollback;
     term.options.macOptionIsMeta = settings.optionAsMeta;
-    term.options.theme = themeFor(settings.theme).terminal;
+    term.options.theme = terminalTheme(themeFor(settings.theme), clear);
+    if (term.options.allowTransparency !== clear) {
+      // The WebGL glyph atlas is built for one mode and must be rebuilt for the other.
+      term.options.allowTransparency = clear;
+      webglRef.current?.dispose();
+      webglRef.current = null;
+    }
     if (settings.gpu && !webglRef.current) webglRef.current = loadWebgl(term);
     else if (!settings.gpu && webglRef.current) { webglRef.current.dispose(); webglRef.current = null; }
     const frame = requestAnimationFrame(() => {
       if (host.current?.offsetWidth) fitRef.current?.fit();
     });
     return () => cancelAnimationFrame(frame);
-  }, [settings]);
+  }, [settings, clear]);
 
   useEffect(() => {
     if (!visible) return;

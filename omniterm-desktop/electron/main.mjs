@@ -1,13 +1,17 @@
 // Copyright 2026 omniTerm contributors. SPDX-License-Identifier: Apache-2.0
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell } from "electron";
 import * as nodePty from "node-pty";
+import { randomUUID } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
+import { copyFile, mkdir, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { buildCommandPlan, externalUrl, resolveDesktopAgent } from "./command-plan.mjs";
+import { buildCommandPlan, externalUrl, resolveDesktopAgent, validateProfile } from "./command-plan.mjs";
 import { ProfileStore } from "./profile-store.mjs";
 import { RemoteManager } from "./remote-manager.mjs";
 import { SessionManager } from "./session-manager.mjs";
+import { hostSummary, readSshHosts } from "./ssh-config.mjs";
 
 let window;
 let manager;
@@ -16,6 +20,44 @@ let profiles;
 let planOptions;
 let rendererUrl;
 let downloadDirectory;
+let windowTransparent = false;
+
+const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "webp", "gif", "avif", "bmp"];
+const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
+const preferencesFile = () => path.join(app.getPath("userData"), "window.json");
+const backgroundDirectory = () => path.join(app.getPath("userData"), "backgrounds");
+
+const hostProfile = (item) => ({ kind: "ssh", name: item.alias, host: item.alias, summary: hostSummary(item) });
+
+// Aliases omniTerm could not pass to ssh safely are left out of the import list.
+function importableHosts() {
+  const result = readSshHosts();
+  const valid = (item) => { try { return validateProfile(hostProfile(item), { requireConnection: true }); } catch { return null; } };
+  return { ...result, hosts: result.hosts.filter(valid) };
+}
+
+// Read before the window exists: Electron fixes transparency at creation.
+function readTransparency() {
+  try { return JSON.parse(readFileSync(preferencesFile(), "utf8")).transparent === true; }
+  catch { return false; }
+}
+
+// The image is copied so the background survives moving the original, and the
+// renderer only ever receives a URL inside the app's own data directory.
+async function chooseBackgroundImage() {
+  const result = await dialog.showOpenDialog(window, { title: "Choose a background image", properties: ["openFile"], filters: [{ name: "Images", extensions: IMAGE_EXTENSIONS }] });
+  const [source] = result.filePaths;
+  if (result.canceled || !source) return null;
+  const extension = path.extname(source).slice(1).toLowerCase();
+  if (!IMAGE_EXTENSIONS.includes(extension)) throw new Error("请选择 PNG、JPEG、WebP、GIF、AVIF 或 BMP 图片。");
+  if ((await stat(source)).size > MAX_IMAGE_BYTES) throw new Error("图片不能超过 32 MB。");
+  const directory = backgroundDirectory();
+  await mkdir(directory, { recursive: true });
+  const name = `${randomUUID()}.${extension}`;
+  await copyFile(source, path.join(directory, name));
+  for (const file of await readdir(directory)) if (file !== name) await rm(path.join(directory, file), { force: true });
+  return { url: pathToFileURL(path.join(directory, name)).href, name: path.basename(source) };
+}
 
 function send(channel, payload) {
   if (window && !window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send(channel, payload);
@@ -38,7 +80,7 @@ function registerHandlers() {
       let agent;
       try { const command = resolveDesktopAgent(planOptions); agent = { available: true, path: command.args[0] || command.executable }; }
       catch (error) { agent = { available: false, path: null, error: error.message }; }
-      return { platform: process.platform, hostname: os.hostname(), home: os.homedir(), cwd: planOptions.defaultCwd, version: app.getVersion(), agent, profiles: profiles.list() };
+      return { platform: process.platform, hostname: os.hostname(), home: os.homedir(), cwd: planOptions.defaultCwd, version: app.getVersion(), agent, profiles: profiles.list(), windowTransparent };
     },
     "choose-directory": async () => {
       const result = await dialog.showOpenDialog(window, { title: "Choose a working directory", defaultPath: planOptions.defaultCwd, properties: ["openDirectory", "createDirectory"] });
@@ -52,6 +94,16 @@ function registerHandlers() {
     "get-session-buffer": (id) => manager.buffer(id),
     "save-profile": (profile) => profiles.save(profile),
     "delete-profile": (id) => profiles.delete(id),
+    // Reads the file again on import, so only hosts that are really in it can be saved.
+    "ssh-config-hosts": importableHosts,
+    "import-ssh-hosts": (aliases) => {
+      if (!Array.isArray(aliases)) throw new Error("Aliases must be a list.");
+      return profiles.import(importableHosts().hosts.filter((item) => aliases.includes(item.alias)).map(hostProfile));
+    },
+    "choose-background-image": chooseBackgroundImage,
+    "clear-background-image": () => rm(backgroundDirectory(), { recursive: true, force: true }),
+    "set-window-transparency": (enabled) => { writeFileSync(preferencesFile(), JSON.stringify({ transparent: enabled === true })); return windowTransparent; },
+    "relaunch": () => { app.relaunch(); app.quit(); },
     "open-external": (url) => shell.openExternal(externalUrl(url)),
     "remote-state": (id) => remote.state(id),
     "remote-retry": (id) => remote.retry(id),
@@ -102,7 +154,8 @@ function createWindow() {
   });
   const renderer = path.join(appPath, "build-renderer", "index.html");
   rendererUrl = pathToFileURL(renderer).href;
-  window = new BrowserWindow({ width: 1440, height: 940, minWidth: 1000, minHeight: 650, title: "omniTerm", backgroundColor: "#14181f", ...(process.platform === "darwin" ? { titleBarStyle: "hiddenInset", trafficLightPosition: { x: 20, y: 20 } } : {}), webPreferences: { preload: path.join(path.dirname(fileURLToPath(import.meta.url)), "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
+  windowTransparent = readTransparency();
+  window = new BrowserWindow({ width: 1440, height: 940, minWidth: 1000, minHeight: 650, title: "omniTerm", ...(windowTransparent ? { transparent: true, backgroundColor: "#00000000" } : { backgroundColor: "#14181f" }), ...(process.platform === "darwin" ? { titleBarStyle: "hiddenInset", trafficLightPosition: { x: 20, y: 20 } } : {}), webPreferences: { preload: path.join(path.dirname(fileURLToPath(import.meta.url)), "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event, url) => { if (url !== rendererUrl) event.preventDefault(); });
   window.webContents.on("will-redirect", (event) => event.preventDefault());

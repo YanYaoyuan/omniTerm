@@ -5,7 +5,7 @@ import path from "node:path";
 import { findExecutable, planCommand, resolveCodex, resolveShell } from "../../omniterm-cli/src/cli.js";
 
 export const SESSION_KINDS = Object.freeze(["shell", "agent", "ssh", "sftp", "serial", "tunnel"]);
-const PROFILE_FIELDS = new Set(["id", "kind", "name", "host", "username", "port", "keyPath", "device", "baud", "forwardType", "bindPort", "targetHost", "targetPort"]);
+const PROFILE_FIELDS = new Set(["id", "kind", "name", "host", "username", "port", "keyPath", "proxyJump", "summary", "device", "baud", "forwardType", "bindPort", "targetHost", "targetPort"]);
 const CONTROL = /[\u0000-\u001f\u007f]/;
 const CONTROL_PERSIST_SECONDS = 30;
 
@@ -34,13 +34,20 @@ function host(value, label, allowUser = false) {
   return result;
 }
 
+// One or more comma-separated hops: [user@]host[:port] or ssh://[user@]host[:port].
+function proxyJump(value) {
+  const hops = text(value, "ProxyJump", 1024).split(",").map((hop) => hop.trim());
+  for (const hop of hops) host(hop.replace(/^ssh:\/\//, ""), "ProxyJump host", true);
+  return hops.join(",");
+}
+
 export function validateProfile(input = {}, { kind = input.kind, requireConnection = false } = {}) {
   plainObject(input, "Profile");
   for (const key of Object.keys(input)) if (!PROFILE_FIELDS.has(key)) throw new Error(`Unsupported profile field: ${key}. Passwords and secrets cannot be saved in profiles.`);
   if (kind !== undefined && !SESSION_KINDS.includes(kind)) throw new Error("Unknown session kind.");
   if (input.kind !== undefined && kind !== input.kind) throw new Error("Profile kind does not match the session kind.");
   const result = kind === undefined ? {} : { kind };
-  for (const key of ["id", "name", "keyPath", "device"]) {
+  for (const key of ["id", "name", "keyPath", "summary", "device"]) {
     if (input[key] !== undefined && input[key] !== "") result[key] = text(input[key], key, key === "name" ? 120 : 4096);
   }
   if (result.id && !/^[a-zA-Z0-9_-]{1,80}$/.test(result.id)) throw new Error("Invalid profile id.");
@@ -49,6 +56,7 @@ export function validateProfile(input = {}, { kind = input.kind, requireConnecti
     result.username = text(input.username, "Username", 128);
     if (!/^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$/.test(result.username)) throw new Error("Invalid SSH username.");
   }
+  if (input.proxyJump !== undefined && input.proxyJump !== "") result.proxyJump = proxyJump(input.proxyJump);
   if (result.host?.includes("@") && result.username) throw new Error("Enter the username separately or in the host, not both.");
   for (const key of ["port", "bindPort", "targetPort"]) if (input[key] !== undefined && input[key] !== "") result[key] = integer(input[key], key, 65535);
   if (input.baud !== undefined && input.baud !== "") result.baud = integer(input.baud, "Baud rate", 4000000);
@@ -154,6 +162,10 @@ export async function buildCommandPlan(request, options = {}) {
     if (socket) args.push("-o", "ControlMaster=auto", "-o", `ControlPath=${socket}`, "-o", `ControlPersist=${CONTROL_PERSIST_SECONDS}`);
     if (profile.port) args.push(request.kind === "sftp" ? "-P" : "-p", String(profile.port));
     if (profile.keyPath) args.push("-i", profile.keyPath);
+    // `-o` rather than `-J`: sftp only gained -J recently, and the file panel
+    // needs the same option on its own ssh command when it has no control socket.
+    const jump = profile.proxyJump ? ["-o", `ProxyJump=${profile.proxyJump}`] : [];
+    args.push(...jump);
     if (request.kind === "tunnel") {
       let forwarding = `127.0.0.1:${profile.bindPort}`;
       if (profile.forwardType !== "D") {
@@ -164,7 +176,7 @@ export async function buildCommandPlan(request, options = {}) {
     }
     args.push(destination(profile, request.kind));
     command = planCommand(request.kind, args, { ...options, env, platform });
-    if (companion) remote = { executable: planCommand("ssh", [], { ...options, env, platform }).executable, destination: destination(profile, "ssh"), controlPath: socket, args: [...(profile.port ? ["-p", String(profile.port)] : []), ...(profile.keyPath ? ["-i", profile.keyPath] : [])] };
+    if (companion) remote = { executable: planCommand("ssh", [], { ...options, env, platform }).executable, destination: destination(profile, "ssh"), controlPath: socket, args: [...(profile.port ? ["-p", String(profile.port)] : []), ...(profile.keyPath ? ["-i", profile.keyPath] : []), ...jump] };
   }
   const sessionEnv = Object.fromEntries(Object.entries({ ...env, TERM: "xterm-256color", COLORTERM: "truecolor", TERM_PROGRAM: "omniTerm" }).filter(([, value]) => typeof value === "string"));
   return { ...command, kind: request.kind, cwd, title: profile.name || ({ shell: "Terminal", agent: "Agent", ssh: `SSH · ${profile.host}`, sftp: `SFTP · ${profile.host}`, serial: `Serial · ${profile.device}`, tunnel: `Tunnel · ${profile.host}` })[request.kind], env: sessionEnv, ...(remote ? { remote: { ...remote, env: sessionEnv } } : {}) };

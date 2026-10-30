@@ -5,6 +5,7 @@ import { computeLayout, equalize, MIN_RATIO, neighborPane, pane, paneIds, remove
 import { isAppShortcut, matchShortcut, shortcutLabel, tabCycle, tabNumber } from "./shortcuts.js";
 import { createRemoteStore, formatBytes, formatUptime, joinRemote, nextSelection, parentRemote, percent, sortEntries, validEntryName } from "./remote-utils.js";
 import { cwdFromOsc7, fuzzyScore, isTerminalReply, quotePath } from "./terminal-utils.js";
+import { THEMES, backdrop, contrast, terminalTheme, themeFor, themeTokens } from "./themes.js";
 import { MAX_RESTORED_PANES, WORKSPACE_VERSION, parseWorkspace, restoreTree, serializeWorkspace } from "./workspace.js";
 
 const key = (code, modifiers = {}) => ({ type: "keydown", code, key: "", metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, isComposing: false, ...modifiers });
@@ -221,4 +222,38 @@ test("the remote store keeps snapshots stable and forgets closed sessions", () =
   handlers.state({ id: "s", state: "closed" });
   assert.deepEqual([store.state("s"), store.metrics("s"), store.transfers("s").length], [null, null, 0]);
   assert.ok(changes > 5);
+});
+
+test("every theme is complete and its interface text stays readable", () => {
+  const colors = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white", "brightBlack", "brightRed", "brightGreen", "brightYellow", "brightBlue", "brightMagenta", "brightCyan", "brightWhite", "background", "foreground", "cursor", "cursorAccent", "selectionBackground"];
+  assert.ok(Object.keys(THEMES).length >= 10);
+  assert.ok(Object.values(THEMES).some((theme) => theme.light));
+  for (const [id, theme] of Object.entries(THEMES)) {
+    for (const color of colors) assert.match(theme.terminal[color], /^#[0-9a-f]{6}([0-9a-f]{2})?$/, `${id} ${color}`);
+    const tokens = themeTokens(theme);
+    for (const surface of ["--bg", "--surface", "--surface-hover"]) {
+      assert.ok(contrast(tokens["--text"], tokens[surface]) >= 4.5, `${id} text on ${surface}`);
+      assert.ok(contrast(tokens["--muted"], tokens[surface]) >= 3, `${id} muted on ${surface}`);
+    }
+    assert.ok(contrast(tokens["--on-accent"], tokens["--accent"]) >= 4.5, `${id} accent button`);
+  }
+  assert.equal(themeFor("missing"), THEMES.midnight);
+});
+
+test("the backdrop stays opaque unless something can show through it", () => {
+  const settings = { backgroundMode: "opaque", backgroundOpacity: 0.8, backgroundImage: null, backgroundImageOpacity: 0.3 };
+  assert.deepEqual(backdrop(settings, false), { base: 1, image: "", imageOpacity: 0.3, clear: false, panelAlpha: 1 });
+  // A translucent choice waits for the transparent window that needs a restart.
+  assert.equal(backdrop({ ...settings, backgroundMode: "translucent" }, false).clear, false);
+  assert.equal(backdrop({ ...settings, backgroundMode: "translucent" }, true).base, 0.8);
+  assert.equal(backdrop({ ...settings, backgroundMode: "translucent", backgroundOpacity: 5 }, true).base, 0.95);
+  const transparent = backdrop({ ...settings, backgroundMode: "transparent" }, true);
+  assert.deepEqual([transparent.base, transparent.clear, transparent.panelAlpha], [0, true, 0.6]);
+  const image = backdrop({ ...settings, backgroundImage: { url: "file:///a.png", name: "a.png" } }, false);
+  assert.deepEqual([image.base, image.image, image.clear, image.panelAlpha], [1, "file:///a.png", true, 0.85]);
+});
+
+test("a clear terminal keeps its background color at zero alpha", () => {
+  assert.equal(terminalTheme(THEMES.nord, true).background, "#2e344000");
+  assert.equal(terminalTheme(THEMES.nord, false), THEMES.nord.terminal);
 });
