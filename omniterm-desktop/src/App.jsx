@@ -12,11 +12,12 @@ import { CommandPalette } from "./CommandPalette.jsx";
 import { computeLayout, equalize, neighborPane, pane, paneIds, removePane, setRatio, splitPane } from "./layout.js";
 import { SHORTCUTS, matchShortcut, shortcutLabel, tabCycle, tabNumber } from "./shortcuts.js";
 import { THEMES, themeFor } from "./themes.js";
+import { WORKSPACE_KEY, parseWorkspace, restoreTree, serializeWorkspace } from "./workspace.js";
 
 const api = window.omniterm;
 export const defaults = {
   fontSize: 13, fontFamily: "system", lineHeight: 1.22, scrollback: 10000, cursorBlink: true, cursorStyle: "bar",
-  theme: "midnight", gpu: true, copyOnSelect: false, optionAsMeta: false, dimInactive: true,
+  theme: "midnight", gpu: true, copyOnSelect: false, optionAsMeta: false, dimInactive: true, restoreWorkspace: true,
 };
 const kindIcons = { shell: TerminalWindow, agent: Robot, ssh: HardDrives, sftp: FolderOpen, serial: PlugsConnected, tunnel: ArrowsLeftRight };
 const platformNames = { darwin: "macOS", win32: "Windows", linux: "Linux" };
@@ -81,6 +82,7 @@ function SettingsDialog({ settings, setSettings, info, onClose }) {
       <div className="setting-row"><div><strong>GPU 加速渲染</strong><span>使用 WebGL 渲染终端，大量输出时更流畅</span></div><Toggle value={settings.gpu} label="GPU 加速渲染" onChange={update("gpu")} /></div>
       <div className="setting-row"><div><strong>选中即复制</strong><span>选择文本后自动写入剪贴板</span></div><Toggle value={settings.copyOnSelect} label="选中即复制" onChange={update("copyOnSelect")} /></div>
       {info.platform === "darwin" && <div className="setting-row"><div><strong>Option 作为 Meta 键</strong><span>用于 Emacs、readline 的 Alt 组合键</span></div><Toggle value={settings.optionAsMeta} label="Option 作为 Meta 键" onChange={update("optionAsMeta")} /></div>}
+      <div className="setting-row"><div><strong>启动时恢复工作区</strong><span>重新打开本地标签、分屏布局和各窗格目录，不会重新执行命令</span></div><Toggle value={settings.restoreWorkspace} label="启动时恢复工作区" onChange={update("restoreWorkspace")} /></div>
       <div className="setting-row"><div><strong>回滚缓冲区</strong><span>保留每个终端的历史输出行数</span></div><select value={settings.scrollback} onChange={(event) => update("scrollback")(Number(event.target.value))}><option value="1000">1,000 行</option><option value="5000">5,000 行</option><option value="10000">10,000 行</option><option value="50000">50,000 行</option><option value="100000">100,000 行</option></select></div>
       <div className="settings-section-label">键盘快捷键</div>
       {Object.entries(SHORTCUTS).map(([name, definition]) => <div className="shortcut-row" key={name}><span>{definition.label}</span><kbd>{shortcutLabel(name, info.platform)}</kbd></div>)}
@@ -143,6 +145,7 @@ export function App() {
   const searchInput = useRef(null);
   const stackRef = useRef(null);
   const started = useRef(false);
+  const ready = useRef(false);
   const nextTerminal = useRef(1);
   const tabsRef = useRef(tabs);
   const sessionsRef = useRef(sessions);
@@ -273,18 +276,64 @@ export function App() {
     if (started.current) return;
     started.current = true;
     if (!api) { setBootError("无法连接桌面服务。请通过 omniTerm 桌面应用打开此窗口。"); return; }
+    function readWorkspace() {
+      try { return parseWorkspace(localStorage.getItem(WORKSPACE_KEY)); }
+      catch { return null; }
+    }
+    // Opens a fresh shell for every saved pane. A directory that no longer
+    // exists falls back to the default one instead of losing the pane.
+    async function restoreWorkspace(snapshot, fallbackCwd) {
+      const opened = [];
+      let missing = 0;
+      const openPane = async (directory) => {
+        for (const candidate of directory && directory !== fallbackCwd ? [directory, fallbackCwd] : [fallbackCwd]) {
+          try {
+            const session = await api.createSession({ kind: "shell", cwd: candidate });
+            if (candidate !== directory && directory) missing++;
+            opened.push({ ...session, title: `本地终端 ${nextTerminal.current++}` });
+            return session.id;
+          } catch { /* Try the default directory, then give up on this pane. */ }
+        }
+        return null;
+      };
+      const restored = [];
+      for (const saved of snapshot.tabs) {
+        const root = await restoreTree(saved.root, openPane);
+        if (root) restored.push({ id: newTabId(), root, focus: paneIds(root)[0], title: saved.title, broadcast: false, zoomed: null });
+      }
+      if (!restored.length) return false;
+      const active = restored[Math.min(snapshot.active, restored.length - 1)];
+      setSessions(opened); setTabs(restored); setActiveTabId(active.id); setFocusedId(active.focus);
+      if (missing) notify(`${missing} 个窗格的上次目录已不存在，已在默认目录打开。`);
+      return true;
+    }
     async function initialize() {
       try {
         const details = await api.getAppInfo();
         setInfo(details); setCwd(details.cwd || details.home); setProfiles(details.profiles || []);
-        const session = await api.createSession({ kind: "shell", cwd: details.cwd || details.home });
-        const tab = { id: newTabId(), root: pane(session.id), focus: session.id, title: "", broadcast: false, zoomed: null };
-        setSessions([{ ...session, title: "本地终端" }]); setTabs([tab]); setActiveTabId(tab.id); setFocusedId(session.id);
+        const fallbackCwd = details.cwd || details.home;
+        const snapshot = readSettings().restoreWorkspace ? readWorkspace() : null;
+        if (!snapshot || !await restoreWorkspace(snapshot, fallbackCwd)) {
+          const session = await api.createSession({ kind: "shell", cwd: fallbackCwd });
+          const tab = { id: newTabId(), root: pane(session.id), focus: session.id, title: "", broadcast: false, zoomed: null };
+          setSessions([{ ...session, title: "本地终端" }]); setTabs([tab]); setActiveTabId(tab.id); setFocusedId(session.id);
+        }
+        // A failed start must not overwrite the saved layout with an empty one.
+        ready.current = true;
       } catch (error) { setBootError(error.message || String(error)); }
     }
     initialize();
     return () => clearTimeout(toastTimer.current);
   }, []);
+
+  // Saved continuously so a crash or force-quit still restores the last layout.
+  useEffect(() => {
+    if (!ready.current) return;
+    try {
+      if (settings.restoreWorkspace) localStorage.setItem(WORKSPACE_KEY, JSON.stringify(serializeWorkspace(tabs, sessions, activeTabId)));
+      else localStorage.removeItem(WORKSPACE_KEY);
+    } catch { /* Restoring is best effort; the current session is unaffected. */ }
+  }, [tabs, sessions, activeTabId, settings.restoreWorkspace]);
 
   useEffect(() => {
     try { localStorage.setItem("omniterm-terminal-settings", JSON.stringify(settings)); }

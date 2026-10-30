@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { computeLayout, equalize, MIN_RATIO, neighborPane, pane, paneIds, removePane, setRatio, splitPane } from "./layout.js";
 import { isAppShortcut, matchShortcut, shortcutLabel, tabCycle, tabNumber } from "./shortcuts.js";
 import { cwdFromOsc7, fuzzyScore, quotePath } from "./terminal-utils.js";
+import { MAX_RESTORED_PANES, WORKSPACE_VERSION, parseWorkspace, restoreTree, serializeWorkspace } from "./workspace.js";
 
 const key = (code, modifiers = {}) => ({ type: "keydown", code, key: "", metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, isComposing: false, ...modifiers });
 
@@ -86,4 +87,55 @@ test("fuzzy scoring prefers word starts and rejects non-matches", () => {
   assert.equal(fuzzyScore("xyz", "split right"), 0);
   assert.ok(fuzzyScore("sr", "split right") > 0);
   assert.ok(fuzzyScore("spl", "split right") > fuzzyScore("spl", "display all"));
+});
+
+test("workspace snapshots keep local shells, layout and live directories", () => {
+  // a | (b / ssh)  plus a tab holding only a serial session
+  const root = splitPane(splitPane(pane("a"), "a", "b", "row"), "b", "ssh", "column");
+  const tabs = [
+    { id: "t1", root: setRatio(root, [], 0.3), focus: "b", title: "build" },
+    { id: "t2", root: pane("serial"), focus: "serial", title: "" },
+    { id: "t3", root: pane("c"), focus: "c", title: "" },
+  ];
+  const sessions = [
+    { id: "a", kind: "shell", cwd: "/home/u", liveCwd: "/home/u/project" },
+    { id: "b", kind: "shell", cwd: "/tmp" },
+    { id: "c", kind: "shell", cwd: "/srv" },
+    { id: "ssh", kind: "ssh", cwd: "/home/u" },
+    { id: "serial", kind: "serial", cwd: "/home/u" },
+  ];
+  const snapshot = serializeWorkspace(tabs, sessions, "t3");
+  assert.equal(snapshot.active, 1);
+  assert.equal(snapshot.tabs.length, 2);
+  assert.equal(snapshot.tabs[0].title, "build");
+  assert.deepEqual(snapshot.tabs[0].root, { type: "split", direction: "row", ratio: 0.3, children: [{ type: "pane", cwd: "/home/u/project" }, { type: "pane", cwd: "/tmp" }] });
+  assert.deepEqual(parseWorkspace(JSON.stringify(snapshot)), snapshot);
+});
+
+test("workspace parsing rejects malformed data and caps restored panes", () => {
+  assert.equal(parseWorkspace("not json"), null);
+  assert.equal(parseWorkspace(JSON.stringify({ version: 99, tabs: [] })), null);
+  assert.equal(parseWorkspace({ version: WORKSPACE_VERSION, tabs: [{ root: { type: "pane" } }] }).tabs[0].root.cwd, "");
+  const bad = parseWorkspace({ version: WORKSPACE_VERSION, active: 7, tabs: [
+    { title: 5, root: { type: "split", direction: "diagonal", ratio: 0.5, children: [] } },
+    { title: "x".repeat(200), root: { type: "split", direction: "row", ratio: 5, children: [{ type: "pane", cwd: "/a" }, { type: "bogus" }] } },
+    { root: { type: "split", direction: "column", ratio: -1, children: [{ type: "pane", cwd: "/b" }, { type: "pane", cwd: 3 }] } },
+  ] });
+  assert.equal(bad.active, 0);
+  assert.equal(bad.tabs.length, 2);
+  assert.equal(bad.tabs[0].title.length, 60);
+  assert.deepEqual(bad.tabs[0].root, { type: "pane", cwd: "/a" });
+  assert.equal(bad.tabs[1].root.ratio, MIN_RATIO);
+  assert.equal(bad.tabs[1].root.children[1].cwd, "");
+  const many = { version: WORKSPACE_VERSION, tabs: Array.from({ length: 30 }, () => ({ root: { type: "pane", cwd: "/" } })) };
+  assert.equal(parseWorkspace(many).tabs.length, MAX_RESTORED_PANES);
+});
+
+test("restoring a tree opens panes in order and collapses failures", async () => {
+  const saved = { type: "split", direction: "row", ratio: 0.4, children: [{ type: "pane", cwd: "/a" }, { type: "split", direction: "column", ratio: 0.5, children: [{ type: "pane", cwd: "/gone" }, { type: "pane", cwd: "/c" }] }] };
+  const opened = [];
+  const root = await restoreTree(saved, async (cwd) => { opened.push(cwd); return cwd === "/gone" ? null : `id${cwd}`; });
+  assert.deepEqual(opened, ["/a", "/gone", "/c"]);
+  assert.deepEqual(root, { type: "split", direction: "row", ratio: 0.4, children: [{ type: "pane", sessionId: "id/a" }, { type: "pane", sessionId: "id/c" }] });
+  assert.equal(await restoreTree({ type: "pane", cwd: "/x" }, async () => null), null);
 });
