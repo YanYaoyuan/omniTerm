@@ -94,8 +94,11 @@ API Key 配置使用独立的 `CODEX_HOME`，不读取用户的引擎配置；�
 | 桌面 JS 测试 | Linux，Node 22 | 108 项通过（host 为模拟） |
 | 真实 PTY | `npm run test:pty`，Linux bash | 通过：输入、目录、尺寸、Unicode、Ctrl+C、退出、进程清理 |
 | 批准后执行 | 本地 bash，直接调用 host | 通过：未批准不写入；批准后执行并返回输出 |
+| Rust host 与真实 PTY/ConPTY | CI：Ubuntu、macOS、Windows | 通过 |
+| 引擎协议适配与配置测试 | CI：Ubuntu，`codex-api` 等 | 通过；使用模拟流，未连接真实服务 |
+| `dynamic_tools_only` 工具边界 | CI：Ubuntu，`codex-core` 单元测试 | 通过；验证工具注册，未经真实 app-server |
 
 **未执行：** Electron 窗口与新面板的实际操作；真实 app-server 回环；任何真实模型服务；真实 SSH
-目标；macOS 与 Windows 上的本地运行（由 CI 的 `terminal-host` 任务覆盖 PTY 部分）。
+目标；打包应用验证脚本 `verify-desktop.mjs`。
 Issue 的 A 批次（真包 app-server 回环）和 E 批次必须在这些环境完成后才算通过。
 记录测试时请写明模型、端点和平台组合。
