@@ -47,6 +47,7 @@ def main():
     parser.add_argument('--target', choices=TARGET_SPECS, required=True)
     parser.add_argument('--profile', choices=['dev-small', 'release'], default='dev-small')
     parser.add_argument('--package-dir', type=Path, default=ROOT / 'dist/omniterm-agent')
+    parser.add_argument('--verify-existing', action='store_true', help='Verify a downloaded Agent artifact against this checkout without recompiling')
     parser.add_argument('--reuse-directory', type=Path)
     parser.add_argument('--reuse-source-commit', help='Required source revision for an existing local Agent; its complete Agent source tree must match HEAD')
     args = parser.parse_args()
@@ -62,7 +63,17 @@ def main():
     commit = git('rev-parse', 'HEAD')
     source_fingerprint = fingerprint(commit)
     reused_from = None
-    if args.reuse_directory:
+    if args.verify_existing:
+        if args.reuse_directory:
+            raise RuntimeError('--verify-existing cannot be combined with local reuse')
+        existing = json.loads((package / 'omniterm-source.json').read_text())
+        if existing.get('target') != args.target or existing.get('agentSourceFingerprint') != source_fingerprint:
+            raise RuntimeError('Downloaded Agent target/source fingerprint differs from this checkout')
+        reused_from = existing['agentBuildSourceCommit']
+        if existing.get('cargoProfile') not in ['dev-small', 'release']:
+            raise RuntimeError('Downloaded Agent has an unsupported build profile')
+        args.profile = existing['cargoProfile']
+    elif args.reuse_directory:
         reused_from = git('rev-parse', args.reuse_source_commit)
         if fingerprint(reused_from) != source_fingerprint:
             raise RuntimeError('The existing Agent source tree differs from this release; rebuild it')
@@ -105,12 +116,16 @@ def main():
     if spec.is_windows:
         required += ['codex-resources/codex-command-runner.exe', 'codex-resources/codex-windows-sandbox-setup.exe']
     hashes = {name: digest(package / name) for name in required}
+    if args.verify_existing and any(existing.get('binarySha256', {}).get(name) != value for name, value in hashes.items()):
+        raise RuntimeError('Downloaded Agent required binary hash is missing or does not match')
     manifest = json.loads((package / 'codex-package.json').read_text())
     if manifest.get('target') != args.target or manifest.get('variant') != 'codex':
         raise RuntimeError('Invalid final Agent manifest')
     provenance = {'schemaVersion': 1, 'desktopSourceCommit': commit, 'agentBuildSourceCommit': reused_from or commit,
                   'agentSourceFingerprint': source_fingerprint, 'target': args.target, 'cargoProfile': args.profile,
                   'reusedIdenticalSource': reused_from is not None, 'binarySha256': hashes}
+    if args.verify_existing:
+        provenance['reusedArtifactBuildSourceCommit'] = existing['agentBuildSourceCommit']
     (package / 'omniterm-source.json').write_text(json.dumps(provenance, indent=2) + '\n')
     command(package / f'bin/codex{suffix}', '--version')
     command(package / f'codex-path/rg{suffix}', '--version')

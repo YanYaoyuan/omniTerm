@@ -16,9 +16,16 @@ on:
       - 'omniterm-desktop/package*.json'
       - 'omniterm-desktop/scripts/package*.mjs'
   workflow_dispatch:
+    inputs:
+      reuse_agent_run_id:
+        description: 'Optional prior workflow run ID whose Windows Agent artifact has identical Rust source'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: omniterm-release-${{ github.ref }}
@@ -34,6 +41,8 @@ jobs:
       CARGO_BUILD_JOBS: '2'
       CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
       CARGO_NET_RETRY: '5'
+      # Repository-variable fallback also works before dispatch reaches main.
+      OMNITERM_REUSE_AGENT_RUN_ID: ${{ inputs.reuse_agent_run_id || vars.OMNITERM_WINDOWS_AGENT_RUN_ID || '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -74,7 +83,20 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
           key: omniterm-cargo-windows-${{ hashFiles('codex-rs/Cargo.lock') }}
+      - name: Download an existing source-built Windows Agent
+        if: env.OMNITERM_REUSE_AGENT_RUN_ID != ''
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ env.OMNITERM_REUSE_AGENT_RUN_ID }}
+          pattern: omniterm-agent-windows-x64-*
+          merge-multiple: true
+          path: dist/omniterm-agent
+      - name: Verify the downloaded Agent target, source and all binary hashes
+        if: env.OMNITERM_REUSE_AGENT_RUN_ID != ''
+        run: python scripts/release/build-agent.py --target x86_64-pc-windows-msvc --verify-existing
       - name: Build the complete Agent from repository Rust
+        if: env.OMNITERM_REUSE_AGENT_RUN_ID == ''
         run: python scripts/release/build-agent.py --target x86_64-pc-windows-msvc
       - name: Preserve the source-built Agent before desktop packaging
         uses: actions/upload-artifact@v4
@@ -88,14 +110,19 @@ jobs:
         run: python scripts/release/stage-agent-notices.py dist/omniterm-agent --target x86_64-pc-windows-msvc --cargo-profile dev-small
       - name: Release Cargo object storage before desktop packaging
         shell: pwsh
-        run: Remove-Item -LiteralPath $env:CARGO_TARGET_DIR -Recurse -Force
+        run: if (Test-Path -LiteralPath $env:CARGO_TARGET_DIR) { Remove-Item -LiteralPath $env:CARGO_TARGET_DIR -Recurse -Force }
       - name: Build the desktop and native PTY
+        shell: bash
+        env:
+          OMNITERM_REQUIRE_AGENT_PROVENANCE: '1'
         working-directory: omniterm-desktop
         run: |
           npm ci
           npm run rebuild
           npm test
           npm run package
+      - name: Verify packaged Electron, native PTY and Agent
+        run: node scripts/release/verify-desktop.mjs
       - name: Create unsigned portable ZIP and checksums
         run: node omniterm-desktop/scripts/package-release.mjs
       - name: Upload desktop release artifacts

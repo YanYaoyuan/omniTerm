@@ -2,10 +2,31 @@
 
 omniTerm 的桌面工作台使用 Electron、React、xterm.js 和 node-pty，将本地终端、
 远程工具入口与基于 Codex 的 Agent 放在同一个窗口中。
-这是早期桌面版本；构建、打包与真实交互验证的结果需要分别记录。
-macOS arm64 的本机 `.app` 已打包并实际打开窗口，真实 Electron PTY 测试已通过。
-GUI 键盘与 Agent 交互、远程服务和其他平台尚未验收，详见
-[验证记录](../docs/omniterm/desktop-test-plan.md#验收记录)。
+这是早期桌面版本；构建、打包与真实交互验证的结果分别记录。
+已有 macOS GUI、Ubuntu 安装与原生 PTY、隔离服务器 SSH/SFTP/跳板机检查；
+每个平台的具体覆盖以 [Release 说明](https://github.com/YanYaoyuan/omniTerm/releases)
+和 [交互验证记录](../docs/omniterm/desktop-test-plan.md#验收记录) 为准。
+
+## 安装 0.0.1
+
+从 [GitHub Releases](https://github.com/YanYaoyuan/omniTerm/releases/tag/v0.0.1)
+下载对应架构的文件及 SHA-256 校验值。安装包已包含 Electron、原生 PTY 和完整 Agent，
+不需要另装 Node.js、Rust 或 Codex。
+
+- **macOS Apple Silicon：** 解压 `omniTerm-0.0.1-macos-arm64.zip`，将 `omniTerm.app`
+  复制到“应用程序”后打开。当前没有 Intel Mac 包，也没有 Developer ID 签名或 Apple 公证。
+- **Windows x64：** 完整解压 `omniTerm-0.0.1-windows-x64.zip`，运行其中的
+  `omniTerm.exe`；不要单独移动 exe，旁边的资源目录同样必需。当前没有 Authenticode 签名。
+- **Ubuntu 22.04 amd64：** 在下载目录执行以下命令，然后从应用菜单打开 omniTerm：
+
+```sh
+sudo apt install ./omniterm_0.0.1-1_amd64.deb
+```
+
+此前安装过 `0.1.0~preview` 的用户会看到版本降级提示，这是首次正式版本改为 `0.0.1`
+的版本排序结果。请核对文件名后确认。程序用普通用户启动，Agent 首次使用需要自己的认证配置。
+Linux 安装器会安装声明的运行依赖，并推荐中文字体；macOS/Windows 的 SSH 与串口依赖见下文。
+发布构建步骤与来源校验见 [发行指南](../docs/omniterm/releasing.md)。
 
 ## 工作台
 

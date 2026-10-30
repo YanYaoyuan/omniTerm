@@ -1,9 +1,16 @@
 import { packager } from "@electron/packager";
-import { readFile, writeFile } from "node:fs/promises";
+import { open, readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+async function sha256(filename) {
+  const hash = createHash("sha256");
+  const file = await open(filename, "r");
+  try { for await (const chunk of file.createReadStream()) hash.update(chunk); } finally { await file.close(); }
+  return hash.digest("hex");
+}
 const root = fileURLToPath(new URL("../", import.meta.url));
 const repository = path.resolve(root, "..");
 const agent = path.join(repository, "dist/omniterm-agent");
@@ -41,6 +48,26 @@ const appPaths = await packager({
 });
 for (const directory of appPaths) {
   const appRoot = process.platform === "darwin" ? path.join(directory, "omniTerm.app/Contents/Resources/app") : path.join(directory, "resources/app");
-  await writeFile(path.join(appRoot, "omniterm-build.json"), `${JSON.stringify({ version: metadata.version, desktopSourceCommit: sourceCommit, platform: process.platform, arch: process.arch, agent: agentSource, signed: false, notarized: false, linuxLauncherUtf8Fallback: process.platform === "linux" }, null, 2)}\n`);
+  await writeFile(path.join(appRoot, "omniterm-build.json"), `${JSON.stringify({ version: metadata.version, desktopSourceCommit: sourceCommit, platform: process.platform, arch: process.arch, agent: agentSource, signed: false, developerIDSigned: false, adHocSigned: process.platform === "darwin", notarized: false, linuxLauncherUtf8Fallback: process.platform === "linux" }, null, 2)}\n`);
+  if (process.platform === "darwin") {
+    const app = path.join(directory, "omniTerm.app");
+    const packagedAgent = path.join(app, "Contents/Resources/omniterm-agent");
+    if (agentSource) {
+      for (const [relative, expected] of Object.entries(agentSource.binarySha256)) {
+        if (path.isAbsolute(relative) || relative.split(/[\\/]/).includes("..")) throw new Error("Invalid Agent provenance path");
+        const binary = path.join(packagedAgent, relative);
+        if (await sha256(binary) !== expected) throw new Error(`Agent changed before ad-hoc signing: ${relative}`);
+        execFileSync("/usr/bin/codesign", ["--force", "--sign", "-", binary], { stdio: "inherit" });
+      }
+    }
+    // No developer certificate/key: ad-hoc signing seals the final bundle after
+    // metadata is written. Preserve Electron's existing helper entitlements.
+    execFileSync("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", "--preserve-metadata=entitlements", app], { stdio: "inherit" });
+    execFileSync("/usr/bin/codesign", ["--verify", "--deep", "--strict", app], { stdio: "inherit" });
+    const packagedSignedBinarySha256 = {};
+    for (const relative of Object.keys(agentSource?.binarySha256 || {})) packagedSignedBinarySha256[relative] = await sha256(path.join(packagedAgent, relative));
+    // Writing this record inside the app after signing would invalidate its seal.
+    await writeFile(path.join(directory, "omniterm-signature.json"), `${JSON.stringify({ adHoc: true, developerIDSigned: false, notarized: false, originalAgentBinarySha256: agentSource?.binarySha256 || {}, packagedSignedBinarySha256 }, null, 2)}\n`);
+  }
 }
 console.log(appPaths.join("\n"));

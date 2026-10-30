@@ -214,6 +214,7 @@ def main() -> None:
     parser.add_argument("package", nargs="?", type=Path, default=REPOSITORY / "dist/omniterm-agent")
     parser.add_argument("--target", choices=tuple(TARGET_PLATFORMS), help="Expected target; defaults to the package manifest")
     parser.add_argument("--cargo-metadata", type=Path, help="Existing target-filtered locked Cargo metadata JSON; never copied into the package")
+    parser.add_argument("--offline", action="store_true", help="Require a complete Cargo source cache; by default locked metadata may download missing sources without updating Cargo.lock")
     parser.add_argument("--rg-archive", type=Path, help="Existing ripgrep archive matching the checked-in target SHA-256")
     parser.add_argument("--cargo-profile", choices=("dev-small", "release"), default="dev-small")
     args = parser.parse_args()
@@ -234,7 +235,7 @@ def main() -> None:
     before = {entry: sha256(entry) for entry in binaries}
     metadata = json.loads(args.cargo_metadata.read_text(encoding="utf-8-sig")) if args.cargo_metadata else json.loads(command(
         "cargo", "metadata", "--manifest-path", str(REPOSITORY / "codex-rs/Cargo.toml"),
-        "--locked", "--offline", "--format-version", "1", "--filter-platform", target,
+        "--locked", *(("--offline",) if args.offline else ()), "--format-version", "1", "--filter-platform", target,
     ))
     for name in ("LICENSE", "NOTICE"):
         shutil.copyfile(REPOSITORY / name, package / name)

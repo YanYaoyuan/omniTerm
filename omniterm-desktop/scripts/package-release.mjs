@@ -29,9 +29,16 @@ const agentRoot = path.join(resourceRoot, 'omniterm-agent');
 const agent = JSON.parse(await readFile(path.join(agentRoot, 'omniterm-source.json'), 'utf8'));
 const tree = execFileSync('git', ['ls-tree', '-r', 'HEAD', '--', 'codex-rs', 'scripts/codex_package', 'scripts/build_codex_package.py', 'third_party/v8'], { cwd: repository, maxBuffer: 16 * 1024 * 1024 });
 if (createHash('sha256').update(tree).digest('hex') !== agent.agentSourceFingerprint) throw new Error('Bundled Agent was built from a different Agent source tree');
+const signature = process.platform === 'darwin' ? JSON.parse(await readFile(path.join(bundle, 'omniterm-signature.json'), 'utf8')) : null;
+if (signature) {
+  if (signature.adHoc !== true || signature.developerIDSigned !== false) throw new Error('Unexpected macOS signature provenance');
+  command('/usr/bin/codesign', ['--verify', '--deep', '--strict', path.join(bundle, 'omniTerm.app')]);
+}
 for (const [relative, expected] of Object.entries(agent.binarySha256)) {
   if (path.isAbsolute(relative) || relative.split(/[\\/]/).includes('..')) throw new Error('Invalid Agent provenance path');
-  if (await sha256(path.join(agentRoot, relative)) !== expected) throw new Error(`Bundled Agent hash mismatch: ${relative}`);
+  if (signature && signature.originalAgentBinarySha256[relative] !== expected) throw new Error(`Original Agent hash provenance mismatch: ${relative}`);
+  const packagedHash = signature ? signature.packagedSignedBinarySha256[relative] : expected;
+  if (await sha256(path.join(agentRoot, relative)) !== packagedHash) throw new Error(`Bundled Agent hash mismatch: ${relative}`);
 }
 if (!Object.keys(agent.binarySha256).length) throw new Error('Agent provenance contains no binaries');
 await mkdir(output, { recursive: true });
@@ -49,7 +56,7 @@ if (process.platform === 'darwin' && process.arch === 'arm64') {
 } else throw new Error('Supported releases: macOS arm64, Windows x64, Ubuntu 22.04 x64');
 const filename = path.basename(artifact);
 const checksum = await sha256(artifact);
-const report = { schemaVersion: 1, version: metadata.version, desktopSourceCommit: sourceCommit, sourceDirty: false, platform: process.platform, arch: process.arch, agent, signed: false, notarized: false, artifact: { filename, bytes: (await stat(artifact)).size, sha256: checksum }, electronVersion: metadata.devDependencies.electron, buildProfile: agent.cargoProfile, linuxLauncherUtf8Fallback: process.platform === 'linux' };
+const report = { schemaVersion: 1, version: metadata.version, desktopSourceCommit: sourceCommit, sourceDirty: false, platform: process.platform, arch: process.arch, agent, signed: false, developerIDSigned: false, adHocSigned: Boolean(signature), notarized: false, ...(signature ? { packagedSignedBinarySha256: signature.packagedSignedBinarySha256 } : {}), artifact: { filename, bytes: (await stat(artifact)).size, sha256: checksum }, electronVersion: metadata.devDependencies.electron, buildProfile: agent.cargoProfile, linuxLauncherUtf8Fallback: process.platform === 'linux' };
 await writeFile(`${artifact}.sha256`, `${checksum}  ${filename}\n`);
 await writeFile(`${artifact}.manifest.json`, `${JSON.stringify(report, null, 2)}\n`);
 console.log(`Release artifact: ${artifact}\nSHA-256: ${checksum}\nUnsigned preview; no signing or notarization credentials were used.`);
