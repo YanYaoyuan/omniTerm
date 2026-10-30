@@ -64,9 +64,10 @@ pub(crate) fn function_tools(request: &ResponsesApiRequest) -> Vec<FunctionTool>
     tools
         .into_iter()
         .filter_map(|tool| {
-            if tool.get("type").and_then(Value::as_str) != Some("function") {
+            let tool_type = tool.get("type").and_then(Value::as_str);
+            if tool_type != Some("function") {
                 tracing::warn!(
-                    tool_type = tool.get("type").and_then(Value::as_str),
+                    tool_type,
                     "tool has no equivalent in this model protocol and was left out"
                 );
                 return None;

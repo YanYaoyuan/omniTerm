@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { buildCommandPlan } from "../electron/command-plan.mjs";
 import { SessionManager } from "../electron/session-manager.mjs";
 import { TerminalHost, resolveTerminalHost } from "../electron/terminal-host.mjs";
-import { hasOutputLine, printParts } from "./pty-output.mjs";
+import { CURSOR_QUERY, CURSOR_REPLY, hasOutputLine, printParts } from "./pty-output.mjs";
 
 // Drives the built host through a real PTY or ConPTY, without Electron.
 const here = fileURLToPath(import.meta.url);
@@ -17,7 +17,7 @@ try { executable = resolveTerminalHost({ desktopRoot, env: { ...env, OMNITERM_TE
 catch { executable = resolveTerminalHost({ desktopRoot, env }); }
 let output = "";
 const exits = [];
-const host = new TerminalHost({ executable, onData: ({ data }) => { output += data; }, onEvent: (event, params) => { if (event === "session.exit") exits.push(params); } });
+const host = new TerminalHost({ executable, onData: ({ id, data }) => { output += data; if (data.includes(CURSOR_QUERY)) host.request("session.write", { id, data: CURSOR_REPLY, reply: true }).catch(() => {}); }, onEvent: (event, params) => { if (event === "session.exit") exits.push(params); } });
 const manager = new SessionManager({ host, planner: (request) => buildCommandPlan(request, { repositoryRoot, defaultCwd: repositoryRoot, env }) });
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const waitFor = async (predicate, label) => {

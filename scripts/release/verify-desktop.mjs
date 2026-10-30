@@ -33,7 +33,8 @@ if (!inside) {
   const terminals = new Map();
   const host = new TerminalHost({
     executable: hostBinary,
-    onData: ({ id, data }) => { const terminal = terminals.get(id); if (terminal) terminal.output += data; },
+    // ConPTY waits for a cursor report at startup; this client has no terminal to send one.
+    onData: ({ id, data }) => { const terminal = terminals.get(id); if (terminal) terminal.output += data; if (data.includes('\x1b[6n')) host.request('session.write', { id, data: '\x1b[1;1R', reply: true }).catch(() => {}); },
     onEvent: (event, params) => { const terminal = terminals.get(params?.id); if (event === 'session.exit' && terminal) { terminal.exited = true; terminal.exitCode = params.exitCode; } },
   });
   const open = async (file, args) => {
