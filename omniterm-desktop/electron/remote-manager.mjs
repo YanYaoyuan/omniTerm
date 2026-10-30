@@ -6,7 +6,7 @@
 // there the channels open their own non-interactive connection instead.
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readdir, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -57,7 +57,7 @@ function failureReason(stderr, fallback = "failed") {
 }
 
 export class RemoteManager {
-  constructor({ spawnProcess = spawn, runSync = spawnSync, exists = existsSync, onState = () => {}, onTransfer = () => {}, onMetrics = () => {}, platform = process.platform, tempRoot = os.tmpdir(), pollMs = POLL_MS, handshakeMs = HANDSHAKE_MS } = {}) {
+  constructor({ spawnProcess = spawn, runSync = spawnSync, exists = existsSync, onState = () => {}, onTransfer = () => {}, onMetrics = () => {}, platform = process.platform, tempRoot = platform === "darwin" ? "/tmp" : os.tmpdir(), pollMs = POLL_MS, handshakeMs = HANDSHAKE_MS } = {}) {
     Object.assign(this, { spawnProcess, runSync, exists, onState, onTransfer, onMetrics, platform, tempRoot, pollMs, handshakeMs });
     this.remotes = new Map();
     this.controlDirectory = null;
@@ -67,10 +67,20 @@ export class RemoteManager {
   // path: an unusable ControlPath is a fatal ssh error, not a soft failure.
   controlPath() {
     if (this.platform === "win32") return null;
-    try { this.controlDirectory ??= mkdtempSync(path.join(this.tempRoot, "omniterm-ssh-")); }
+    // macOS's per-user TMPDIR may consume most of sockaddr_un before adding a
+    // directory, socket name and OpenSSH's temporary suffix. Use its short
+    // system /tmp by default, with an atomically created owner-only directory.
+    try {
+      if (!this.controlDirectory) {
+        const directory = mkdtempSync(path.join(this.tempRoot, "omniterm-ssh-"));
+        try { chmodSync(directory, 0o700); }
+        catch (error) { rmSync(directory, { recursive: true, force: true }); throw error; }
+        this.controlDirectory = directory;
+      }
+    }
     catch { return null; }
     const candidate = path.join(this.controlDirectory, String(this.nextControl++));
-    return candidate.length <= MAX_CONTROL_PATH && /^[\w./-]+$/.test(candidate) ? candidate : null;
+    return Buffer.byteLength(candidate) <= MAX_CONTROL_PATH && /^[\w./-]+$/.test(candidate) ? candidate : null;
   }
   channelArgs(target) {
     const control = target.controlPath ? ["-o", `ControlPath=${target.controlPath}`] : ["-o", "ControlPath=none"];

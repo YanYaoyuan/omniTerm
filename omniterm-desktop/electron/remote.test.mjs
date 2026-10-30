@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
+import { createServer } from "node:net";
 import { buildCommandPlan } from "./command-plan.mjs";
 import { METRICS_SCRIPT, MetricsTracker, parseSample, takeSamples } from "./remote-metrics.mjs";
 import { RemoteManager, safeLocalName } from "./remote-manager.mjs";
@@ -77,7 +78,7 @@ test("tunnels never get a companion connection", async () => {
 });
 
 test("control paths are rejected rather than risking a fatal ssh error", (t) => {
-  const manager = new RemoteManager({ tempRoot: scratch(t) });
+  const manager = new RemoteManager();
   t.after(() => manager.dispose());
   assert.match(manager.controlPath(), /omniterm-ssh-\w+\/1$/);
   assert.equal(new RemoteManager({ platform: "win32" }).controlPath(), null);
@@ -91,6 +92,33 @@ test("control paths are rejected rather than risking a fatal ssh error", (t) => 
   const unsafe = new RemoteManager({ tempRoot: spaced });
   t.after(() => unsafe.dispose());
   assert.equal(unsafe.controlPath(), null);
+});
+
+test("macOS control sockets use a short private directory and support repeated connections", { skip: process.platform === "win32" }, async (t) => {
+  const manager = new RemoteManager({ platform: "darwin" });
+  const server = createServer();
+  t.after(async () => {
+    if (server.listening) await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    const directory = manager.controlDirectory;
+    manager.dispose();
+    assert.equal(existsSync(directory), false);
+  });
+  assert.equal(manager.tempRoot, "/tmp");
+  const paths = Array.from({ length: 30 }, () => manager.controlPath());
+  assert.equal(new Set(paths).size, 30);
+  for (const socket of paths) {
+    assert.match(socket, /^\/tmp\/omniterm-ssh-\w+\/\d+$/);
+    assert.ok(Buffer.byteLength(socket) <= 86);
+  }
+  const directory = statSync(manager.controlDirectory);
+  assert.equal(directory.mode & 0o777, 0o700);
+  assert.equal(directory.uid, process.getuid());
+  // ssh creates its listener under a temporary name with a 17-byte suffix.
+  // Binding that full name verifies the OS accepts the path, not only a regex.
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(`${paths.at(-1)}.abcdefghijklmnop`, resolve);
+  });
 });
 
 test("the session manager reports start and close to the remote layer", async () => {
