@@ -583,6 +583,49 @@ async fn allowed_tools_filter_sources_before_code_mode_and_discovery() {
 }
 
 #[tokio::test]
+async fn dynamic_tools_only_offers_nothing_but_client_tools() {
+    let (session, mut turn) = make_session_and_context().await;
+    set_features(
+        &mut turn,
+        &[
+            Feature::DynamicToolsOnly,
+            Feature::ShellTool,
+            Feature::UnifiedExec,
+            Feature::ViewImage,
+        ],
+    );
+    let turn = Arc::new(turn);
+    let step_context = StepContext::for_test(Arc::clone(&turn));
+    let dynamic_tools = [dynamic_tool(
+        /*namespace*/ None,
+        "terminal_read_context",
+        /*defer_loading*/ false,
+    )];
+
+    let router = super::build_tool_router(
+        &session,
+        step_context.turn.as_ref(),
+        &step_context.settings.model_info,
+        &step_context.environments,
+        &step_context.mcp,
+        /*apps_enabled*/ false,
+        &turn.extension_data,
+        /*tool_suggest_candidates*/ None,
+        &dynamic_tools,
+    )
+    .expect("build dynamic-only tool router");
+
+    assert_eq!(
+        router
+            .model_visible_specs()
+            .iter()
+            .map(codex_tools::ToolSpec::name)
+            .collect::<Vec<_>>(),
+        vec!["terminal_read_context"]
+    );
+}
+
+#[tokio::test]
 async fn reviewer_tool_policy_exclude_optional_core_tools() {
     let (mut session, mut turn) = make_session_and_context().await;
     session.tool_policy = Arc::new(codex_guardian_reviewer::reviewer_tool_policy());

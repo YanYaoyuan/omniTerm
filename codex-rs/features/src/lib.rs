@@ -138,6 +138,9 @@ pub enum Feature {
     UntrustedAsToolOutput,
     /// Record model-attempted tool calls in internal Responses metadata.
     ExecutedToolCallMetadata,
+    /// Expose only client-supplied dynamic tools to the model. Built-in, MCP, extension and
+    /// hosted tools are left out, so a host application owns every side effect of a turn.
+    DynamicToolsOnly,
     /// Enable JavaScript code mode backed by the standalone host process.
     CodeMode,
     /// Expose ranked tool discovery inside JavaScript code mode.
@@ -1111,6 +1114,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::GhostCommit,
         key: "undo",
         stage: Stage::Removed,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::DynamicToolsOnly,
+        key: "dynamic_tools_only",
+        stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
     FeatureSpec {
