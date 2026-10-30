@@ -28,9 +28,6 @@ if (!inside) {
   const expectedRoot = realpathSync(path.join(resources, 'app/node_modules/node-pty'));
   assert.ok(ptyEntry.startsWith(expectedRoot + path.sep), 'Native PTY must come from the application');
   const pty = require(ptyEntry);
-  const nativeFiles = Object.keys(require.cache).filter(file => file.endsWith('.node'));
-  assert.ok(nativeFiles.length > 0);
-  for (const file of nativeFiles) assert.ok(realpathSync(file).startsWith(expectedRoot + path.sep));
   const scratch = mkdtempSync(path.join(os.tmpdir(), 'omniterm-release-pty-'));
   const env = { ...process.env, TERM: 'xterm-256color' };
   delete env.ELECTRON_RUN_AS_NODE; delete env.NODE_OPTIONS; delete env.NODE_PATH;
@@ -53,6 +50,10 @@ if (!inside) {
   try {
     const windows = process.platform === 'win32';
     const terminal = open(windows ? 'powershell.exe' : '/bin/bash', windows ? ['-NoLogo', '-NoProfile', '-NoExit'] : ['--noprofile', '--norc', '-i']);
+    // Windows node-pty loads conpty.node lazily when the first PTY is spawned.
+    const nativeFiles = Object.keys(require.cache).filter(file => file.endsWith('.node'));
+    assert.ok(nativeFiles.length > 0, 'PTY spawn must load a packaged native module');
+    for (const file of nativeFiles) assert.ok(realpathSync(file).startsWith(expectedRoot + path.sep));
     const token = randomBytes(5).toString('hex');
     const marker = name => `__OMNITERM_${name}_${token}__`;
     const print = name => windows ? `Write-Output ('__OMNITERM_' + '${name}_${token}__')` : `printf '%s%s\\n' '__OMNITERM_' '${name}_${token}__'`;
