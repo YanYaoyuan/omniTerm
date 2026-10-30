@@ -69,6 +69,8 @@ The initial dependency list covers Ubuntu 22.04's common Electron/GTK/X11,
 NSS, audio, graphics, C/C++ and Agent support libraries, plus CA certificates,
 `xdg-utils`, OpenSSH, Python 3, and distribution-packaged pyserial. All are APT
 packages; no install hook downloads code or compiles a native module.
+The package recommends `fonts-noto-cjk` for the Chinese interface; APT installs
+it by default, while users can opt out with `--no-install-recommends`.
 
 Before distribution, review the actual GNU Agent, Electron, helper binaries,
 `.so` files and `pty.node` with `dpkg-shlibdeps` on the target system. Add missing
