@@ -1,39 +1,53 @@
-## Contributing
+# Contributing to omniTerm
 
-We welcome community contributions through the [openai/codex issue tracker](https://github.com/openai/codex/issues). Bug reports, root-cause analyses, and feature requests help us understand what matters most and improve Codex.
+<!-- Adapted for omniTerm from the upstream Codex contribution guide. -->
 
-**We do not accept external code contributions or pull requests.**
+We welcome bug reports, documentation, design proposals, and pull requests at
+[YanYaoyuan/omniTerm](https://github.com/YanYaoyuan/omniTerm).
+For larger changes, open an issue first so we can agree on the user problem,
+scope, and cross-platform behavior.
 
-### Why we do not accept external code contributions
+## Development
 
-Effective changes to Codex require architectural context, an understanding of system-level constraints, and visibility into the project's roadmap. External pull requests often focus on issues that are lower priority, affect a small number of users, or need substantial changes to fit the broader system. Reviewing and iterating on those changes can take more time than implementing a fix directly, diverting attention from higher-priority work.
+The current omniTerm command launcher lives in `omniterm-cli/`. It requires
+Node.js 22 or newer and has no npm runtime dependencies. From the repository
+root, run:
 
-Community expertise is most valuable when shared through detailed bug reports, reproduction steps, logs, root-cause analysis, and design discussions in issues. Understanding the problem, identifying the right solution, and prioritizing the work are typically the hard parts; implementation is comparatively straightforward with the help of Codex itself.
+```sh
+node omniterm-cli/bin/omniterm.js --help
+node --test omniterm-cli/test/cli.test.js
+```
 
-For these reasons, we focus community contributions on issue reports, analysis, and feedback, while the Codex team handles code changes.
+Read the [architecture](omniterm/architecture.md) and
+[roadmap](omniterm/roadmap.md) before adding a new integration. Be explicit about
+which features are implemented and which remain proposals. Changes should
+account for macOS, Linux, and Windows; identify any platform limitations in the
+pull request and relevant documentation.
 
-### Reporting bugs
+The inherited Rust Agent engine remains under `codex-rs/`. Keep changes to that
+engine focused so upstream improvements remain practical to merge. For Rust
+changes, follow the build instructions in [install.md](install.md), run
+formatting and the affected crate's tests, and report the results. The current
+omniTerm launcher CI does not replace Rust-core validation.
 
-Before opening a new issue, search the issue tracker to see whether the problem has already been reported. If it has, add any new information to the existing issue.
+## Pull requests
 
-When reporting a bug, include as much relevant detail as possible:
+- Describe the concrete problem, resulting behavior, and any user-visible
+  limitations.
+- Include meaningful tests for changed behavior and the commands you ran.
+- Keep credentials, personal configuration, and generated build outputs out of
+  commits.
+- Preserve upstream copyright notices and third-party license information.
+- Treat contributors respectfully and keep feedback focused on the work.
 
-- Clear, detailed steps to reproduce the problem.
-- Expected and actual behavior.
-- Your Codex version, operating system, and other relevant environment details.
-- Logs, error messages, or other diagnostic information, with sensitive information removed.
-- Root-cause analysis, technical observations, or potential approaches to a fix, if available.
+## License
 
-### Requesting features
+Unless explicitly stated otherwise, contributions are provided under the
+repository's [Apache-2.0 license](../LICENSE). Submit only work you have the
+right to contribute. omniTerm does not use the upstream OpenAI CLA workflow;
+no separate CLA is currently required by this project.
 
-Open a feature request in the issue tracker, or upvote an existing request that describes the same need. Explain your use case, the behavior you would like, and why it would improve your workflow.
+## Security
 
-### Community values
-
-- **Be kind and inclusive.** Treat others with respect; we follow the [Contributor Covenant](https://www.contributor-covenant.org/).
-- **Assume good intent.** Written communication is hard, so err on the side of generosity.
-- **Share what you learn.** Reproduction details, logs, and analysis help the entire community.
-
-### Security
-
-If you discover a security vulnerability, follow the [security policy](../SECURITY.md) instead of reporting it in a public issue.
+Follow the [security policy](../SECURITY.md) for vulnerability reports instead
+of posting sensitive information in a public issue.

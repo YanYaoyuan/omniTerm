@@ -1,0 +1,7 @@
+omniTerm CLI
+Copyright 2026 omniTerm contributors
+
+Part of omniTerm, an independent project based on OpenAI Codex.
+The Codex engine and its third-party notices are retained in the repository's
+root NOTICE and LICENSE files. This launcher invokes separately installed
+tools; it does not bundle Codex, OpenSSH, Python, or pyserial.

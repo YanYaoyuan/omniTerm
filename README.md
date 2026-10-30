@@ -1,81 +1,81 @@
-<p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.
-<p align="center">
-  <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
-</p>
-</br>
-If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="https://developers.openai.com/codex/ide">install in your IDE.</a>
-</br>If you want the desktop app experience, run <code>codex app</code> or visit <a href="https://chatgpt.com/codex?app-landing-page=true">the Codex App page</a>.
-</br>If you are looking for the <em>cloud-based agent</em> from OpenAI, <strong>Codex Web</strong>, go to <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
+# omniTerm
 
----
+**An open-source, cross-platform terminal workspace with an Agent at its core.**
 
-## Quickstart
+[简体中文](README.zh-CN.md) · [Architecture](docs/omniterm/architecture.md) · [Roadmap](docs/omniterm/roadmap.md) · [Contributing](CONTRIBUTING.md)
 
-### Installing and running Codex CLI
+omniTerm aims to bring the terminal experience of iTerm2 and the remote-work toolbox of MobaXterm to **macOS, Linux, and Windows**, with a Codex-based Agent working alongside your sessions.
 
-Run the following on Mac or Linux to install Codex CLI:
+**Status: early CLI prototype.** This repository contains the Codex source foundation and an omniTerm command launcher. It uses your existing terminal and installed tools. A desktop terminal emulator, tabs, split panes, connection manager, and graphical SFTP browser are planned; they are not shipped yet.
 
-```shell
-curl -fsSL https://chatgpt.com/codex/install.sh | sh
+## What works today
+
+| Command           | Initial implementation                                                              |
+| ----------------- | ----------------------------------------------------------------------------------- |
+| `omniterm agent`  | Launch Codex with its existing authentication, configuration, and approval controls |
+| `omniterm shell`  | Start a local shell in the current terminal                                         |
+| `omniterm ssh`    | Launch the system OpenSSH client                                                    |
+| `omniterm tunnel` | SSH local, remote, and dynamic forwarding (`-L`, `-R`, `-D`)                        |
+| `omniterm sftp`   | Start the system SFTP client                                                        |
+| `omniterm serial` | Serial console through optional Python `pyserial` miniterm                          |
+| `omniterm doctor` | Check locally available dependencies                                                |
+
+These commands are separate sessions. Agent access to SSH or serial session context is a future integration. Shell, SSH, SFTP, and serial commands are ordinary local tools and are not routed through the Agent's sandbox or approval system.
+
+## Try the prototype
+
+Install **Node.js 22 or later**, then:
+
+```sh
+git clone https://github.com/YanYaoyuan/omniTerm.git
+cd omniTerm
+node omniterm-cli/bin/omniterm.js --help
+node omniterm-cli/bin/omniterm.js doctor
+
+# Optional: install the command from local source
+npm install -g ./omniterm-cli
+omniterm --help
 ```
 
-Run the following on Windows to install Codex CLI:
+No omniTerm npm package or desktop installer has been published yet. The launcher has no npm runtime dependencies. Install the tools you need:
 
-```shell
-powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
+- **Agent:** a Codex executable built from this repository or already installed. Set `OMNITERM_CODEX_BIN` to choose an executable explicitly. See the [launcher guide](omniterm-cli/README.md) and [Agent build instructions](docs/install.md).
+- **SSH, tunnels, SFTP:** system OpenSSH clients. Windows offers an OpenSSH Client optional feature.
+- **Serial:** Python 3 with `pyserial` installed in the selected Python environment; see the launcher guide.
+
+```sh
+omniterm agent "Explain this repository"
+omniterm shell
+omniterm ssh user@example.com
+omniterm tunnel -L 127.0.0.1:8080:localhost:80 user@example.com
+omniterm tunnel -D 127.0.0.1:1080 user@example.com
+omniterm sftp user@example.com
+omniterm serial /dev/ttyUSB0 115200
+# Windows: omniterm serial COM3 115200
 ```
 
-The standalone installers download from `https://releases.openai.com/codex` by default and fall back to GitHub Releases if a metadata or asset download is unavailable. To force GitHub Releases, set `CODEX_INSTALLER_USE_RELEASES_OPENAI_COM` to `false` (`0` and `no` are also accepted):
+## Product direction
 
-```shell
-curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false sh
+1. **Terminal workspace:** desktop distribution for macOS, Linux, and Windows; tabs, panes, search, profiles, and PTY/ConPTY sessions.
+2. **Agent mode:** conversation alongside the active terminal, explicit context sharing, visible execution targets, approvals, and execution history, initially using the Codex app-server protocol.
+3. **Remote toolbox:** saved SSH connections, jump hosts, forwarding management, SFTP transfers, and serial profiles.
+
+See the [roadmap and acceptance criteria](docs/omniterm/roadmap.md).
+
+## Development
+
+```sh
+node --test omniterm-cli/test/cli.test.js
 ```
 
-```powershell
-$env:CODEX_INSTALLER_USE_RELEASES_OPENAI_COM='false'; irm https://chatgpt.com/codex/install.ps1 | iex
-```
+`codex-rs/`, `codex-cli/`, and `sdk/` retain the inherited Agent foundation. Internal `codex-*` names and protocols remain intact to make upstream updates practical. New code lives in `omniterm-cli/`; product design lives in `docs/omniterm/`.
 
-Codex CLI can also be installed via the following package managers:
+The new CI checks the launcher on macOS, Linux, and Windows. It does not certify every Codex feature, remote server, or serial device. Upstream infrastructure and release workflows are [archived](.github/upstream-workflows/README.md); the full inherited Rust workspace is not covered by this initial CI.
 
-```shell
-# Install using npm
-npm install -g @openai/codex
-```
+## License and origin
 
-```shell
-# Install using Homebrew
-brew install --cask codex
-```
+omniTerm uses the [Apache License 2.0](LICENSE). It is derived from [OpenAI Codex](https://github.com/openai/codex); original copyright and third-party notices are retained in [NOTICE](NOTICE) and the source tree. See [upstream provenance](docs/omniterm/upstream.md).
 
-Then simply run `codex` to get started.
+This is an independent project, not an official OpenAI, iTerm2, or MobaXterm product. These names describe the Agent foundation or product benchmarks, not an affiliation.
 
-<details>
-<summary>You can also go to the <a href="https://github.com/openai/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
-
-Each GitHub Release contains many executables, but in practice, you likely want one of these:
-
-- macOS
-  - Apple Silicon/arm64: `codex-aarch64-apple-darwin.tar.gz`
-  - x86_64 (older Mac hardware): `codex-x86_64-apple-darwin.tar.gz`
-- Linux
-  - x86_64: `codex-x86_64-unknown-linux-musl.tar.gz`
-  - arm64: `codex-aarch64-unknown-linux-musl.tar.gz`
-
-Each archive contains a single entry with the platform baked into the name (e.g., `codex-x86_64-unknown-linux-musl`), so you likely want to rename it to `codex` after extracting it.
-
-</details>
-
-### Using Codex with your ChatGPT plan
-
-Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Business, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
-
-You can also use Codex with an API key, but this requires [additional setup](https://developers.openai.com/codex/auth#sign-in-with-an-api-key).
-
-## Docs
-
-- [**Codex Documentation**](https://developers.openai.com/codex)
-- [**Contributing**](./docs/contributing.md)
-- [**Installing & building**](./docs/install.md)
-- [**Open source fund**](./docs/open-source-fund.md)
-
-This repository is licensed under the [Apache-2.0 License](LICENSE).
+<!-- Modified for omniTerm from the upstream Codex README, 2026-10-30. -->

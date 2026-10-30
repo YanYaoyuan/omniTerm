@@ -1,36 +1,8 @@
-# https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference#package-ecosystem-
-
+# Adapted for omniTerm. Upstream dependencies are reviewed during Codex updates.
 version: 2
 updates:
-  - package-ecosystem: bun
-    directory: .github/actions/codex
-    schedule:
-      interval: weekly
-    cooldown:
-      default-days: 7
-  - package-ecosystem: cargo
-    directories:
-      - codex-rs
-      - codex-rs/*
-    schedule:
-      interval: weekly
-    cooldown:
-      default-days: 7
-  - package-ecosystem: docker
-    directory: codex-cli
-    schedule:
-      interval: weekly
-    cooldown:
-      default-days: 7
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
-    cooldown:
-      default-days: 7
-  - package-ecosystem: rust-toolchain
-    directory: codex-rs
-    schedule:
-      interval: weekly
-    cooldown:
-      default-days: 7
+    open-pull-requests-limit: 5

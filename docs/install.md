@@ -1,4 +1,9 @@
-## Installing & building
+## Building the inherited Codex Agent
+
+> Modified for omniTerm: this page documents the inherited Agent build, not a
+> desktop omniTerm installer. For the new command launcher, see
+> [omniterm-cli](../omniterm-cli/README.md). The requirements below come from the
+> upstream Codex documentation; desktop omniTerm packaging is still planned.
 
 ### System requirements
 
@@ -10,14 +15,14 @@
 
 ### DotSlash
 
-The GitHub Release also contains a [DotSlash](https://dotslash-cli.com/) file for the Codex CLI named `codex`. Using a DotSlash file makes it possible to make a lightweight commit to source control to ensure all contributors use the same version of an executable, regardless of what platform they use for development.
+Upstream Codex releases may include a [DotSlash](https://dotslash-cli.com/) file for the Codex CLI named `codex`. omniTerm has not published release artifacts yet. Using a DotSlash file makes it possible to make a lightweight commit to source control to ensure all contributors use the same version of an executable, regardless of what platform they use for development.
 
 ### Build from source
 
 ```bash
 # Clone the repository and navigate to the root of the Cargo workspace.
-git clone https://github.com/openai/codex.git
-cd codex/codex-rs
+git clone https://github.com/YanYaoyuan/omniTerm.git
+cd omniTerm/codex-rs
 
 # Install the Rust toolchain, if necessary.
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y

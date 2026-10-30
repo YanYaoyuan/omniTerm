@@ -1,3 +1,4 @@
+# Modified for omniTerm: add the dependency-free launcher importer.
 lockfileVersion: '9.0'
 
 settings:
@@ -33,6 +34,8 @@ importers:
   codex-cli: {}
 
   codex-rs/responses-api-proxy/npm: {}
+
+  omniterm-cli: {}
 
   sdk/typescript:
     devDependencies:

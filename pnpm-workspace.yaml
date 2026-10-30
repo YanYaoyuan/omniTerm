@@ -1,4 +1,6 @@
+# Modified for omniTerm: include the independent terminal launcher.
 packages:
+  - omniterm-cli
   - codex-cli
   - codex-rs/responses-api-proxy/npm
   - sdk/typescript

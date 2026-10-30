@@ -1,0 +1,29 @@
+{
+  "name": "@omniterm/cli",
+  "version": "0.1.0-dev",
+  "private": true,
+  "description": "omniTerm terminal and Codex Agent command launcher",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "omniterm": "bin/omniterm.js"
+  },
+  "scripts": {
+    "test": "node --test test/cli.test.js"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YanYaoyuan/omniTerm.git",
+    "directory": "omniterm-cli"
+  }
+}

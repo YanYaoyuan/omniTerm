@@ -1,17 +1,31 @@
-# Security Policy
+# Security policy
 
-Thank you for helping us keep Codex secure!
+<!-- Adapted for omniTerm from the upstream Codex security policy. -->
 
-## Reporting Security Issues
+omniTerm is an early-stage project. Security fixes currently target the latest
+`main` branch; there are no supported stable release lines yet.
 
-The security is essential to OpenAI's mission. We appreciate the work of security researchers acting in good faith to identify and responsibly report potential vulnerabilities, helping us maintain strong privacy and security standards for our users and technology.
+## Reporting a vulnerability
 
-Our security program is managed through Bugcrowd, and we ask that any validated vulnerabilities be reported via the [Bugcrowd program](https://bugcrowd.com/engagements/openai).
+Report vulnerabilities using
+[GitHub private vulnerability reporting](https://github.com/YanYaoyuan/omniTerm/security/advisories/new).
+Include affected versions or commits, reproduction steps, impact, and any
+suggested mitigations. Remove secrets and personal data from attachments.
+Please do not disclose exploit details in a public issue before maintainers
+have had an opportunity to investigate and coordinate a fix.
 
-## Vulnerability Disclosure Program
+This is the security contact for omniTerm. The inherited Codex source does not
+make omniTerm part of OpenAI's security or bug bounty programs. Maintainers can
+coordinate upstream disclosure when a report affects unmodified Codex code.
 
-Our Vulnerability Program Guidelines are defined on our [Bugcrowd program page](https://bugcrowd.com/engagements/openai).
+## Runtime boundaries
 
-## How to operate CODEX safely
+The launcher starts local tools with the current user's permissions. Shell,
+SSH, SFTP, and serial sessions are not automatically inside the Codex sandbox.
+Codex Agent actions retain the selected Codex approvals and sandbox settings.
+Review the target host, working directory, and requested action before granting
+an Agent access to a local or remote environment.
 
-For details on Codex security boundaries, including sandboxing, approvals, and network controls, see [Agent approvals & security](https://developers.openai.com/codex/agent-approvals-security).
+Keep SSH host-key verification enabled, use narrowly scoped credentials, and
+do not include private keys, tokens, passwords, or production session logs in
+issues or pull requests.
