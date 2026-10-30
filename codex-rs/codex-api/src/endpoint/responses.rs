@@ -10,6 +10,10 @@ use crate::requests::headers::insert_header;
 use crate::requests::headers::subagent_header;
 use crate::sse::spawn_response_stream;
 use crate::telemetry::SseTelemetry;
+use crate::translated::ANTHROPIC_MESSAGES_PATH;
+use crate::translated::CHAT_COMPLETIONS_PATH;
+use crate::translated::anthropic;
+use crate::translated::chat;
 use codex_client::EncodedJsonBody;
 use codex_client::HttpTransport;
 use codex_client::RequestCompression;
@@ -22,6 +26,13 @@ use serde_json::Value;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use tracing::instrument;
+
+/// Non-Responses protocol a request is translated into.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TranslatedProtocol {
+    ChatCompletions,
+    AnthropicMessages,
+}
 
 pub struct ResponsesClient<T: HttpTransport> {
     session: EndpointSession<T>,
@@ -94,6 +105,41 @@ impl<T: HttpTransport> ResponsesClient<T> {
 
         self.stream_encoded(body, headers, compression, turn_state)
             .await
+    }
+
+    /// Streams `request` over a protocol other than Responses, yielding the same events.
+    pub async fn stream_translated(
+        &self,
+        protocol: TranslatedProtocol,
+        request: &ResponsesApiRequest,
+        extra_headers: HeaderMap,
+    ) -> Result<ResponseStream, ApiError> {
+        let (path, body) = match protocol {
+            TranslatedProtocol::ChatCompletions => {
+                (CHAT_COMPLETIONS_PATH, chat::encode_request(request))
+            }
+            TranslatedProtocol::AnthropicMessages => {
+                (ANTHROPIC_MESSAGES_PATH, anthropic::encode_request(request))
+            }
+        };
+        let body = EncodedJsonBody::encode(&body)
+            .map_err(|e| ApiError::Stream(format!("failed to encode model request: {e}")))?;
+        let stream_response = self
+            .session
+            .stream_encoded_json_with(Method::POST, path, extra_headers, Some(body), |req| {
+                req.headers.insert(
+                    http::header::ACCEPT,
+                    HeaderValue::from_static("text/event-stream"),
+                );
+            })
+            .await?;
+        let idle_timeout = self.session.provider().stream_idle_timeout;
+        Ok(match protocol {
+            TranslatedProtocol::ChatCompletions => chat::spawn_stream(stream_response, idle_timeout),
+            TranslatedProtocol::AnthropicMessages => {
+                anthropic::spawn_stream(stream_response, idle_timeout)
+            }
+        })
     }
 
     #[instrument(

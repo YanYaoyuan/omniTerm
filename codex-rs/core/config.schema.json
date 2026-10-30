@@ -1305,6 +1305,9 @@
             "shell_snapshot_v2": {
               "type": "boolean"
             },
+            "dynamic_tools_only": {
+              "type": "boolean"
+            },
             "shell_tool": {
               "type": "boolean"
             },
@@ -7298,6 +7301,20 @@
             "responses"
           ],
           "type": "string"
+        },
+        {
+          "description": "OpenAI-compatible Chat Completions at `/chat/completions`.",
+          "enum": [
+            "chat"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The Anthropic Messages API at `/messages`.",
+          "enum": [
+            "anthropic_messages"
+          ],
+          "type": "string"
         }
       ]
     },
@@ -7952,6 +7969,9 @@
           "type": "boolean"
         },
         "shell_snapshot_v2": {
+          "type": "boolean"
+        },
+        "dynamic_tools_only": {
           "type": "boolean"
         },
         "shell_tool": {
