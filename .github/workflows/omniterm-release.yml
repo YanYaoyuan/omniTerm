@@ -106,6 +106,8 @@ jobs:
           compression-level: 1
           retention-days: 14
           if-no-files-found: error
+      - name: Verify offline code-mode host protocol and V8
+        run: python scripts/release/verify-agent-offline.py dist/omniterm-agent
       - name: Collect Agent license notices
         run: python scripts/release/stage-agent-notices.py dist/omniterm-agent --target x86_64-pc-windows-msvc --cargo-profile dev-small
       - name: Release Cargo object storage before desktop packaging

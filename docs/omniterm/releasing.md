@@ -32,6 +32,7 @@ npm test
 npm run package
 cd ..
 node scripts/release/verify-desktop.mjs
+python scripts/release/verify-agent-offline.py dist/omniterm-agent
 node omniterm-desktop/scripts/package-release.mjs
 ```
 
@@ -123,7 +124,10 @@ macOS state. OS trust prompts may appear for these unsigned previews.
 
 The packaged-runtime smoke check loads the artifact's own Electron and native
 node-pty, executes shell commands and Unicode input, requests a resize, tests
-Ctrl+C/close, and runs the bundled Agent's `--version`. It does not establish GUI
+Ctrl+C/close, and runs the bundled Agent's `--version`. A separate offline host
+check negotiates the actual framed stdio protocol, opens a session, evaluates
+`6 * 7` in bundled V8, and shuts down cleanly with tools disabled. It sends no
+model request. These checks do not establish GUI
 keyboard/IME behavior, authenticated model tasks, production SSH access, serial
 hardware support, or complete functionality across every supported OS version.
 A successful CI artifact should not be described as a full end-to-end acceptance.
