@@ -60,7 +60,7 @@ jobs:
           $target = Join-Path $env:RUNNER_TEMP 'omniterm-cargo'
           "CARGO_TARGET_DIR=$target" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Get-PSDrive -PSProvider FileSystem | Format-Table Name, Used, Free
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - uses: actions/setup-node@v4
