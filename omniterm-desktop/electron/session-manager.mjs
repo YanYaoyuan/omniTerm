@@ -3,6 +3,10 @@ import { randomUUID } from "node:crypto";
 
 const MAX_BUFFER = 2 * 1024 * 1024;
 const MAX_SESSIONS = 20;
+// PTYs emit many small chunks under heavy output. Coalescing them for a few
+// milliseconds keeps IPC traffic per frame bounded without adding visible lag.
+const FLUSH_DELAY_MS = 4;
+const FLUSH_BYTES = 256 * 1024;
 
 function descriptor(session) {
   return { id: session.id, title: session.plan.title, kind: session.plan.kind, cwd: session.plan.cwd, ...(session.pty ? { pid: session.pty.pid } : {}), status: session.status };
@@ -19,8 +23,10 @@ export function terminatePty(pty, platform = process.platform, signalProcess = p
 }
 
 export class SessionManager {
-  constructor({ planner, spawnPty, onData = () => {}, onExit = () => {}, terminate = terminatePty }) {
+  constructor({ planner, spawnPty, onData = () => {}, onExit = () => {}, terminate = terminatePty, schedule = (callback) => setTimeout(callback, FLUSH_DELAY_MS), cancel = clearTimeout }) {
     this.planner = planner;
+    this.schedule = schedule;
+    this.cancel = cancel;
     this.spawnPty = spawnPty;
     this.onData = onData;
     this.onExit = onExit;
@@ -34,7 +40,7 @@ export class SessionManager {
     const plan = await this.planner(request);
     if (this.disposed) throw new Error("The terminal window is closing.");
     if (this.sessions.size >= MAX_SESSIONS) throw new Error("Close a tab before opening another (maximum 20 sessions).");
-    const session = { id: randomUUID(), plan, status: "pending", pty: null, cols: 120, rows: 32, chunks: [], bytes: 0, exited: false, exitCode: null, listeners: [] };
+    const session = { id: randomUUID(), plan, status: "pending", pty: null, cols: 120, rows: 32, chunks: [], bytes: 0, pending: [], pendingBytes: 0, timer: null, exited: false, exitCode: null, listeners: [] };
     this.sessions.set(session.id, session);
     return descriptor(session);
   }
@@ -57,7 +63,18 @@ export class SessionManager {
         session.bytes -= offset;
       }
     }
-    this.onData({ id: session.id, data });
+    session.pending.push(data);
+    session.pendingBytes += data.length;
+    if (session.pendingBytes >= FLUSH_BYTES) this.flush(session);
+    else session.timer ??= this.schedule(() => { session.timer = null; this.flush(session); });
+  }
+  flush(session) {
+    if (session.timer !== null) { this.cancel(session.timer); session.timer = null; }
+    if (!session.pending.length) return;
+    const data = session.pending.length === 1 ? session.pending[0] : session.pending.join("");
+    session.pending = [];
+    session.pendingBytes = 0;
+    if (this.sessions.get(session.id) === session) this.onData({ id: session.id, data });
   }
   start(id) {
     const session = this.require(id);
@@ -70,6 +87,7 @@ export class SessionManager {
       session.listeners.push(pty.onData((data) => { if (this.sessions.get(id) === session && !session.exited) this.append(session, data); }));
       session.listeners.push(pty.onExit(({ exitCode, signal }) => {
         if (this.sessions.get(id) !== session || session.exited) return;
+        this.flush(session);
         session.exited = true;
         session.status = "exited";
         session.exitCode = exitCode ?? 0;
@@ -81,6 +99,7 @@ export class SessionManager {
       session.status = "exited";
       session.exitCode = 1;
       this.append(session, `\r\nUnable to start session: ${error.message}\r\n`);
+      this.flush(session);
       this.onExit({ id, exitCode: 1, signal: null });
       throw error;
     }
@@ -108,6 +127,8 @@ export class SessionManager {
     if (typeof id !== "string") throw new Error("Invalid session id.");
     const session = this.sessions.get(id);
     if (!session) return false;
+    if (session.timer !== null) { this.cancel(session.timer); session.timer = null; }
+    session.pending = [];
     this.sessions.delete(id);
     for (const listener of session.listeners) listener?.dispose();
     if (session.pty && !session.exited) { try { this.terminate(session.pty); } catch { /* The child may have exited concurrently. */ } }

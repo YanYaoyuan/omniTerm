@@ -2,16 +2,52 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { WebLinksAddon } from "@xterm/addon-web-links";
+import { WebglAddon } from "@xterm/addon-webgl";
 import { CircleNotch, WarningCircle } from "@phosphor-icons/react";
+import { isAppShortcut } from "./shortcuts.js";
+import { themeFor } from "./themes.js";
+import { cwdFromOsc7, quotePath } from "./terminal-utils.js";
 
-export function TerminalView({ session, visible, settings, api, register, onState, onError, onFocus }) {
+export const FONT_STACKS = {
+  system: '"SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+  jetbrains: '"JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace',
+  fira: '"Fira Code", "SFMono-Regular", Menlo, Consolas, monospace',
+  cascadia: '"Cascadia Code", "Cascadia Mono", Consolas, "SFMono-Regular", monospace',
+  sarasa: '"Sarasa Mono SC", "Sarasa Term SC", "SFMono-Regular", Menlo, Consolas, monospace',
+};
+
+const searchDecorations = {
+  matchBackground: "#dec38d55", matchOverviewRuler: "#dec38d",
+  activeMatchBackground: "#8db4ffaa", activeMatchColorOverviewRuler: "#8db4ff",
+};
+
+function loadWebgl(term) {
+  try {
+    const webgl = new WebglAddon();
+    webgl.onContextLoss(() => webgl.dispose());
+    term.loadAddon(webgl);
+    return webgl;
+  } catch (error) {
+    // Fall back to the DOM renderer when WebGL2 is unavailable.
+    console.warn("WebGL renderer unavailable:", error);
+    return null;
+  }
+}
+
+export function TerminalView({ session, visible, focused = false, dimmed = false, style, settings, platform, api, register, onState, onError, onFocus, onInput, onCwd, onTitle }) {
   const host = useRef(null);
   const terminal = useRef(null);
   const fitRef = useRef(null);
-  const callbacks = useRef({ onState, onError, onFocus });
+  const webglRef = useRef(null);
+  const settingsRef = useRef(settings);
+  const callbacks = useRef({ onState, onError, onFocus, onInput, onCwd, onTitle });
   const [state, setState] = useState("opening");
   const [failure, setFailure] = useState("");
-  callbacks.current = { onState, onError, onFocus };
+  const [dragging, setDragging] = useState(false);
+  callbacks.current = { onState, onError, onFocus, onInput, onCwd, onTitle };
+  settingsRef.current = settings;
 
   useEffect(() => {
     let disposed = false;
@@ -19,39 +55,57 @@ export function TerminalView({ session, visible, settings, api, register, onStat
     let frame;
     const term = new Terminal({
       cursorBlink: settings.cursorBlink,
-      cursorStyle: "bar",
+      cursorStyle: settings.cursorStyle,
       fontSize: settings.fontSize,
-      fontFamily: '"SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace',
-      lineHeight: 1.22,
+      fontFamily: FONT_STACKS[settings.fontFamily] || FONT_STACKS.system,
+      lineHeight: settings.lineHeight,
       letterSpacing: 0,
       scrollback: settings.scrollback,
-      allowProposedApi: false,
-      theme: {
-        background: "#14181f", foreground: "#e0e6ee", cursor: "#8db4ff",
-        cursorAccent: "#14181f", selectionBackground: "#8db4ff36",
-        black: "#39414e", red: "#e58a91", green: "#a5c9a1", yellow: "#dec38d",
-        blue: "#8db4ff", magenta: "#bdacd8", cyan: "#92c4cc", white: "#e0e6ee",
-        brightBlack: "#7d899a", brightRed: "#f4a2a8", brightGreen: "#b9dab5",
-        brightYellow: "#efd5a5", brightBlue: "#accaff", brightMagenta: "#d4c3ed",
-        brightCyan: "#aedce3", brightWhite: "#f5f7fa",
-      },
+      // Required by the Unicode 11 width provider.
+      allowProposedApi: true,
+      macOptionIsMeta: settings.optionAsMeta,
+      macOptionClickForcesSelection: true,
+      rightClickSelectsWord: platform === "darwin",
+      smoothScrollDuration: 0,
+      theme: themeFor(settings.theme).terminal,
     });
     const fit = new FitAddon();
     const search = new SearchAddon();
+    const unicode = new Unicode11Addon();
     term.loadAddon(fit);
     term.loadAddon(search);
+    term.loadAddon(unicode);
+    term.unicode.activeVersion = "11";
+    term.loadAddon(new WebLinksAddon((event, uri) => {
+      // Like iTerm, links open on Cmd/Ctrl+click so plain clicks still select text.
+      if (!(event.metaKey || event.ctrlKey)) return;
+      Promise.resolve(api.openExternal(uri)).catch(report);
+    }));
     term.open(host.current);
+    if (settings.gpu) webglRef.current = loadWebgl(term);
     terminal.current = term;
     fitRef.current = fit;
 
-    const report = (error) => {
-      if (!disposed) callbacks.current.onError(error?.message || String(error));
-    };
+    function report(error) {
+      if (!disposed && error) callbacks.current.onError(error?.message || String(error));
+    }
     const write = term.onData((data) => {
-      if (!exited) Promise.resolve(api.writeSession({ id: session.id, data })).catch(report);
+      if (exited) return;
+      if (callbacks.current.onInput) callbacks.current.onInput(session.id, data);
+      else Promise.resolve(api.writeSession({ id: session.id, data })).catch(report);
     });
     const resized = term.onResize(({ cols, rows }) => {
       Promise.resolve(api.resizeSession({ id: session.id, cols, rows })).catch(report);
+    });
+    const titled = term.onTitleChange((title) => callbacks.current.onTitle?.(session.id, title.slice(0, 120)));
+    const selected = term.onSelectionChange(() => {
+      if (!settingsRef.current.copyOnSelect || !term.hasSelection()) return;
+      navigator.clipboard.writeText(term.getSelection()).catch(() => {});
+    });
+    const osc7 = term.parser.registerOscHandler(7, (data) => {
+      const cwd = cwdFromOsc7(data, platform);
+      if (cwd) callbacks.current.onCwd?.(session.id, cwd);
+      return true;
     });
     const resize = () => {
       if (disposed || !host.current?.offsetWidth || !host.current?.offsetHeight) return;
@@ -80,11 +134,13 @@ export function TerminalView({ session, visible, settings, api, register, onStat
     });
     const controls = {
       focus: () => term.focus(),
-      find: (value, previous = false) => {
+      find: (value, previous = false, options = {}) => {
         if (!value) { search.clearDecorations(); term.clearSelection(); return true; }
-        return previous ? search.findPrevious(value) : search.findNext(value);
+        const query = { ...options, decorations: searchDecorations };
+        return previous ? search.findPrevious(value, query) : search.findNext(value, query);
       },
       clearSearch: () => { search.clearDecorations(); term.clearSelection(); },
+      getSelection: () => term.getSelection(),
       copy: async () => {
         const selection = term.getSelection();
         if (!selection) throw new Error("请先在终端中选择要复制的文本。");
@@ -95,14 +151,23 @@ export function TerminalView({ session, visible, settings, api, register, onStat
         term.paste(await navigator.clipboard.readText());
         term.focus();
       },
+      // Uses bracketed paste when the program enabled it, so multi-line text
+      // is not executed line by line.
+      pasteText: (value) => {
+        if (exited) throw new Error("该会话已结束。");
+        term.paste(value);
+      },
+      selectAll: () => term.selectAll(),
+      scrollToBottom: () => term.scrollToBottom(),
       clear: () => { term.clear(); term.focus(); },
+      isExited: () => exited,
     };
     register(session.id, controls);
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown") return true;
+      if (isAppShortcut(event, platform)) return false;
       const key = event.key.toLowerCase();
-      if ((event.metaKey || event.ctrlKey) && ["t", "w", "f", "tab"].includes(key)) return false;
-      const clipboardShortcut = event.metaKey || (event.ctrlKey && event.shiftKey);
+      const clipboardShortcut = platform === "darwin" ? event.metaKey && !event.ctrlKey : event.ctrlKey && event.shiftKey;
       if (clipboardShortcut && key === "c" && term.hasSelection()) {
         event.preventDefault(); controls.copy().catch(report); return false;
       }
@@ -139,19 +204,28 @@ export function TerminalView({ session, visible, settings, api, register, onStat
       disposed = true;
       cancelAnimationFrame(frame);
       observer.disconnect();
-      offData(); offExit(); write.dispose(); resized.dispose();
+      offData(); offExit(); write.dispose(); resized.dispose(); titled.dispose(); selected.dispose(); osc7.dispose();
       register(session.id, null);
+      webglRef.current = null;
       term.dispose();
       terminal.current = null;
       fitRef.current = null;
     };
-  }, [session.id, api, register]);
+  }, [session.id, api, register, platform]);
 
   useEffect(() => {
-    if (!terminal.current) return;
-    terminal.current.options.fontSize = settings.fontSize;
-    terminal.current.options.cursorBlink = settings.cursorBlink;
-    terminal.current.options.scrollback = settings.scrollback;
+    const term = terminal.current;
+    if (!term) return;
+    term.options.fontSize = settings.fontSize;
+    term.options.fontFamily = FONT_STACKS[settings.fontFamily] || FONT_STACKS.system;
+    term.options.lineHeight = settings.lineHeight;
+    term.options.cursorBlink = settings.cursorBlink;
+    term.options.cursorStyle = settings.cursorStyle;
+    term.options.scrollback = settings.scrollback;
+    term.options.macOptionIsMeta = settings.optionAsMeta;
+    term.options.theme = themeFor(settings.theme).terminal;
+    if (settings.gpu && !webglRef.current) webglRef.current = loadWebgl(term);
+    else if (!settings.gpu && webglRef.current) { webglRef.current.dispose(); webglRef.current = null; }
     const frame = requestAnimationFrame(() => {
       if (host.current?.offsetWidth) fitRef.current?.fit();
     });
@@ -173,7 +247,24 @@ export function TerminalView({ session, visible, settings, api, register, onStat
     return () => cancelAnimationFrame(frame);
   }, [visible, api, session.id]);
 
-  return <div className={`terminal-view ${visible ? "is-visible" : ""}`} onMouseDown={() => callbacks.current.onFocus(session.id)}>
+  const drop = (event) => {
+    event.preventDefault();
+    setDragging(false);
+    const files = [...(event.dataTransfer?.files || [])];
+    const paths = files.map((file) => api.pathForFile?.(file)).filter(Boolean);
+    if (!paths.length || state !== "running") return;
+    callbacks.current.onInput?.(session.id, paths.map((filename) => quotePath(filename, platform)).join(" ") + " ");
+    terminal.current?.focus();
+  };
+
+  return <div
+    className={`terminal-view ${visible ? "is-visible" : ""} ${focused ? "is-focused" : ""} ${dimmed ? "is-dimmed" : ""} ${dragging ? "is-dragging" : ""}`}
+    style={style}
+    onMouseDown={() => callbacks.current.onFocus(session.id)}
+    onDragOver={(event) => { if (event.dataTransfer?.types?.includes("Files")) { event.preventDefault(); setDragging(true); } }}
+    onDragLeave={() => setDragging(false)}
+    onDrop={drop}
+  >
     <div className="terminal-canvas" ref={host} aria-label={`${session.title}终端`} />
     {state === "opening" && <div className="terminal-loading"><CircleNotch className="spin" size={16} /> 正在启动会话…</div>}
     {state === "error" && <div className="terminal-error"><WarningCircle size={20} /><div><strong>会话启动失败</strong><p>{failure}</p></div></div>}

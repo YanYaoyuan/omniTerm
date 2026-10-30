@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, readdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildCommandPlan, resolveDesktopAgent, validateProfile } from "./command-plan.mjs";
+import { buildCommandPlan, externalUrl, resolveDesktopAgent, validateProfile } from "./command-plan.mjs";
 import { SessionManager, terminatePty } from "./session-manager.mjs";
 import { ProfileStore } from "./profile-store.mjs";
 
@@ -119,6 +119,29 @@ test("buffer keeps the latest two MiB without splitting Unicode", async () => {
   assert.ok(data.endsWith("中文🙂"));
 });
 
+test("output is coalesced per flush and flushed before exit", async () => {
+  const events = { data: [], exit: [] };
+  const timers = [];
+  let dataCallback, exitCallback;
+  const manager = new SessionManager({
+    planner: async () => ({ executable: "/bin/sh", args: [], kind: "shell", title: "Terminal", cwd: "/work", env: {} }),
+    onData: (event) => events.data.push(event), onExit: (event) => events.exit.push({ ...event, dataBefore: events.data.length }),
+    schedule: (callback) => { timers.push(callback); return timers.length; }, cancel: () => {},
+    spawnPty: () => ({ pid: 1, onData: (callback) => { dataCallback = callback; return { dispose() {} }; }, onExit: (callback) => { exitCallback = callback; return { dispose() {} }; }, write() {}, resize() {}, kill() {} }),
+  });
+  const { id } = await manager.create({});
+  manager.start(id);
+  dataCallback("a"); dataCallback("b"); dataCallback("c");
+  assert.equal(events.data.length, 0);
+  assert.equal(timers.length, 1);
+  timers.shift()();
+  assert.deepEqual(events.data, [{ id, data: "abc" }]);
+  dataCallback("tail");
+  exitCallback({ exitCode: 0 });
+  assert.deepEqual(events.data.at(-1), { id, data: "tail" });
+  assert.equal(events.exit[0].dataBefore, 2);
+});
+
 test("session limit cannot be bypassed by concurrent create and disposal kills PTYs", async () => {
   const { manager, events } = fixture();
   const results = await Promise.allSettled(Array.from({ length: 24 }, () => manager.create({})));
@@ -176,4 +199,10 @@ test("profiles round-trip atomically with generated ids and no passwords", () =>
     assert.deepEqual(readdirSync(directory), ["profiles.json"]);
     assert.deepEqual(store.delete(created.id), []);
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("only http and https links can be opened externally", () => {
+  assert.equal(externalUrl("https://example.com/a b"), "https://example.com/a%20b");
+  assert.equal(externalUrl("http://localhost:3000/"), "http://localhost:3000/");
+  for (const value of ["file:///etc/passwd", "javascript:alert(1)", "smb://host/share", "not a url", 42, "https://x/" + "a".repeat(9000)]) assert.throws(() => externalUrl(value));
 });

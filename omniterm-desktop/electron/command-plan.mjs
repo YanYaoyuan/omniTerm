@@ -69,6 +69,14 @@ export function validateProfile(input = {}, { kind = input.kind, requireConnecti
   return result;
 }
 
+export function externalUrl(value) {
+  if (typeof value !== "string" || value.length > 8192) throw new Error("Links must be text of at most 8192 characters.");
+  let url;
+  try { url = new URL(value); } catch { throw new Error("The link is not a valid URL."); }
+  if (!["http:", "https:"].includes(url.protocol)) throw new Error("Only http and https links can be opened.");
+  return url.href;
+}
+
 function executableFile(filename, platform) {
   try {
     if (!statSync(filename).isFile()) return false;

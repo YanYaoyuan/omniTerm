@@ -1,10 +1,10 @@
 // Copyright 2026 omniTerm contributors. SPDX-License-Identifier: Apache-2.0
-import { app, BrowserWindow, dialog, ipcMain, Menu } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from "electron";
 import * as nodePty from "node-pty";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { buildCommandPlan, resolveDesktopAgent } from "./command-plan.mjs";
+import { buildCommandPlan, externalUrl, resolveDesktopAgent } from "./command-plan.mjs";
 import { ProfileStore } from "./profile-store.mjs";
 import { SessionManager } from "./session-manager.mjs";
 
@@ -42,6 +42,7 @@ function registerHandlers() {
     "get-session-buffer": (id) => manager.buffer(id),
     "save-profile": (profile) => profiles.save(profile),
     "delete-profile": (id) => profiles.delete(id),
+    "open-external": (url) => shell.openExternal(externalUrl(url)),
   };
   for (const [name, handler] of Object.entries(handlers)) ipcMain.handle(`omniterm:${name}`, (event, payload) => { trustedSender(event); return handler(payload); });
 }
@@ -72,7 +73,9 @@ app.whenReady().then(() => {
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     ...(process.platform === "darwin" ? [{ role: "appMenu" }] : []),
     { role: "editMenu" },
-    { label: "View", submenu: [{ role: "resetZoom" }, { role: "zoomIn" }, { role: "zoomOut" }, { type: "separator" }, { role: "togglefullscreen" }] },
+    // Zoom accelerators are left out on purpose: Cmd/Ctrl +, - and 0 change the
+    // terminal font size in the renderer instead of scaling the whole window.
+    { label: "View", submenu: [{ role: "togglefullscreen" }] },
     { role: "windowMenu" },
   ]));
   registerHandlers();
