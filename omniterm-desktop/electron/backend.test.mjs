@@ -233,7 +233,9 @@ Host *
 `;
 
 test("SSH config lists concrete hosts, applies first-match-wins, and skips patterns", () => {
-  const { hosts, error } = readSshHosts({ home: "/home/me", read: (name) => name === "/home/me/.ssh/config" ? sshConfig : null });
+  const home = path.resolve("ssh-config-home");
+  const filename = path.join(home, ".ssh", "config");
+  const { hosts, error } = readSshHosts({ home, read: (name) => name === filename ? sshConfig : null });
   assert.equal(error, "");
   assert.deepEqual(hosts, [
     { alias: "dog3", hostname: "192.168.127.2", user: "root", proxyJump: "dog3_x5" },

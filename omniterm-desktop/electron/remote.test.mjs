@@ -5,6 +5,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -77,9 +78,12 @@ test("tunnels never get a companion connection", async () => {
 });
 
 test("control paths are rejected rather than risking a fatal ssh error", (t) => {
-  const manager = new RemoteManager({ tempRoot: scratch(t) });
+  const manager = new RemoteManager();
   t.after(() => manager.dispose());
-  assert.match(manager.controlPath(), /omniterm-ssh-\w+\/1$/);
+  if (process.platform === "win32") {
+    assert.equal(manager.controlPath(), null);
+    assert.equal(manager.controlDirectory, null);
+  } else assert.match(manager.controlPath(), /omniterm-ssh-\w+\/1$/);
   assert.equal(new RemoteManager({ platform: "win32" }).controlPath(), null);
   const long = path.join(scratch(t), "x".repeat(70));
   mkdirSync(long);
@@ -91,6 +95,42 @@ test("control paths are rejected rather than risking a fatal ssh error", (t) => 
   const unsafe = new RemoteManager({ tempRoot: spaced });
   t.after(() => unsafe.dispose());
   assert.equal(unsafe.controlPath(), null);
+});
+
+test("control sockets use private directories and leave room for OpenSSH temporary names", async (t) => {
+  assert.equal(new RemoteManager({ platform: "darwin" }).tempRoot, "/tmp");
+  const manager = new RemoteManager();
+  t.after(() => manager.dispose());
+  if (process.platform === "win32") {
+    // Windows OpenSSH has no Unix control sockets. Verify the supported fallback
+    // rather than expecting a Unix filename or skipping this platform's test.
+    assert.equal(manager.controlPath(), null);
+    assert.equal(manager.controlDirectory, null);
+    assert.ok(manager.channelArgs(target).includes("ControlPath=none"));
+    return;
+  }
+  const sockets = Array.from({ length: 30 }, () => manager.controlPath());
+  assert.equal(new Set(sockets).size, 30);
+  for (const socket of sockets) {
+    assert.equal(typeof socket, "string");
+    assert.ok(Buffer.byteLength(socket) <= 86);
+  }
+  const directory = manager.controlDirectory;
+  assert.equal(statSync(directory).mode & 0o777, 0o700);
+  assert.equal(statSync(directory).uid, process.getuid());
+  const server = createServer();
+  try {
+    // OpenSSH appends this many bytes while creating its listener. Bind the
+    // complete path to check the kernel's limit as well as our own byte limit.
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(`${sockets.at(-1)}.abcdefghijklmnop`, resolve);
+    });
+  } finally {
+    if (server.listening) await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    manager.dispose();
+  }
+  assert.equal(existsSync(directory), false);
 });
 
 test("the session manager reports start and close to the remote layer", async () => {

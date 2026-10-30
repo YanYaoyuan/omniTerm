@@ -1,0 +1,108 @@
+# omniTerm's native release builds; no OpenAI self-hosted runners or signing secrets.
+name: omniTerm release builds
+
+on:
+  push:
+    branches: [feat/desktop-splits-palette, main]
+    tags: ['v*']
+    paths:
+      - '.github/workflows/omniterm-release.yml'
+      - '.github/actions/setup-msvc-env/**'
+      - 'scripts/release/**'
+      - 'scripts/codex_package/**'
+      - 'scripts/build_codex_package.py'
+      - 'codex-rs/**'
+      - 'third_party/v8/**'
+      - 'omniterm-desktop/package*.json'
+      - 'omniterm-desktop/scripts/package*.mjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: omniterm-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    name: Windows x64 source-built Agent and portable desktop
+    runs-on: windows-2022
+    timeout-minutes: 180
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+      CARGO_NET_RETRY: '5'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare ephemeral runner storage
+        shell: pwsh
+        run: |
+          git config --global core.longpaths true
+          # Remove only unused preinstalled Android/CodeQL tool caches on this fresh VM.
+          foreach ($candidate in @($env:ANDROID_HOME, $env:ANDROID_SDK_ROOT, 'C:\hostedtoolcache\windows\CodeQL')) {
+            if ($candidate -and (Test-Path -LiteralPath $candidate)) {
+              Remove-Item -LiteralPath $candidate -Recurse -Force -ErrorAction Continue
+            }
+          }
+          $target = Join-Path $env:RUNNER_TEMP 'omniterm-cargo'
+          "CARGO_TARGET_DIR=$target" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Get-PSDrive -PSProvider FileSystem | Format-Table Name, Used, Free
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: omniterm-desktop/package-lock.json
+      - name: Install the repository Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component rust-src
+          rustup default 1.95.0
+      - uses: ./.github/actions/setup-msvc-env
+        with:
+          target: x86_64-pc-windows-msvc
+      - name: Cache locked Cargo downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: omniterm-cargo-windows-${{ hashFiles('codex-rs/Cargo.lock') }}
+      - name: Build the complete Agent from repository Rust
+        run: python scripts/release/build-agent.py --target x86_64-pc-windows-msvc
+      - name: Preserve the source-built Agent before desktop packaging
+        uses: actions/upload-artifact@v4
+        with:
+          name: omniterm-agent-windows-x64-${{ github.sha }}
+          path: dist/omniterm-agent/
+          compression-level: 1
+          retention-days: 14
+          if-no-files-found: error
+      - name: Collect Agent license notices
+        run: python scripts/release/stage-agent-notices.py dist/omniterm-agent --target x86_64-pc-windows-msvc --cargo-profile dev-small
+      - name: Release Cargo object storage before desktop packaging
+        shell: pwsh
+        run: Remove-Item -LiteralPath $env:CARGO_TARGET_DIR -Recurse -Force
+      - name: Build the desktop and native PTY
+        working-directory: omniterm-desktop
+        run: |
+          npm ci
+          npm run rebuild
+          npm test
+          npm run package
+      - name: Create unsigned portable ZIP and checksums
+        run: node omniterm-desktop/scripts/package-release.mjs
+      - name: Upload desktop release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: omniterm-windows-x64-${{ github.sha }}
+          path: dist/release/*
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
