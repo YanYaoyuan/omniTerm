@@ -1,12 +1,53 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowRight, CircleNotch, Info, PlugsConnected, TerminalWindow, X } from "@phosphor-icons/react";
+import { ArrowRight, CircleNotch, HardDrives, Info, PlugsConnected, TerminalWindow, X } from "@phosphor-icons/react";
 
 export const connectionLabels = { ssh: "SSH", sftp: "SFTP", serial: "串口", tunnel: "端口转发" };
+
+const IMPORT_SEEN_KEY = "omniterm-ssh-import-seen";
+
+export function seenSshHosts() {
+  try { return new Set(JSON.parse(localStorage.getItem(IMPORT_SEEN_KEY) || "[]")); }
+  catch { return new Set(); }
+}
+
+export function markSshHostsSeen(aliases) {
+  try { localStorage.setItem(IMPORT_SEEN_KEY, JSON.stringify([...new Set([...seenSshHosts(), ...aliases])])); }
+  catch { /* Asking again next launch is harmless. */ }
+}
+
+// Nothing is saved until the user confirms. Saved profiles keep the alias, so ssh
+// goes on applying everything in the config file, jump hosts included.
+export function SshImportDialog({ request, onImport, onClose, onNever }) {
+  const dialog = useRef(null);
+  const [selected, setSelected] = useState(() => new Set(request.hosts.map((host) => host.alias)));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => { dialog.current.showModal(); }, []);
+  const toggle = (alias) => setSelected((previous) => {
+    const next = new Set(previous);
+    if (!next.delete(alias)) next.add(alias);
+    return next;
+  });
+  const allSelected = selected.size === request.hosts.length;
+  async function confirm() {
+    setBusy(true); setError("");
+    try { await onImport([...selected]); }
+    catch (failure) { setError(failure.message || String(failure)); setBusy(false); }
+  }
+  return <dialog ref={dialog} className="modal import-modal" onCancel={(event) => { event.preventDefault(); if (!busy) onClose(); }}>
+    <div className="modal-heading"><div className="modal-heading-icon"><HardDrives size={22} /></div><div><h2>导入 SSH 配置？</h2><p>在本机 SSH 配置中发现 {request.hosts.length} 个主机</p></div></div>
+    <p className="import-summary">所选主机会加入“已保存的连接”。连接时由系统 ssh 读取 <code>{request.filename}</code>，其中的跳板机、密钥等设置继续生效；不会读取或保存密码和私钥内容。</p>
+    {request.hosts.length > 1 && <label className="import-all"><input type="checkbox" checked={allSelected} onChange={() => setSelected(new Set(allSelected ? [] : request.hosts.map((host) => host.alias)))} />全选</label>}
+    <div className="import-list">{request.hosts.map((host) => <label className="import-row" key={host.alias}><input type="checkbox" checked={selected.has(host.alias)} onChange={() => toggle(host.alias)} /><span><strong>{host.alias}</strong><small>{host.user ? `${host.user}@` : ""}{host.hostname}{host.port ? `:${host.port}` : ""}{host.proxyJump ? ` · 经 ${host.proxyJump}` : ""}</small></span></label>)}</div>
+    {error && <div className="inline-error" role="alert">{error}</div>}
+    <div className="modal-actions">{onNever ? <button className="button ghost" disabled={busy} onClick={onNever}>不再询问</button> : <span />}<div className="action-group"><button className="button ghost" disabled={busy} onClick={onClose}>暂不导入</button><button className="button primary" disabled={busy || !selected.size} onClick={confirm}>{busy && <CircleNotch size={16} className="spin" />}导入 {selected.size} 个主机</button></div></div>
+  </dialog>;
+}
 
 export function ConnectionDialog({ initial, onClose, onSave, onConnect }) {
   const dialog = useRef(null);
   const [kind, setKind] = useState(initial.kind || "ssh");
-  const [form, setForm] = useState({ name: "", host: "", username: "", port: 22, keyPath: "", device: "", baud: 115200, forwardType: "L", bindPort: "", targetHost: "localhost", targetPort: "", ...initial.profile });
+  const [form, setForm] = useState({ name: "", host: "", username: "", port: "", keyPath: "", proxyJump: "", device: "", baud: 115200, forwardType: "L", bindPort: "", targetHost: "localhost", targetPort: "", ...initial.profile });
   const [persist, setPersist] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -21,7 +62,10 @@ export function ConnectionDialog({ initial, onClose, onSave, onConnect }) {
   }[kind];
   const payload = () => ({
     ...form, kind, name: form.name.trim() || `${connectionLabels[kind]} · ${kind === "serial" ? form.device : form.host}`,
-    port: Number(form.port), baud: Number(form.baud),
+    // Left empty, ssh takes the port from its own configuration.
+    port: form.port === "" ? undefined : Number(form.port), baud: Number(form.baud),
+    // The imported label describes the host it came from.
+    summary: form.host === initial.profile?.host ? form.summary : undefined,
     ...(kind === "tunnel" ? { bindPort: Number(form.bindPort), ...(form.forwardType !== "D" ? { targetPort: Number(form.targetPort) } : {}) } : {}),
   });
   async function submit(event) {
@@ -46,9 +90,10 @@ export function ConnectionDialog({ initial, onClose, onSave, onConnect }) {
         <label className="field full">连接名称<input {...field("name")} placeholder="为这个连接起个名字" autoFocus maxLength={80} /></label>
         {kind !== "serial" ? <>
           <label className="field host">主机地址<input {...field("host")} placeholder="主机名或 IP 地址" required spellCheck={false} /></label>
-          <label className="field port">SSH 端口<input {...field("port")} type="number" min="1" max="65535" required /></label>
+          <label className="field port">SSH 端口<input {...field("port")} type="number" min="1" max="65535" placeholder="22" /></label>
           <label className="field full">用户名<input {...field("username")} placeholder="留空时使用系统默认用户" spellCheck={false} /></label>
           <label className="field full">私钥路径 <span className="optional">可选</span><input {...field("keyPath")} placeholder="例如 ~/.ssh/id_ed25519" spellCheck={false} /><span className="field-note">也可以使用系统 SSH 配置和 SSH Agent。</span></label>
+          <label className="field full">跳板机 <span className="optional">可选</span><input {...field("proxyJump")} placeholder="例如 root@192.168.10.222 或 ~/.ssh/config 中的别名" spellCheck={false} /><span className="field-note">对应 ProxyJump，多级跳板用逗号分隔。留空时沿用 ~/.ssh/config 中的设置。</span></label>
         </> : <>
           <label className="field host">串口设备<input {...field("device")} placeholder="/dev/ttyUSB0 或 COM3" required spellCheck={false} /></label>
           <label className="field port">波特率<input {...field("baud")} type="number" min="1" max="4000000" required /></label>

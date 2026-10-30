@@ -1,12 +1,13 @@
 // Copyright 2026 omniTerm contributors. SPDX-License-Identifier: Apache-2.0
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, readdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, readdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildCommandPlan, resolveDesktopAgent, validateProfile } from "./command-plan.mjs";
+import { buildCommandPlan, externalUrl, resolveDesktopAgent, validateProfile } from "./command-plan.mjs";
 import { SessionManager, terminatePty } from "./session-manager.mjs";
 import { ProfileStore } from "./profile-store.mjs";
+import { hostSummary, readSshHosts } from "./ssh-config.mjs";
 
 const options = { platform: "linux", env: { PATH: "/usr/bin", SHELL: "/bin/zsh", CUSTOM: "preserved" }, defaultCwd: "/work", repositoryRoot: "/repo", isDirectory: () => true, isExecutable: (name) => ["/usr/bin/ssh", "/usr/bin/sftp", "/usr/bin/python3", "/bin/zsh", "/repo/dist/omniterm-agent/bin/codex"].includes(name) };
 
@@ -119,6 +120,29 @@ test("buffer keeps the latest two MiB without splitting Unicode", async () => {
   assert.ok(data.endsWith("中文🙂"));
 });
 
+test("output is coalesced per flush and flushed before exit", async () => {
+  const events = { data: [], exit: [] };
+  const timers = [];
+  let dataCallback, exitCallback;
+  const manager = new SessionManager({
+    planner: async () => ({ executable: "/bin/sh", args: [], kind: "shell", title: "Terminal", cwd: "/work", env: {} }),
+    onData: (event) => events.data.push(event), onExit: (event) => events.exit.push({ ...event, dataBefore: events.data.length }),
+    schedule: (callback) => { timers.push(callback); return timers.length; }, cancel: () => {},
+    spawnPty: () => ({ pid: 1, onData: (callback) => { dataCallback = callback; return { dispose() {} }; }, onExit: (callback) => { exitCallback = callback; return { dispose() {} }; }, write() {}, resize() {}, kill() {} }),
+  });
+  const { id } = await manager.create({});
+  manager.start(id);
+  dataCallback("a"); dataCallback("b"); dataCallback("c");
+  assert.equal(events.data.length, 0);
+  assert.equal(timers.length, 1);
+  timers.shift()();
+  assert.deepEqual(events.data, [{ id, data: "abc" }]);
+  dataCallback("tail");
+  exitCallback({ exitCode: 0 });
+  assert.deepEqual(events.data.at(-1), { id, data: "tail" });
+  assert.equal(events.exit[0].dataBefore, 2);
+});
+
 test("session limit cannot be bypassed by concurrent create and disposal kills PTYs", async () => {
   const { manager, events } = fixture();
   const results = await Promise.allSettled(Array.from({ length: 24 }, () => manager.create({})));
@@ -175,5 +199,96 @@ test("profiles round-trip atomically with generated ids and no passwords", () =>
     assert.ok(!readFileSync(store.filename, "utf8").includes("secret"));
     assert.deepEqual(readdirSync(directory), ["profiles.json"]);
     assert.deepEqual(store.delete(created.id), []);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("only http and https links can be opened externally", () => {
+  assert.equal(externalUrl("https://example.com/a b"), "https://example.com/a%20b");
+  assert.equal(externalUrl("http://localhost:3000/"), "http://localhost:3000/");
+  for (const value of ["file:///etc/passwd", "javascript:alert(1)", "smb://host/share", "not a url", 42, "https://x/" + "a".repeat(9000)]) assert.throws(() => externalUrl(value));
+});
+
+const sshConfig = `# Example from a real board setup
+Host dog3
+    HostName 192.168.127.2
+    User root
+    ProxyJump dog3_x5
+    IdentityFile ~/.ssh/id_ed25519_evt_board
+    IdentitiesOnly yes
+Host dog3_x5
+    HostName=192.168.10.222
+    User "root"
+    Port 2222 # trailing comment
+Host one two
+    HostName %h.example.com
+Host web-* !web-admin ?ingle
+    User deploy
+Match host other
+    User nobody
+Host after-match
+    ProxyJump none
+Host *
+    ServerAliveInterval 30
+    User fallback
+`;
+
+test("SSH config lists concrete hosts, applies first-match-wins, and skips patterns", () => {
+  const home = path.resolve("ssh-config-home");
+  const filename = path.join(home, ".ssh", "config");
+  const { hosts, error } = readSshHosts({ home, read: (name) => name === filename ? sshConfig : null });
+  assert.equal(error, "");
+  assert.deepEqual(hosts, [
+    { alias: "dog3", hostname: "192.168.127.2", user: "root", proxyJump: "dog3_x5" },
+    { alias: "dog3_x5", hostname: "192.168.10.222", user: "root", port: 2222 },
+    { alias: "one", hostname: "one.example.com", user: "fallback" },
+    { alias: "two", hostname: "two.example.com", user: "fallback" },
+    { alias: "after-match", hostname: "after-match", user: "fallback" },
+  ]);
+  assert.equal(hostSummary(hosts[0]), "root@192.168.127.2 · 经 dog3_x5");
+  assert.equal(hostSummary(hosts[1]), "root@192.168.10.222:2222");
+});
+
+test("SSH config follows Include globs relative to ~/.ssh and survives cycles", () => {
+  const home = mkdtempSync(path.join(os.tmpdir(), "omniterm-ssh-config-"));
+  try {
+    mkdirSync(path.join(home, ".ssh", "config.d"), { recursive: true });
+    writeFileSync(path.join(home, ".ssh", "config"), "Include config.d/*\nUser outer\nHost main\n  HostName main.example\n");
+    writeFileSync(path.join(home, ".ssh", "config.d", "b.conf"), "Host included-b\n  Include ~/.ssh/config\n");
+    writeFileSync(path.join(home, ".ssh", "config.d", "a.conf"), "Host included-a\n  User a\n");
+    writeFileSync(path.join(home, ".ssh", "config.d", ".hidden"), "Host hidden\n");
+    assert.deepEqual(readSshHosts({ home }).hosts.map((host) => [host.alias, host.user]), [["included-a", "a"], ["included-b", "outer"], ["main", "outer"]]);
+    assert.deepEqual(readSshHosts({ home: path.join(home, "missing") }), { filename: path.join(home, "missing", ".ssh", "config"), error: "", hosts: [] });
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("ProxyJump reaches ssh, sftp, tunnels, and the file panel as one literal option", async () => {
+  const profile = { host: "board", username: "root", proxyJump: " jump@10.0.0.1:2222 , ssh://second , dog3_x5 " };
+  const expected = ["-o", "ProxyJump=jump@10.0.0.1:2222,ssh://second,dog3_x5"];
+  const ssh = await buildCommandPlan({ kind: "ssh", profile, companion: true }, { ...options, controlPath: () => "/tmp/c/1" });
+  assert.deepEqual(ssh.args.slice(-3), [...expected, "root@board"]);
+  assert.deepEqual(ssh.remote.args, expected);
+  const sftp = await buildCommandPlan({ kind: "sftp", profile }, options);
+  assert.deepEqual(sftp.args.slice(-3), [...expected, "root@board"]);
+  const tunnel = await buildCommandPlan({ kind: "tunnel", profile: { ...profile, forwardType: "D", bindPort: 1080 } }, options);
+  assert.ok(tunnel.args.join(" ").includes(expected.join(" ")));
+});
+
+test("ProxyJump refuses anything ssh could read as an option or a second argument", () => {
+  for (const proxyJump of ["-oProxyCommand=x", "host,-bad", "a b", "user@-x", "a,,b", "a;b", "ssh://-x"]) {
+    assert.throws(() => validateProfile({ kind: "ssh", host: "h", proxyJump }), /ProxyJump|control/, proxyJump);
+  }
+});
+
+test("importing SSH hosts skips saved aliases and refuses batches that do not fit", () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "omniterm-import-"));
+  try {
+    const store = new ProfileStore(path.join(directory, "profiles.json"));
+    store.save({ kind: "ssh", name: "mine", host: "dog3", username: "me" });
+    const profiles = store.import([{ kind: "ssh", name: "dog3", host: "dog3" }, { kind: "ssh", name: "dog3_x5", host: "dog3_x5", summary: "root@192.168.10.222" }]);
+    assert.deepEqual(profiles.map((profile) => [profile.name, profile.summary]), [["mine", undefined], ["dog3_x5", "root@192.168.10.222"]]);
+    assert.equal(new Set(profiles.map((profile) => profile.id)).size, 2);
+    const many = Array.from({ length: 199 }, (_, index) => ({ kind: "ssh", name: `h${index}`, host: `h${index}` }));
+    assert.throws(() => store.import(many), /maximum of 200/);
+    assert.equal(store.list().length, 2);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

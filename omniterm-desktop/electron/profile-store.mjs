@@ -43,6 +43,14 @@ export class ProfileStore {
     this.write(profiles);
     return profiles;
   }
+  // All or nothing: a batch that cannot fit is refused before anything is written.
+  import(inputs) {
+    const profiles = this.list();
+    const added = inputs.filter((input) => !profiles.some((profile) => profile.kind === input.kind && profile.host === input.host)).map((input) => ({ ...validateProfile(input, { requireConnection: true }), id: randomUUID() }));
+    if (profiles.length + added.length > 200) throw new Error(`A maximum of 200 profiles can be saved; ${200 - profiles.length} more can be added.`);
+    if (added.length) this.write([...profiles, ...added]);
+    return [...profiles, ...added];
+  }
   delete(id) {
     if (typeof id !== "string" || !/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error("Invalid profile id.");
     const profiles = this.list().filter((profile) => profile.id !== id);

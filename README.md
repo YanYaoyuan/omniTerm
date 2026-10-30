@@ -1,39 +1,92 @@
+**Language / 语言: [English](README.md) · [简体中文](README.zh-CN.md)**
+
 # omniTerm
 
-**An open-source desktop terminal with a Codex Agent beside your sessions.**
+**An open-source terminal workspace with a Codex Agent beside your local and remote sessions.**
 
-[简体中文](README.zh-CN.md) · [Desktop guide](omniterm-desktop/README.md) · [Architecture](docs/omniterm/architecture.md) · [Roadmap](docs/omniterm/roadmap.md) · [Contributing](CONTRIBUTING.md)
+[Download 0.0.1](https://github.com/YanYaoyuan/omniTerm/releases) · [Desktop guide](omniterm-desktop/README.md) · [Build the Agent](docs/omniterm/local-build.md) · [Report an issue](https://github.com/YanYaoyuan/omniTerm/issues) · [Contribute](CONTRIBUTING.md)
 
-omniTerm brings a graphical terminal workspace and remote connection tools together, taking inspiration from iTerm2 and MobaXterm and targeting **macOS, Linux, and Windows**. Its first Agent engine is built from the Codex Rust source in this repository.
+omniTerm brings shell tabs, split panes, SSH, a graphical SFTP browser, serial connections and port forwarding into one desktop app for **macOS, Linux and Windows**. A locally running, source-built Codex Agent shares the workspace. Select terminal output, send it to the Agent's input, and decide what to submit.
 
-**Status: early desktop implementation.** A local macOS arm64 application package has been built and opened with a visible shell prompt. Real PTY checks passed under Electron for command input, `pwd`, resize, Ctrl+C, and process cleanup. GUI keyboard/Agent interaction, live remote connections, and other operating systems remain unverified; this is not yet a validated three-platform release. See the [validation record](docs/omniterm/desktop-test-plan.md#验收记录).
+The project is **Apache-2.0 licensed** and at **version 0.0.1**. It combines familiar terminal and remote-operation workflows with an inspectable Agent implementation. This is an early release: platform packages and individual runtime checks should not be read as complete three-platform manual acceptance.
 
-## Desktop features
+## Download
 
-| Area | Current implementation |
+Get the available artifacts and their checksums from [GitHub Releases](https://github.com/YanYaoyuan/omniTerm/releases). The initial release targets are:
+
+| System | Architecture | Package |
+| --- | --- | --- |
+| macOS | Apple Silicon / arm64 | `.zip` containing the app |
+| Ubuntu 22.04 | amd64 / x86_64 | `.deb` |
+| Windows | x64 | `.zip` |
+
+Check each release's asset list and validation notes before downloading. The initial macOS and Windows packages do not have developer signing; use the operating system's normal per-app approval flow if prompted. An Intel Mac package is not part of this initial set.
+
+Ubuntu users of the earlier `0.1.0~preview` trial package should install the downloaded `0.0.1` `.deb` explicitly: Debian version ordering considers this a downgrade. Settings and feature coverage are described in the [desktop guide](omniterm-desktop/README.md).
+
+## What you can do today
+
+| Workflow | Implemented in omniTerm |
 | --- | --- |
-| Local terminals | Independent shell tabs, folder selection, terminal search, copy/paste, and terminal display settings |
-| Agent pane | A separate interactive Codex TUI alongside the terminal; keyboard input, approvals, and cancellation use the engine's existing interface |
-| Connections | Graphical forms and saved profiles for SSH, SFTP, serial devices, and SSH forwarding |
-| SSH / forwarding | System OpenSSH sessions with local, remote, or dynamic forwarding |
-| SFTP | An interactive system SFTP client in a terminal tab |
-| Serial | A terminal session running optional Python / pyserial miniterm |
-| Local packaging | Packages the desktop app with the complete source-built Agent directory |
+| Local terminal workspace | Real PTY shells, tabs, nested horizontal/vertical splits, pane zoom, broadcast input, search, rename/reorder and a command palette |
+| Agent collaboration | Dedicated Codex pane; starts in the selected local working directory; send selected terminal text into its draft without automatically submitting it |
+| SSH connections | Saved profiles, import from `~/.ssh/config` including `Include`, aliases, and single/multiple `ProxyJump` jump hosts |
+| Remote files | Graphical SFTP browser beside SSH/SFTP sessions; upload/download files and folders, rename, delete, create directories and staged drag-out downloads |
+| Remote host metrics | CPU, memory, disk, network, load and uptime, plus GPU data when the remote host exposes supported tools/interfaces |
+| Forwarding and devices | Local, remote and dynamic SSH forwarding; serial sessions through Python/pyserial |
+| Resume your workspace | Restore local tabs, split layouts, tab names and working directories as new shell sessions |
+| Appearance | 13 themes, custom background images, font/cursor controls and WebGL rendering with DOM fallback; transparency where the platform supports it |
 
-A graphical SFTP file browser, arbitrary terminal pane splitting, automatic session restoration, and structured Agent context sharing are still planned. The Agent does not automatically read other terminal tabs or acquire a remote SSH environment. Ordinary shell and connection sessions run with the user's permissions, separately from Codex's Agent sandbox and approval controls.
+The useful combination is **an open-source Agent and remote operations in the same workspace**: inspect a host, move a file, select an error, and ask Codex about it without switching terminal applications. SSH configuration continues to be interpreted by system OpenSSH, and the desktop and Agent sources can be inspected and extended together.
 
-## Run the desktop app from source
+### Agent and platform boundaries
 
-Install **Node.js 22.12 or later**, npm, and the native build tools required by Electron/node-pty. Clone the repository:
+- **Local Agent process does not mean offline inference.** Model access follows Codex's authentication, provider and configuration; no model weights are bundled. Local shells do not require a model account.
+- The Agent receives the text you explicitly send. It does not automatically read all tabs or inherit a remote SSH session. Its tool execution follows Codex's configured approvals and sandbox; ordinary shell, SSH, SFTP and serial sessions use your user permissions.
+- Workspace restoration opens fresh local shells, up to 16 panes. It does not replay commands or restore scrollback, and remote/device/Agent sessions are not automatically reconnected.
+- SSH/SFTP/forwarding require system OpenSSH. Serial requires Python 3 and `pyserial`. On Windows, the file/metrics panel uses a separate non-interactive SSH connection and needs key or SSH-agent authentication; macOS/Linux can reuse the terminal login through OpenSSH control sockets.
+- Switching between opaque and transparent windows requires a restart. Linux needs a desktop compositor; native Windows window transparency is not supported by the current framed-window configuration. Running TUIs can retain their startup colors: after a light/dark theme change, restarting an idle Agent may be needed for readable input colors.
+
+## How it compares
+
+**Official sources checked on 2026-10-30.** This is a comparison of platforms, licensing and workflow focus, not a performance benchmark or a complete feature checklist. Features omitted from a row are not claimed to be absent.
+
+| Product | Desktop platforms | Licensing | Workflow focus / Agent integration |
+| --- | --- | --- | --- |
+| **omniTerm 0.0.1** | **macOS, Linux, Windows** | **[Apache-2.0](LICENSE)** | **Local source-built Codex pane + SSH/SFTP browser, jump hosts, forwarding and serial in one workspace; early release** |
+| [iTerm2](https://iterm2.com/index.html) | macOS | GPL v2 | Extensive [terminal, split-pane and shell integration](https://iterm2.com/features.html); [AI Chat](https://github.com/gnachman/iTerm2#key-features) with an [optional AI plugin](https://iterm2.com/ai-plugin.html) |
+| [Xshell](https://www.netsarang.com/en/xshell-all-features/) | Windows | [Commercial license](https://www.netsarang.com/en/xshell/); [Home/School free license](https://netsarang.atlassian.net/wiki/spaces/ENSUP/pages/2027552778/Free+User+Registration) | SSH/SFTP/serial, session management, jump hosts, scripting and remote file management |
+| [MobaXterm](https://mobaxterm.mobatek.net/features.html) | Windows | [Home/Professional editions](https://mobaxterm.mobatek.net/download.html), [product EULA](https://mobaxterm.mobatek.net/license.html) | Integrated SFTP, SSH gateways, serial, X11 server and RDP/VNC remote-desktop tools |
+| [Warp](https://www.warp.dev/download) | macOS, Linux, Windows | [Open-source client: AGPL v3; UI framework: MIT](https://github.com/warpdotdev/warp#licensing) | Built-in coding agent and support for external CLI agents, including Codex; agent-focused development environment |
+| [Tabby](https://github.com/Eugeny/tabby) | macOS, Linux, Windows | [MIT](https://github.com/Eugeny/tabby/blob/master/LICENSE) | SSH/serial, jump hosts and nested splits; plugin ecosystem includes SFTP and [MCP-based AI integration](https://github.com/Eugeny/tabby#plugins) |
+
+Choose omniTerm when you want its **Apache-2.0 codebase, bundled Codex foundation and combined terminal/remote workflow**. iTerm2, Xshell and MobaXterm remain important references for terminal depth and operations tooling; omniTerm does not yet match their full feature sets. It does not bundle an X11 server, RDP/VNC clients or an enterprise credential manager. AI, open source and split panes are shared capabilities across this ecosystem, not exclusive omniTerm claims.
+
+## Technology stack
+
+| Layer | Technology | Role |
+| --- | --- | --- |
+| Desktop | Electron 45 | Native windows, packaging and isolated preload IPC |
+| Interface | React 19, CSS | Tabs, pane layouts, connection forms, file browser and settings |
+| Terminal | xterm.js 6 + WebGL/fit/search/Unicode addons | Terminal emulation, rendering, resizing and search |
+| Processes | node-pty 1.1 | Real Unix PTYs / Windows ConPTY |
+| Remote access | System OpenSSH + SFTP protocol | SSH configuration, jump hosts, forwarding and remote files |
+| Agent | Rust Codex + code-mode host | Locally running Agent engine and execution support, packaged from this repository |
+| Serial | Python 3 + pyserial miniterm | Optional serial-device sessions |
+| Build | Node.js ≥22.12, npm, Vite, esbuild, Cargo | Desktop build and native Agent compilation |
+
+The renderer uses `contextIsolation: true`, `nodeIntegration: false` and Electron's renderer sandbox. These controls separate the UI from privileged process APIs; they do not sandbox commands you run in a normal terminal tab.
+
+## Run from source
+
+Install Node.js **22.12+**, npm and your platform's native build tools: Xcode Command Line Tools on macOS, a C/C++ toolchain on Linux, or MSVC Build Tools and Windows SDK on Windows.
 
 ```sh
 git clone https://github.com/YanYaoyuan/omniTerm.git
 cd omniTerm
 ```
 
-Follow the [local Agent build guide](docs/omniterm/local-build.md) to compile Rust `codex` and its companion programs into `dist/omniterm-agent/`. The desktop app discovers this package during development and includes it when packaging. A local shell can be used without a model account; Agent use requires the engine's authentication and configuration.
-
-Then start the desktop app:
+Use the [Agent build guide](docs/omniterm/local-build.md) to compile `codex` and its companions into `dist/omniterm-agent/`. Then start the desktop:
 
 ```sh
 cd omniterm-desktop
@@ -42,31 +95,16 @@ npm run rebuild
 npm start
 ```
 
-`npm run rebuild` builds node-pty for Electron's native module ABI. Repeat it after changing Electron versions or platforms. The desktop has its own npm lockfile; its dependencies are separate from the inherited Codex pnpm workspace.
-
-SSH, forwarding, and SFTP require system OpenSSH clients. Serial connections require Python 3 with `pyserial`. See the [desktop guide](omniterm-desktop/README.md) for platform prerequisites, controls, and packaging.
-
-To build a local application package from `omniterm-desktop/`:
+`npm run rebuild` rebuilds node-pty for Electron's ABI. Repeat it after changing Electron or the target platform. A local shell can run without an Agent package; the Agent pane and application packaging need a compatible Agent build.
 
 ```sh
+# From omniterm-desktop/: create a native application package
 npm run package
 ```
 
-Output is written to `dist/desktop/` at the repository root. The Agent package must match the application's platform and architecture. Signing, notarization, installers, and automatic updates are separate release work; no three-platform release is claimed here.
+Output goes to `dist/desktop/` at the repository root. Electron, node-pty and the Agent must match the target OS and architecture. See the [desktop guide](omniterm-desktop/README.md) for controls and packaging, and the [architecture](docs/omniterm/architecture.md) for component boundaries.
 
-## Optional command-line entry
-
-The lightweight CLI remains available for use in an existing terminal:
-
-```sh
-node omniterm-cli/bin/omniterm.js --help
-node omniterm-cli/bin/omniterm.js doctor
-node omniterm-cli/bin/omniterm.js agent --version
-```
-
-It provides `agent`, `shell`, `ssh`, `sftp`, `tunnel`, and `serial` commands. See the [CLI guide](omniterm-cli/README.md). No omniTerm npm package has been published.
-
-## Development and verification
+## Development and validation
 
 ```sh
 node --test omniterm-cli/test/cli.test.js
@@ -74,14 +112,19 @@ npm --prefix omniterm-desktop test
 npm --prefix omniterm-desktop run build
 ```
 
-CI is configured to test the CLI and build/test desktop code on macOS, Linux, and Windows. Desktop CI uses mocked backend tests and skips Electron downloads and native module build scripts. It does not launch the GUI, exercise real PTYs, build the Rust engine, or test remote servers and serial hardware. Use the [desktop interaction checklist](docs/omniterm/desktop-test-plan.md) for native runtime acceptance and record untested cases explicitly.
+The repository has three-platform code checks and separate native runtime/packaging checks. macOS GUI checks and Ubuntu installation, PTY and Electron checks have been performed for specific builds. Automated IPC input is not equivalent to keyboard/IME testing, and serial hardware, remote-server variants and Windows manual coverage still require dedicated acceptance. Use the [interaction checklist](docs/omniterm/desktop-test-plan.md) and the validation notes attached to each release.
 
-`omniterm-desktop/` contains the desktop app, `omniterm-cli/` the optional launcher, and `docs/omniterm/` the product documentation. The inherited `codex-rs/`, `codex-cli/`, and `sdk/` retain their internal names to keep upstream updates practical. Upstream organization-specific workflows are [archived](.github/upstream-workflows/README.md).
+The optional [CLI launcher](omniterm-cli/README.md) provides `agent`, `shell`, `ssh`, `sftp`, `tunnel`, `serial` and `doctor` in an existing terminal:
+
+```sh
+node omniterm-cli/bin/omniterm.js doctor
+node omniterm-cli/bin/omniterm.js agent --version
+```
+
+Desktop code lives in `omniterm-desktop/`; the launcher is in `omniterm-cli/`. Inherited `codex-rs/`, `codex-cli/` and `sdk/` names are retained to make upstream updates practical. Contributions and reproducible bug reports are welcome through [Issues](https://github.com/YanYaoyuan/omniTerm/issues) and pull requests.
 
 ## License and origin
 
-omniTerm uses the [Apache License 2.0](LICENSE). It is derived from [OpenAI Codex](https://github.com/openai/codex); original copyright and third-party notices are retained in [NOTICE](NOTICE) and the source tree. See [upstream provenance](docs/omniterm/upstream.md).
+omniTerm uses [Apache-2.0](LICENSE) and is derived from [OpenAI Codex](https://github.com/openai/codex). Original copyright and third-party notices are retained in [NOTICE](NOTICE) and distributed dependency notices; third-party components retain their own licenses. See [upstream provenance](docs/omniterm/upstream.md).
 
-This is an independent project, not an official OpenAI, iTerm2, or MobaXterm product. These names describe the Agent foundation or product benchmarks, not an affiliation.
-
-<!-- Modified for omniTerm from the upstream Codex README, 2026-10-30. -->
+omniTerm is an independent project. Product names in the comparison identify their respective products and do not imply affiliation or endorsement.

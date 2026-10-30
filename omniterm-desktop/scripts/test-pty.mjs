@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { hasOutputLine, printParts } from "./pty-output.mjs";
 
 const here = fileURLToPath(import.meta.url);
 if (!process.versions.electron) {
@@ -36,19 +37,19 @@ if (!process.versions.electron) {
     const running = manager.start(session.id);
     const write = (data) => manager.write({ id: session.id, data });
     const windows = process.platform === "win32";
-    write(windows ? "Write-Output '__OMNITERM_PTY_READY__'; (Get-Location).Path\r" : "printf '__OMNITERM_PTY_READY__\\n'; pwd\r");
-    await waitFor(() => output.includes("\r\n__OMNITERM_PTY_READY__\r\n") && output.includes(repositoryRoot), "The shell must execute input and report its working directory");
+    write(`${printParts(["__OMNITERM_", "PTY_READY__"], windows)}; ${windows ? "(Get-Location).Path" : "pwd"}\r`);
+    await waitFor(() => hasOutputLine(output, "__OMNITERM_PTY_READY__") && hasOutputLine(output, repositoryRoot), "The shell must execute input and report its working directory");
     manager.resize({ id: session.id, cols: 112, rows: 37 });
     if (!windows) {
       write("stty size\r");
-      await waitFor(() => output.includes("37 112"), "PTY resize must reach the shell");
+      await waitFor(() => hasOutputLine(output, "37 112"), "PTY resize must reach the shell");
     }
     write(windows ? "Start-Sleep -Seconds 30\r" : "sleep 30\r");
     await delay(300);
     write("\x03");
     await delay(200);
-    write(windows ? "Write-Output '__OMNITERM_INTERRUPT_OK__'\r" : "printf '__OMNITERM_INTERRUPT_OK__\\n'\r");
-    await waitFor(() => output.includes("\r\n__OMNITERM_INTERRUPT_OK__\r\n"), "Ctrl+C must return to a usable shell");
+    write(`${printParts(["__OMNITERM_", "INTERRUPT_OK__"], windows)}\r`);
+    await waitFor(() => hasOutputLine(output, "__OMNITERM_INTERRUPT_OK__"), "Ctrl+C must return to a usable shell");
     manager.close(session.id);
     if (!windows) {
       await waitFor(() => { try { process.kill(running.pid, 0); return false; } catch (error) { return error.code === "ESRCH"; } }, "Closing a session must stop its shell");
