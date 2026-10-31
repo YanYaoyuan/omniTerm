@@ -28,6 +28,7 @@ pub use realtime_websocket::RealtimeWebsocketWriter;
 pub use realtime_websocket::session_update_session_json;
 pub use responses::ResponsesClient;
 pub use responses::ResponsesOptions;
+pub use responses::TranslatedProtocol;
 pub use responses_websocket::ResponsesWebsocketClient;
 pub use responses_websocket::ResponsesWebsocketConnection;
 pub use responses_websocket_probe::ResponsesWebsocketClose;

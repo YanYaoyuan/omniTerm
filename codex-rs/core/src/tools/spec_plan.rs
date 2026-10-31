@@ -147,6 +147,22 @@ pub(crate) fn build_tool_router(
         wait_agent_timeouts: wait_agent_timeout_options(turn_context),
     };
     let mut registry = ToolRegistry::with_tool_policy(Arc::clone(&session.tool_policy));
+    if turn_context
+        .config
+        .features
+        .enabled(Feature::DynamicToolsOnly)
+    {
+        // The host application is the only execution path: no built-in, MCP, extension or
+        // hosted tool may be offered next to the tools it supplied.
+        append_dynamic_tool_runtimes(dynamic_tools, &mut registry);
+        return finalize_tool_router(
+            turn_context,
+            model_info,
+            registry,
+            Vec::new(),
+            &session.services.tool_search_handler_cache,
+        );
+    }
     add_core_tool_sources(&context, &mut registry);
 
     let registered_mcp_tools = session.services.mcp_handler_cache.append_mcp_tools(

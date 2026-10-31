@@ -28,7 +28,7 @@ Usage: node scripts/package-deb.mjs [options]
   --allow-dirty       Explicitly allow uncommitted source for a preview package
   --help              Show help without requiring Linux
 
-Run on native Ubuntu 22.04 x64 after npm ci, npm run rebuild, and npm run package.
+Run on native Ubuntu 22.04 x64 after npm ci, npm run build:native, and npm run package.
 The Agent must be the complete x86_64-unknown-linux-gnu package.
 Set SOURCE_DATE_EPOCH when the build directory does not contain Git metadata.
 No Node.js, Rust, npm downloads, sandbox-disabling flags, or user-data deletion at install time.
@@ -155,19 +155,11 @@ async function main() {
   const agentRoot = path.join(appDirectory, "resources/omniterm-agent");
   const manifest = JSON.parse(await readFile(path.join(agentRoot, "codex-package.json"), "utf8"));
   if (manifest.target !== "x86_64-unknown-linux-gnu" || manifest.variant !== "codex" || manifest.entrypoint !== "bin/codex" || manifest.layoutVersion !== 1) throw new Error("The bundle must include the complete GNU x86-64 Codex package (layout version 1).");
-  const binaries = ["omniTerm", "chrome-sandbox", "resources/omniterm-agent/bin/codex", "resources/omniterm-agent/bin/codex-code-mode-host", "resources/omniterm-agent/codex-path/rg", "resources/omniterm-agent/codex-resources/bwrap"];
+  const binaries = ["omniTerm", "chrome-sandbox", "resources/omniterm-agent/bin/codex", "resources/omniterm-agent/bin/codex-code-mode-host", "resources/omniterm-agent/codex-path/rg", "resources/omniterm-agent/codex-resources/bwrap", "resources/terminal-host/omniterm-terminal-host"];
   for (const relative of binaries) await executable(path.join(appDirectory, relative));
   for (const relative of ["resources/app/package.json", "resources/app/build/main.mjs", "resources/app/build/preload.cjs", "resources/app/build-renderer/index.html", "LICENSE", "LICENSES.chromium.html"]) await stat(path.join(appDirectory, relative));
   const packagedMetadata = JSON.parse(await readFile(path.join(appDirectory, "resources/app/package.json"), "utf8"));
   if (packagedMetadata.name !== metadata.name || packagedMetadata.version !== metadata.version) throw new Error("The application bundle metadata does not match this desktop source; rebuild before packaging.");
-  const ptyRoot = "resources/app/node_modules/node-pty";
-  let nativePty;
-  for (const candidate of ["build/Release/pty.node", "build/Debug/pty.node", "prebuilds/linux-x64/pty.node"]) {
-    const relative = `${ptyRoot}/${candidate}`;
-    try { await stat(path.join(appDirectory, relative)); } catch (error) { if (error.code === "ENOENT") continue; throw error; }
-    await elfHeader(path.join(appDirectory, relative)); nativePty = relative; break;
-  }
-  if (!nativePty) throw new Error("No Linux x64 node-pty native module was found; run npm run rebuild on the target platform.");
   const dependencies = [...new Set([...defaults, ...(options["depends-file"] ? parseDependencies(await readFile(options["depends-file"], "utf8")) : [])])];
   let sourceCommit = null;
   try { sourceCommit = command("git", ["rev-parse", "HEAD"], { cwd: repository }); } catch { /* Source archives may not include .git. */ }
@@ -186,8 +178,6 @@ async function main() {
   try {
     await mkdir(path.dirname(installRoot), { recursive: true });
     await cp(appDirectory, installRoot, { recursive: true, dereference: false, preserveTimestamps: true, verbatimSymlinks: true });
-    const prebuilds = path.join(installRoot, ptyRoot, "prebuilds");
-    try { for (const name of await readdir(prebuilds)) if (name !== "linux-x64") await rm(path.join(prebuilds, name), { recursive: true, force: true }); } catch (error) { if (error.code !== "ENOENT") throw error; }
     await normalizeTree(installRoot);
     const elfFiles = [];
     for (const filename of await walk(installRoot)) {

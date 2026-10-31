@@ -1,5 +1,6 @@
 // Copyright 2026 omniTerm contributors. SPDX-License-Identifier: Apache-2.0
 import test from "node:test";
+import { citationParts, conversationReducer, emptyConversation, executable, mentionMatches, mentionQuery, pruneSelection, refsFor, scopeSummary } from "./agent/agent-logic.js";
 import assert from "node:assert/strict";
 import { computeLayout, equalize, MIN_RATIO, neighborPane, pane, paneIds, removePane, setRatio, splitPane } from "./layout.js";
 import { isAppShortcut, matchShortcut, shortcutLabel, tabCycle, tabNumber } from "./shortcuts.js";
@@ -256,4 +257,50 @@ test("the backdrop stays opaque unless something can show through it", () => {
 test("a clear terminal keeps its background color at zero alpha", () => {
   assert.equal(terminalTheme(THEMES.nord, true).background, "#2e344000");
   assert.equal(terminalTheme(THEMES.nord, false), THEMES.nord.terminal);
+});
+
+const terminals = [
+  { ref: { sessionId: "aaaaaaaa-1", epoch: 1 }, shortId: "aaaaaaaa", label: "A", kind: "shell", status: "running" },
+  { ref: { sessionId: "bbbbbbbb-1", epoch: 2 }, shortId: "bbbbbbbb", label: "B", kind: "ssh", status: "running" },
+  { ref: { sessionId: "cccccccc-1", epoch: 1 }, shortId: "cccccccc", label: "C", kind: "sftp", status: "running" },
+];
+
+test("the conversation assembles streamed text and keeps one card per operation", () => {
+  let state = conversationReducer(emptyConversation, { type: "user", id: "u", text: "hi" });
+  assert.equal(state.running, true);
+  for (const delta of ["Hel", "lo"]) state = conversationReducer(state, { type: "text-delta", itemId: "m", delta });
+  state = conversationReducer(state, { type: "text-done", itemId: "m", text: "Hello!" });
+  assert.equal(state.entries.at(-1).text, "Hello!");
+  for (const status of ["pendingApproval", "running"]) state = conversationReducer(state, { type: "operation", operation: { operationId: "o", status } });
+  assert.equal(state.entries.filter((entry) => entry.kind === "operation").length, 1);
+  assert.equal(state.entries.at(-1).operation.status, "running");
+  state = conversationReducer(state, { type: "turn-completed", error: "failed" });
+  assert.equal(state.running, false);
+  assert.equal(state.entries.at(-1).kind, "error");
+});
+
+test("scope helpers keep epochs and drop closed terminals", () => {
+  const ids = new Set(["bbbbbbbb-1", "closed"]);
+  assert.deepEqual(refsFor(terminals, ids), [{ sessionId: "bbbbbbbb-1", epoch: 2 }]);
+  assert.deepEqual([...pruneSelection(ids, terminals)], ["bbbbbbbb-1"]);
+  const unchanged = new Set(["aaaaaaaa-1"]);
+  assert.equal(pruneSelection(unchanged, terminals), unchanged);
+  assert.equal(scopeSummary(terminals, new Set()), "无");
+  assert.equal(scopeSummary(terminals, new Set(["aaaaaaaa-1", "bbbbbbbb-1"])), "A、B");
+  assert.equal(scopeSummary(terminals, new Set(terminals.map((terminal) => terminal.ref.sessionId))), "3 个终端");
+});
+
+test("only running shells and SSH terminals can be execution targets", () => {
+  assert.deepEqual(terminals.map(executable), [true, true, false]);
+  assert.equal(executable({ ...terminals[0], status: "exited" }), false);
+});
+
+test("mentions resolve while typing and citations link only known terminals", () => {
+  assert.equal(mentionQuery("check @bb"), "bb");
+  assert.equal(mentionQuery("mail me@host"), null);
+  assert.equal(mentionQuery("done @b "), null);
+  assert.deepEqual(mentionMatches(terminals, "b").map((terminal) => terminal.label), ["B"]);
+  const parts = citationParts("see bbbbbbbb and deadbeef here", terminals);
+  assert.equal(parts[1].terminal.label, "B");
+  assert.equal(parts.at(-1), " and deadbeef here");
 });

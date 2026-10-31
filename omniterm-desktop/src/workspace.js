@@ -7,7 +7,7 @@ import { MIN_RATIO } from "./layout.js";
 
 export const WORKSPACE_KEY = "omniterm-workspace";
 export const WORKSPACE_VERSION = 1;
-// The session manager allows 20 sessions; leave room for the Agent and new tabs.
+// The terminal host allows 20 sessions; leave room for new tabs.
 export const MAX_RESTORED_PANES = 16;
 // A binary tree of n panes is at most n - 1 deep, so this never truncates a
 // layout the pane budget would otherwise keep.

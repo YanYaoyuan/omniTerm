@@ -57,6 +57,7 @@ use codex_api::ReqwestTransport;
 use codex_api::ResponseCreateWsRequest;
 use codex_api::ResponsesApiRequest;
 use codex_api::ResponsesClient as ApiResponsesClient;
+use codex_api::TranslatedProtocol;
 use codex_api::ResponsesOptions as ApiResponsesOptions;
 use codex_api::ResponsesWebsocketClient as ApiWebSocketResponsesClient;
 use codex_api::ResponsesWebsocketConnection as ApiWebSocketConnection;
@@ -2005,13 +2006,34 @@ impl ResponsesHttpExecutor<'_> {
                 request.input = input;
             }
             inference_trace_attempt.record_started(&request);
-            let client = ApiResponsesClient::new(
-                transport,
-                client_setup.api_provider,
-                client_setup.api_auth,
-            )
-            .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
-            let stream_result = client.stream_request(request, options).await;
+            let wire_api = self.client.state.provider.info().wire_api;
+            let api_auth = match wire_api {
+                WireApi::AnthropicMessages => codex_api::anthropic_auth(client_setup.api_auth),
+                WireApi::Responses | WireApi::Chat => client_setup.api_auth,
+            };
+            let client = ApiResponsesClient::new(transport, client_setup.api_provider, api_auth)
+                .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
+            let stream_result = match wire_api {
+                WireApi::Responses => client.stream_request(request, options).await,
+                WireApi::Chat => {
+                    client
+                        .stream_translated(
+                            TranslatedProtocol::ChatCompletions,
+                            &request,
+                            translated_headers(options.extra_headers),
+                        )
+                        .await
+                }
+                WireApi::AnthropicMessages => {
+                    client
+                        .stream_translated(
+                            TranslatedProtocol::AnthropicMessages,
+                            &request,
+                            translated_headers(options.extra_headers),
+                        )
+                        .await
+                }
+            };
 
             match stream_result {
                 Ok(stream) => {
@@ -2494,6 +2516,23 @@ impl ModelClientSession {
     ) -> Result<ResponseStream> {
         let wire_api = self.client.state.provider.info().wire_api;
         match wire_api {
+            WireApi::Chat | WireApi::AnthropicMessages => {
+                ResponsesHttpExecutor::new(&self.client)
+                    .stream_responses_http(
+                        &self.turn_state,
+                        /*expected_auth_owner*/ None,
+                        self.client.event_sender.as_ref(),
+                        prompt,
+                        model_info,
+                        session_telemetry,
+                        effort,
+                        summary,
+                        service_tier,
+                        responses_metadata,
+                        inference_trace,
+                    )
+                    .await
+            }
             WireApi::Responses => {
                 if self.client.responses_websocket_enabled() {
                     let request_trace = current_span_w3c_trace_context();
@@ -2570,6 +2609,18 @@ fn stamp_ws_stream_request_start_ms(request: &mut ResponsesWsRequest<'_>) {
             X_CODEX_WS_STREAM_REQUEST_START_MS_CLIENT_METADATA_KEY.to_string(),
             crate::turn_timing::now_unix_timestamp_ms().to_string(),
         );
+}
+
+/// Codex-specific headers mean nothing to other protocols and must not reach third parties.
+fn translated_headers(headers: ApiHeaderMap) -> ApiHeaderMap {
+    headers
+        .into_iter()
+        .filter_map(|(name, value)| Some((name?, value)))
+        .filter(|(name, _)| {
+            let name = name.as_str();
+            !name.starts_with("x-codex") && !name.starts_with("x-openai")
+        })
+        .collect()
 }
 
 fn is_guardian_reviewer(responses_headers: &ApiHeaderMap) -> bool {

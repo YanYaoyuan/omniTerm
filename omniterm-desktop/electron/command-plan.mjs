@@ -145,6 +145,7 @@ export async function buildCommandPlan(request, options = {}) {
   const companion = ["ssh", "sftp"].includes(request.kind) && request.companion !== false;
   let command;
   let remote;
+  let connection = {};
   if (request.kind === "agent") {
     const agent = resolveDesktopAgent(options);
     command = { executable: agent.executable, args: [...agent.args, "--no-daemon", "--no-alt-screen"] };
@@ -176,8 +177,10 @@ export async function buildCommandPlan(request, options = {}) {
     }
     args.push(destination(profile, request.kind));
     command = planCommand(request.kind, args, { ...options, env, platform });
+    const split = profile.host.lastIndexOf("@");
+    connection = { host: split >= 0 ? profile.host.slice(split + 1) : profile.host, user: profile.username || (split >= 0 ? profile.host.slice(0, split) : null), port: profile.port ?? null };
     if (companion) remote = { executable: planCommand("ssh", [], { ...options, env, platform }).executable, destination: destination(profile, "ssh"), controlPath: socket, args: [...(profile.port ? ["-p", String(profile.port)] : []), ...(profile.keyPath ? ["-i", profile.keyPath] : []), ...jump] };
   }
   const sessionEnv = Object.fromEntries(Object.entries({ ...env, TERM: "xterm-256color", COLORTERM: "truecolor", TERM_PROGRAM: "omniTerm" }).filter(([, value]) => typeof value === "string"));
-  return { ...command, kind: request.kind, cwd, title: profile.name || ({ shell: "Terminal", agent: "Agent", ssh: `SSH · ${profile.host}`, sftp: `SFTP · ${profile.host}`, serial: `Serial · ${profile.device}`, tunnel: `Tunnel · ${profile.host}` })[request.kind], env: sessionEnv, ...(remote ? { remote: { ...remote, env: sessionEnv } } : {}) };
+  return { ...command, kind: request.kind, cwd, title: profile.name || ({ shell: "Terminal", agent: "Agent", ssh: `SSH · ${profile.host}`, sftp: `SFTP · ${profile.host}`, serial: `Serial · ${profile.device}`, tunnel: `Tunnel · ${profile.host}` })[request.kind], env: sessionEnv, connection, ...(remote ? { remote: { ...remote, env: sessionEnv } } : {}) };
 }

@@ -13,3 +13,8 @@ export function printParts(parts, windows) {
     ? `Write-Output (${parts.map((part) => `'${part}'`).join(" + ")})`
     : `printf '${"%s".repeat(parts.length)}\\n' ${parts.map((part) => `'${part}'`).join(" ")}`;
 }
+
+// ConPTY asks where the cursor is at startup and waits for an answer before running
+// the shell. xterm.js replies in the app; a client without a terminal must do it.
+export const CURSOR_QUERY = "\x1b[6n";
+export const CURSOR_REPLY = "\x1b[1;1R";

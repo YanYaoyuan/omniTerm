@@ -27,7 +27,7 @@ python scripts/release/build-agent.py --target TARGET
 python scripts/release/stage-agent-notices.py dist/omniterm-agent --target TARGET
 cd omniterm-desktop
 npm ci
-npm run rebuild
+npm run build:native
 npm test
 npm run package
 cd ..
@@ -122,8 +122,8 @@ fingerprint and final signature/hash records. In manifests, `signed: false`
 means no publisher certificate; `adHocSigned` and `developerIDSigned` clarify
 macOS state. OS trust prompts may appear for these unsigned previews.
 
-The packaged-runtime smoke check loads the artifact's own Electron and native
-node-pty, executes shell commands and Unicode input, requests a resize, tests
+The packaged-runtime smoke check runs the artifact's own Electron and terminal
+host, executes shell commands and Unicode input, requests a resize, tests
 Ctrl+C/close, and runs the bundled Agent's `--version`. A separate offline host
 check negotiates the actual framed stdio protocol, opens a session, evaluates
 `6 * 7` in bundled V8, and shuts down cleanly with tools disabled. It sends no
