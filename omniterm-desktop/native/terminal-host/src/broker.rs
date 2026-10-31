@@ -8,7 +8,6 @@
 
 use crate::interaction::Interaction;
 use crate::interaction::InteractionState;
-use crate::interaction::StateSource;
 use serde::Deserialize;
 use serde::Serialize;
 use sha2::Digest;
@@ -19,8 +18,6 @@ use std::collections::VecDeque;
 const QUEUE_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_COMMAND_TIMEOUT_MS: u64 = 120_000;
 const MAX_COMMAND_TIMEOUT_MS: u64 = 900_000;
-/// Time a foreground-process prompt needs to be stable before a command counts as finished.
-const SETTLE_MS: u64 = 300;
 const MAX_COMMAND_BYTES: usize = 16 * 1024;
 const MAX_FINISHED_OPERATIONS: usize = 200;
 const INTERRUPT: &[u8] = b"\x03";
@@ -110,8 +107,6 @@ pub struct Operation {
     started_at: u64,
     #[serde(skip)]
     commands_at_start: u64,
-    #[serde(skip)]
-    ready_since: Option<u64>,
     #[serde(skip)]
     execute_requested: bool,
 }
@@ -269,7 +264,6 @@ impl Broker {
             queued_at: 0,
             started_at: 0,
             commands_at_start: 0,
-            ready_since: None,
             execute_requested: false,
         };
         let id = operation.operation_id.clone();
@@ -521,20 +515,6 @@ impl Broker {
             self.finish(id, OperationStatus::Completed, None, Some(view.output_seq));
             return;
         }
-        let prompt_returned = view.interaction.state == InteractionState::Ready
-            && view.interaction.source == StateSource::ForegroundProcess;
-        if prompt_returned {
-            let ready_since = match self.operations.get_mut(id) {
-                Some(entry) => *entry.ready_since.get_or_insert(now),
-                None => now,
-            };
-            if now.saturating_sub(ready_since) >= SETTLE_MS {
-                self.finish(id, OperationStatus::Completed, None, Some(view.output_seq));
-                return;
-            }
-        } else if let Some(entry) = self.operations.get_mut(id) {
-            entry.ready_since = None;
-        }
         if now.saturating_sub(operation.started_at) >= operation.timeout_ms {
             self.finish(
                 id,
@@ -709,6 +689,7 @@ fn current_view(terminals: &dyn Terminals, target: &TerminalRef) -> Result<Targe
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::interaction::StateSource;
     use std::cell::RefCell;
 
     struct Fake {
@@ -983,21 +964,6 @@ mod tests {
         assert_eq!(broker.get(&first).expect("first").exit_code, Some(3));
         assert_eq!(status(&broker, &first), OperationStatus::Completed);
         assert_eq!(fake.written()[1], ("b".to_string(), "two\r".to_string()));
-    }
-
-    #[test]
-    fn a_foreground_prompt_completes_a_command_only_after_settling() {
-        let (fake, mut broker) = fixture();
-        fake.update("b", |view| view.interaction = interaction(InteractionState::Ready, StateSource::ForegroundProcess));
-        let id = propose(&mut broker, &fake, "1", "true");
-        approve(&mut broker, &fake, &id);
-        broker.execute(&id, 1000).expect("queued");
-        broker.tick(&fake, 1100);
-        broker.tick(&fake, 1200);
-        assert_eq!(status(&broker, &id), OperationStatus::Running);
-        broker.tick(&fake, 1500);
-        assert_eq!(status(&broker, &id), OperationStatus::Completed);
-        assert_eq!(broker.get(&id).expect("operation").exit_code, None);
     }
 
     #[test]

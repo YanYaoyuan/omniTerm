@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { AgentRuntime, CREDENTIAL_ENV, actionableError, engineArguments, isForbiddenItem, normalizeNotification } from "./agent-runtime.mjs";
-import { AgentService, renderContext } from "./agent-service.mjs";
+import { AgentService, renderContext, runtimeFingerprint } from "./agent-service.mjs";
 import { AGENT_INSTRUCTIONS, TERMINAL_TOOLS, ToolRunner } from "./agent-tools.mjs";
 import { CredentialVault, PROVIDER_PRESETS, ProviderStore, validateBaseUrl, validateProviderProfile } from "./provider-store.mjs";
 import { shellIntegrationScript } from "./shell-integration.mjs";
@@ -241,6 +241,53 @@ test("changing provider starts a new engine and thread instead of moving history
   assert.equal(engines[1].requests.filter(({ method }) => method === "turn/start").length, 1);
 });
 
+test("editing a profile replaces its engine and revokes its task at the next turn", async () => {
+  const { service, events, engines, host } = serviceFixture();
+  let current = { ...profile };
+  service.providers.get = () => current;
+  await service.send({ ...message, targets: [] });
+  engines[0].notify("turn/completed", { turn: { id: "turn-1", status: "completed" } });
+  await tick();
+  current = { ...current, model: "model-b", chatOnly: true };
+  await service.send({ ...message, targets: [] });
+  assert.equal(engines.length, 2);
+  assert.equal(engines[0].killed, true);
+  assert.ok(host.calls.some(([method]) => method === "task.end"));
+  assert.equal(service.conversation.tools, false);
+  assert.equal(service.conversation.profile.model, "model-b");
+  assert.deepEqual(engines[1].requests.find(({ method }) => method === "thread/start").params.dynamicTools, []);
+  assert.equal(engines[1].requests.find(({ method }) => method === "thread/start").params.model, "model-b");
+  assert.equal(engines[1].requests.filter(({ method }) => method === "turn/start").length, 1);
+  assert.ok(events.some(({ type, text }) => type === "notice" && text.includes("已新建对话")));
+});
+
+test("each setting that changes the destination or permissions forces a new engine", () => {
+  const base = runtimeFingerprint(profile, "key");
+  for (const change of [{ model: "x" }, { baseUrl: "https://other.example/v1" }, { wireApi: "responses" }, { chatOnly: true }, { auth: "engine-login" }]) assert.notEqual(runtimeFingerprint({ ...profile, ...change }, "key"), base);
+  assert.notEqual(runtimeFingerprint(profile, "rotated"), base);
+  assert.ok(!base.includes("key"));
+  assert.equal(runtimeFingerprint({ ...profile, name: "Renamed", contextBudgetBytes: 4096 }, "key"), base);
+});
+
+test("a rotated key replaces the engine, and a rename keeps the conversation", async () => {
+  const { service, engines } = serviceFixture();
+  let key = "key";
+  let current = { ...profile };
+  service.vault.get = () => key;
+  service.providers.get = () => current;
+  const finish = async (index) => { engines[index].notify("turn/completed", { turn: { id: "turn-1", status: "completed" } }); await tick(); };
+  await service.send(message);
+  await finish(0);
+  current = { ...current, name: "Renamed" };
+  await service.send(message);
+  await finish(0);
+  assert.equal(engines.length, 1);
+  assert.equal(service.conversation.profile.name, "Renamed");
+  key = "rotated";
+  await service.send(message);
+  assert.equal(engines.length, 2);
+});
+
 test("engine loss voids approvals and ends the conversation", async () => {
   const { service, events, engines, host } = serviceFixture();
   await service.send(message);
@@ -340,4 +387,5 @@ test("shell integration signs marks with the session nonce and rejects anything 
   assert.ok(!script.includes("\n") && !script.includes("\r"));
   assert.ok(script.startsWith(" "));
   assert.throws(() => shellIntegrationScript("x; rm -rf /"), /nonce/);
+  assert.match(script, /case "\$BASH_VERSION" in \[5-9\]\.\*\|\[1-9\]\[0-9\]\.\*\|4\.\[4-9\]\*\)/);
 });

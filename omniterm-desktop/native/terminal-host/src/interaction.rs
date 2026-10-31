@@ -103,8 +103,10 @@ pub fn classify(facts: Facts<'_>) -> Interaction {
     if facts.phase == ShellPhase::AtPrompt {
         return result(State::Ready, Source::ShellIntegration);
     }
+    // The shell owning the foreground says nothing about a prompt: a builtin such as `read`
+    // runs inside the shell and would consume a submitted command as its own input.
     if facts.foreground == Foreground::Shell {
-        return result(State::Ready, Source::ForegroundProcess);
+        return result(State::Unknown, Source::ForegroundProcess);
     }
     result(State::Unknown, Source::None)
 }
@@ -137,10 +139,14 @@ mod tests {
 
     #[test]
     fn only_a_confirmed_prompt_is_ready() {
-        let at_prompt = Facts { phase: ShellPhase::AtPrompt, ..facts() };
+        let at_prompt = Facts { phase: ShellPhase::AtPrompt, foreground: Foreground::Shell, ..facts() };
         assert_eq!(state(at_prompt), InteractionState::Ready);
-        let shell = Facts { foreground: Foreground::Shell, ..facts() };
-        assert_eq!(state(shell), InteractionState::Ready);
+    }
+
+    #[test]
+    fn a_foreground_shell_is_not_a_prompt() {
+        let builtin = Facts { foreground: Foreground::Shell, ..facts() };
+        assert_eq!(state(builtin), InteractionState::Unknown);
     }
 
     #[test]
