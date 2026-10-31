@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildCommandPlan } from "../electron/command-plan.mjs";
@@ -28,51 +29,92 @@ const waitFor = async (predicate, label) => {
   while (!predicate() && Date.now() < deadline) await delay(50);
   assert.ok(predicate(), `${label}\n${output.slice(-2500)}`);
 };
+const waitForAsync = async (predicate, label) => {
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) { if (await predicate()) return; await delay(50); }
+  assert.fail(`${label}\n${output.slice(-1500)}`);
+};
 const interaction = async (id) => (await host.request("workspace.list")).terminals.find((terminal) => terminal.ref.sessionId === id).interaction.state;
 
-// A shell owning the foreground is not at a prompt: `read` must not receive a command.
-async function verifyReadiness() {
-  const session = await host.request("session.create", { executable: "/bin/bash", args: ["--noprofile", "--norc", "-i"], cwd: repositoryRoot, env: { PATH: env.PATH, TERM: "xterm-256color", PS1: "$ " }, kind: "shell", title: "readiness", connection: {} });
+const FINAL_OPERATION = ["blocked", "cancelled", "completed", "invalidated", "outcomeUnknown", "staged"];
+
+// A shell owning the foreground is not at a prompt: `read` must not receive a command, and a
+// continuation prompt must not inherit the primary prompt before it.
+async function verifyReadiness(executable, args, supportsMarks) {
+  const taskId = `readiness-${executable}`;
+  const before = output.length;
+  const recent = () => output.slice(before);
+  const session = await host.request("session.create", { executable, args, cwd: repositoryRoot, env: { PATH: env.PATH, TERM: "xterm-256color", PS1: "$ ", PROMPT: "$ " }, kind: "shell", title: "readiness", connection: {} });
   const { id, shellNonce } = session;
   await host.request("session.start", { id });
   const send = (data) => host.request("session.write", { id, data });
-  const proposed = async (call, command, mode) => {
-    const { operationId } = await host.request("operation.propose", { taskId: "readiness", callId: call, terminal: id, command });
-    await host.request("operation.approve", { operationId, scope: "once", mode });
+  const state = (expected, label) => waitForAsync(async () => await interaction(id) === expected, `${label}: expected ${expected}`);
+  const approved = async (call, command) => {
+    const { operationId } = await host.request("operation.propose", { taskId, callId: call, terminal: id, command });
+    await host.request("operation.approve", { operationId, scope: "once", mode: "run" });
     await host.request("operation.execute", { operationId });
-    await waitFor(() => ["blocked", "completed", "invalidated", "outcomeUnknown", "staged"].includes(operations.get(operationId)?.status), `Operation ${call} must finish`);
+    return operationId;
+  };
+  const finished = async (operationId, label) => {
+    await waitFor(() => FINAL_OPERATION.includes(operations.get(operationId)?.status), `${label} must finish`);
     return operations.get(operationId);
   };
-  await waitFor(() => output.includes("$ "), "The readiness shell must show a prompt");
-  await host.request("task.begin", { taskId: "readiness", context: [], targets: [{ sessionId: id, epoch: 1 }] });
-  await send("read -r -p 'ASK> ' answer; printf 'REPLY=<%s>\\n' \"$answer\"\r");
-  await waitFor(() => output.includes("ASK> "), "The builtin must be waiting");
+  await waitFor(() => recent().includes("$ "), "The readiness shell must show a prompt");
+  await host.request("task.begin", { taskId, context: [], targets: [{ sessionId: id, epoch: 1 }] });
+  await send(`${executable.endsWith("zsh") ? "read -r 'answer?ASK> '" : "read -r -p 'ASK> ' answer"}; printf 'REPLY=<%s>\\n' "$answer"\r`);
+  await waitFor(() => recent().includes("ASK> "), "The builtin must be waiting");
   await delay(200);
   assert.notEqual(await interaction(id), "ready", "A running builtin must not count as idle without marks");
-  const blocked = await proposed("builtin", "printf 'BROKER_%s\\n' EXECUTED", "run");
+  const blocked = await finished(await approved("builtin", "printf 'BROKER_%s\\n' EXECUTED"), "The unmarked command");
   assert.equal(blocked.status, "blocked");
-  assert.ok(!hasOutputLine(output, "BROKER_EXECUTED") && !output.includes("REPLY=<printf"), "The command must not reach the builtin");
+  assert.ok(!hasOutputLine(recent(), "BROKER_EXECUTED") && !recent().includes("REPLY=<printf"), "The command must not reach the builtin");
   await send("no\r");
-  await waitFor(() => output.includes("REPLY=<no>"), "The builtin must still take the user's answer");
+  await waitFor(() => recent().includes("REPLY=<no>"), "The builtin must still take the user's answer");
   await delay(200);
   await send(`${shellIntegrationScript(shellNonce)}\r`);
   await delay(500);
-  // Stock macOS bash predates PS0: it must refuse marks and stay manual.
-  const [major, minor] = execFileSync("/bin/bash", ["-c", "echo ${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}"], { encoding: "utf8" }).trim().split(" ").map(Number);
-  if (major < 4 || (major === 4 && minor < 4)) {
+  if (!supportsMarks) {
     assert.equal(await interaction(id), "unknown", "A bash without PS0 must stay manual");
     return;
   }
-  assert.equal(await interaction(id), "ready", "Marks must report the prompt");
-  await send("read -r -p 'AGAIN> ' answer\r");
-  await waitFor(() => output.includes("AGAIN> "), "The builtin must be waiting under marks");
-  await delay(200);
-  assert.equal(await interaction(id), "busy", "Marks must report a running builtin as busy");
+  await state("ready", "Marks must report the prompt");
+  await send(`${executable.endsWith("zsh") ? "read -r 'answer?AGAIN> '" : "read -r -p 'AGAIN> ' answer"}\r`);
+  await waitFor(() => recent().includes("AGAIN> "), "The builtin must be waiting under marks");
+  await state("busy", "Marks must report a running builtin");
   await send("yes\r");
-  await delay(300);
-  assert.equal(await interaction(id), "ready", "Marks must report the returned prompt");
-  const done = await proposed("marked", "(exit 7)", "run");
+  await state("busy", "An answer could be type-ahead, so the next prompt is not trusted");
+  await send("\r");
+  await state("ready", "One line at the prompt must restore readiness");
+
+  // Each stays busy at its secondary prompt, and only its real end brings a new prompt back.
+  const unfinished = [
+    ["an unclosed quote", "echo 'open\r", ["more\r", "close'\r"]],
+    ["a line continuation", "echo joined\\\r", ["line\r"]],
+    ["a heredoc", "cat <<OMNITERM_END\r", ["body\r", "OMNITERM_END\r"]],
+  ];
+  let index = 0;
+  for (const [name, opening, rest] of unfinished) {
+    const marker = `${++index}`;
+    await send(opening);
+    await delay(200);
+    await state("busy", `${name} must not look idle`);
+    const held = await approved(`held-${marker}`, `printf 'BROKER_%s\\n' HELD${marker}`);
+    await delay(300);
+    assert.equal((await host.request("operation.result", { operationId: held })).operation.status, "queued", `${name} must hold the command back`);
+    assert.equal((await host.request("operation.cancel", { operationId: held })).status, "cancelled");
+    assert.ok(!recent().includes(`HELD${marker}`), `${name} must not receive the command`);
+    for (const line of rest) await send(line);
+    await state("ready", `${name} must recover after it ends`);
+  }
+  await send("echo 'interrupted\r");
+  await delay(200);
+  await state("busy", "An interrupted quote must start out busy");
+  await send("\x03");
+  await state("ready", "Ctrl+C at a secondary prompt must return to the primary prompt");
+
+  const done = await finished(await approved("marked", "(exit 7)"), "The marked command");
   assert.deepEqual([done.status, done.exitCode], ["completed", 7]);
+  await state("ready", "A finished command must return to the prompt");
 }
 
 try {
@@ -106,7 +148,11 @@ try {
     await waitFor(() => stopped(started.pid), "Closing a session must stop its shell");
     assert.ok(stopped(running.pid), "An exited shell must be gone");
   }
-  if (!windows) await verifyReadiness();
+  if (!windows) {
+    const [major, minor] = execFileSync("/bin/bash", ["-c", "echo ${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}"], { encoding: "utf8" }).trim().split(" ").map(Number);
+    await verifyReadiness("/bin/bash", ["--noprofile", "--norc", "-i"], major > 4 || (major === 4 && minor >= 4));
+    for (const zsh of ["/bin/zsh", "/usr/bin/zsh"]) if (existsSync(zsh)) { await verifyReadiness(zsh, ["-f", "-i"], true); break; }
+  }
   console.log("PASS: real PTY input, working directory, resize, Unicode, Ctrl+C, exit, process cleanup, and command readiness");
 } finally {
   manager.dispose();

@@ -49,6 +49,9 @@ pub enum ShellPhase {
     #[default]
     Unobserved,
     AtPrompt,
+    /// Input was submitted and no fresh prompt has appeared. The shell may be starting a
+    /// command or waiting at a continuation prompt, which runs no hooks and sends no marks.
+    Submitted,
     Running,
 }
 
@@ -94,7 +97,7 @@ pub fn classify(facts: Facts<'_>) -> Interaction {
     if facts.foreground == Foreground::OtherProcess {
         return result(State::Busy, Source::ForegroundProcess);
     }
-    if facts.phase == ShellPhase::Running {
+    if matches!(facts.phase, ShellPhase::Running | ShellPhase::Submitted) {
         return result(State::Busy, Source::ShellIntegration);
     }
     if facts.pending_input {
@@ -141,6 +144,12 @@ mod tests {
     fn only_a_confirmed_prompt_is_ready() {
         let at_prompt = Facts { phase: ShellPhase::AtPrompt, foreground: Foreground::Shell, ..facts() };
         assert_eq!(state(at_prompt), InteractionState::Ready);
+    }
+
+    #[test]
+    fn a_submitted_line_is_busy_until_a_new_prompt_appears() {
+        let continuation = Facts { phase: ShellPhase::Submitted, foreground: Foreground::Shell, ..facts() };
+        assert_eq!(state(continuation), InteractionState::Busy);
     }
 
     #[test]

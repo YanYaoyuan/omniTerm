@@ -592,7 +592,7 @@ impl Broker {
             }
             (_, InteractionState::Busy) => {
                 if now.saturating_sub(operation.queued_at) >= QUEUE_TIMEOUT_MS {
-                    return reject(self, OperationStatus::Blocked, "The terminal stayed busy, so the command was not sent.".to_string(), changed);
+                    return reject(self, OperationStatus::Blocked, "The terminal stayed busy, so the command was not sent. If it is sitting at a shell prompt, press Enter there once and try again.".to_string(), changed);
                 }
                 return false;
             }
