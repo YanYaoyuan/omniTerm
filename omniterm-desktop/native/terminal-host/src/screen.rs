@@ -14,8 +14,8 @@ const DELTA_SCROLLBACK_LINES: usize = 20_000;
 /// observations about the terminal, never a source of permissions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShellEvent {
-    PromptStart { trusted: bool },
-    CommandStart { trusted: bool },
+    /// `input_clear` is the shell's own report that no input was queued when it drew the prompt.
+    PromptStart { trusted: bool, input_clear: bool },
     CommandExecuted { trusted: bool },
     CommandFinished { trusted: bool, exit_code: Option<i32> },
     WorkingDirectory(String),
@@ -40,8 +40,10 @@ impl Observer {
                     .is_some_and(|nonce| nonce == self.nonce.as_bytes())
             });
         let event = match kind {
-            b'A' => ShellEvent::PromptStart { trusted },
-            b'B' => ShellEvent::CommandStart { trusted },
+            b'A' => ShellEvent::PromptStart {
+                trusted,
+                input_clear: params[2..].contains(&b"q=0".as_slice()),
+            },
             b'C' => ShellEvent::CommandExecuted { trusted },
             b'D' => ShellEvent::CommandFinished {
                 trusted,
@@ -279,13 +281,14 @@ mod tests {
     #[test]
     fn shell_marks_require_the_session_nonce_to_be_trusted() {
         let mut screen = ScreenModel::new(5, 40, "n0nce");
-        screen.process(b"\x1b]133;A;k=n0nce\x07\x1b]133;A\x07\x1b]133;C;k=wrong\x07");
+        screen.process(b"\x1b]133;A;k=n0nce;q=0\x07\x1b]133;A;k=n0nce\x07\x1b]133;A\x07\x1b]133;C;k=wrong\x07");
         screen.process(b"\x1b]133;D;3;k=n0nce\x07");
         assert_eq!(
             screen.take_events(),
             [
-                ShellEvent::PromptStart { trusted: true },
-                ShellEvent::PromptStart { trusted: false },
+                ShellEvent::PromptStart { trusted: true, input_clear: true },
+                ShellEvent::PromptStart { trusted: true, input_clear: false },
+                ShellEvent::PromptStart { trusted: false, input_clear: false },
                 ShellEvent::CommandExecuted { trusted: false },
                 ShellEvent::CommandFinished { trusted: true, exit_code: Some(3) },
             ]

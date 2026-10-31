@@ -47,6 +47,7 @@ const MAX_UNPARSED: usize = 1024 * 1024;
 /// Above this, older output is skimmed for mode changes so eviction can never lose one.
 const SKIM_AT: usize = MAX_UNPARSED + 512 * 1024;
 const BRACKETED_PASTE: &str = "\x1b[200~";
+const IN_FLIGHT_WINDOW: Duration = Duration::from_millis(1500);
 const MAX_CSI_LENGTH: usize = 32;
 const MAX_OSC_LENGTH: usize = 4096;
 
@@ -103,8 +104,9 @@ pub struct State {
     pub exit_code: Option<i32>,
     pub screen: ScreenModel,
     pub phase: ShellPhase,
-    /// The next prompt may belong to a command that finished before submitted input was read.
-    distrust_next_prompt: bool,
+    /// When Enter was last sent to a running command. Input can still be in flight when the
+    /// shell checks for it, so a prompt arriving soon after cannot vouch for that input.
+    answered_at: Option<Instant>,
     pub observed_cwd: Option<String>,
     pub commands_finished: u64,
     pub commands: VecDeque<CommandRecord>,
@@ -151,7 +153,7 @@ impl Session {
                 exit_code: None,
                 screen,
                 phase: ShellPhase::Unobserved,
-                distrust_next_prompt: false,
+                answered_at: None,
                 observed_cwd: None,
                 commands_finished: 0,
                 commands: VecDeque::new(),
@@ -341,8 +343,8 @@ impl Session {
             let pasted = data.starts_with(BRACKETED_PASTE);
             let submitted = !pasted && data.contains(['\r', '\n', '\u{3}']);
             state.pending_input = !submitted && !data.is_empty() || (state.pending_input && !submitted);
-            if !pasted {
-                note_submission(&mut state, data.bytes().filter(|byte| matches!(byte, b'\r' | b'\n')).count() as u32);
+            if !pasted && data.contains(['\r', '\n']) {
+                note_submission(&mut state);
             }
         }
         send_input(&state, data.as_bytes())?;
@@ -355,7 +357,9 @@ impl Session {
             return Err("The terminal is not running.".to_string());
         }
         // An Agent command can leave the shell at a continuation prompt as easily as a user's.
-        note_submission(&mut state, u32::from(bytes.last() == Some(&b'\r')));
+        if bytes.last() == Some(&b'\r') {
+            note_submission(&mut state);
+        }
         send_input(&state, bytes)
     }
 
@@ -527,6 +531,10 @@ pub fn ingest(state: &mut State, bytes: &[u8]) {
     if excess > 0 {
         state.ring.drain(..excess);
     }
+    // A late parse would measure the in-flight window from the wrong moment.
+    if state.answered_at.is_some() {
+        catch_up(state);
+    }
 }
 
 /// Brings the screen model up to date. Anything that reads screen state goes through here, so
@@ -598,12 +606,14 @@ fn apply_shell_event(state: &mut State, event: ShellEvent) {
     let seq = state.seq;
     match event {
         ShellEvent::WorkingDirectory(path) => state.observed_cwd = Some(path),
-        // Unsigned marks may come from `cat` of a file; they never decide readiness.
-        ShellEvent::PromptStart { trusted: true } => {
-            state.phase = if std::mem::take(&mut state.distrust_next_prompt) {
-                ShellPhase::Submitted
-            } else {
+        // Unsigned marks may come from `cat` of a file; they never decide readiness. Only the
+        // shell can see queued input, so readiness needs its explicit report that none is left.
+        ShellEvent::PromptStart { trusted: true, input_clear } => {
+            let in_flight = state.answered_at.take().is_some_and(|at| at.elapsed() < IN_FLIGHT_WINDOW);
+            state.phase = if input_clear && !in_flight {
                 ShellPhase::AtPrompt
+            } else {
+                ShellPhase::Submitted
             };
         }
         ShellEvent::CommandExecuted { trusted: true } => {
@@ -627,20 +637,11 @@ fn apply_shell_event(state: &mut State, event: ShellEvent) {
 
 /// Ends any confirmed prompt: what the shell does with the line is unknown until a new prompt
 /// mark arrives. Parses first, or a mark from before this input would restore the old state.
-fn note_submission(state: &mut State, lines: u32) {
-    if lines == 0 {
-        return;
-    }
+fn note_submission(state: &mut State) {
     catch_up(state);
     match state.phase {
-        ShellPhase::AtPrompt => {
-            state.phase = ShellPhase::Submitted;
-            state.distrust_next_prompt = lines > 1;
-        }
-        // Either type-ahead or an answer to the running program; nothing in the stream tells
-        // them apart. Doubting one prompt is the safe choice, and the next line clears it.
-        ShellPhase::Running => state.distrust_next_prompt = true,
-        // Further lines of a continuation are one command, so they owe no extra prompt.
+        ShellPhase::AtPrompt => state.phase = ShellPhase::Submitted,
+        ShellPhase::Running => state.answered_at = Some(Instant::now()),
         ShellPhase::Submitted | ShellPhase::Unobserved => {}
     }
 }
@@ -850,7 +851,7 @@ mod tests {
         let mut state = session.lock();
         ingest(&mut state, b"\x1b]133;C;k=n\x07");
         ingest(&mut state, &[b'x'; 3 * 1024 * 1024]);
-        ingest(&mut state, b"\x1b]133;D;9;k=n\x07\x1b]133;A;k=n\x07");
+        ingest(&mut state, b"\x1b]133;D;9;k=n\x07\x1b]133;A;k=n;q=0\x07");
         ingest(&mut state, &[b'y'; 3 * 1024 * 1024]);
         catch_up(&mut state);
         assert_eq!(state.commands_finished, 1);
@@ -868,12 +869,12 @@ mod tests {
     fn trusted_marks_track_commands_and_forged_marks_are_ignored() {
         let session = session();
         let mut state = session.lock();
-        ingest(&mut state, b"\x1b]133;A;k=n\x07$ \x1b]133;C;k=n\x07out\x1b]133;D;7;k=n\x07");
+        ingest(&mut state, b"\x1b]133;A;k=n;q=0\x07$ \x1b]133;C;k=n\x07out\x1b]133;D;7;k=n\x07");
         catch_up(&mut state);
         assert_eq!(state.commands_finished, 1);
         assert_eq!(state.last_exit_code, Some(7));
         assert_eq!(state.phase, ShellPhase::Submitted);
-        ingest(&mut state, b"\x1b]133;A;k=n\x07");
+        ingest(&mut state, b"\x1b]133;A;k=n;q=0\x07");
         catch_up(&mut state);
         assert_eq!(state.phase, ShellPhase::AtPrompt);
         ingest(&mut state, b"\x1b]133;C;k=n\x07");
@@ -913,7 +914,9 @@ mod tests {
         (session, queue)
     }
 
-    const PROMPT: &[u8] = b"\x1b]133;D;0;k=n\x07\x1b]133;A;k=n\x07$ ";
+    const PROMPT: &[u8] = b"\x1b]133;D;0;k=n\x07\x1b]133;A;k=n;q=0\x07$ ";
+    const PROMPT_WITH_QUEUE: &[u8] = b"\x1b]133;D;0;k=n\x07\x1b]133;A;k=n;q=1\x07$ ";
+    const PROMPT_UNREPORTED: &[u8] = b"\x1b]133;D;0;k=n\x07\x1b]133;A;k=n\x07$ ";
     const STARTED: &[u8] = b"\x1b]133;C;k=n\x07";
 
     fn feed(session: &Session, bytes: &[u8]) -> ShellPhase {
@@ -945,25 +948,42 @@ mod tests {
     }
 
     #[test]
-    fn the_prompt_of_a_running_command_does_not_confirm_input_typed_ahead() {
+    fn queued_input_keeps_every_prompt_unconfirmed_until_the_shell_reports_none() {
         let (session, _queue) = at_prompt();
         session.write_user("sleep 1\r", false).expect("written");
-        assert_eq!(feed(&session, STARTED), ShellPhase::Running);
+        feed(&session, STARTED);
+        session.write_user("true\r", false).expect("written");
         session.write_user("echo '\r", false).expect("written");
-        assert_eq!(feed(&session, PROMPT), ShellPhase::Submitted);
+        assert_eq!(feed(&session, PROMPT_WITH_QUEUE), ShellPhase::Submitted);
+        feed(&session, STARTED);
+        assert_eq!(feed(&session, PROMPT_WITH_QUEUE), ShellPhase::Submitted);
         assert_eq!(feed(&session, b"quote> "), ShellPhase::Submitted);
     }
 
     #[test]
-    fn answering_a_program_costs_one_prompt_however_many_lines_it_took() {
+    fn a_prompt_that_does_not_report_on_input_is_not_trusted() {
         let (session, _queue) = at_prompt();
-        session.write_user("python\r", false).expect("written");
+        session.write_user("ls\r", false).expect("written");
         feed(&session, STARTED);
-        for _ in 0..20 {
-            session.write_user("1+1\r", false).expect("written");
-        }
+        assert_eq!(feed(&session, PROMPT_UNREPORTED), ShellPhase::Submitted);
+    }
+
+    #[test]
+    fn a_prompt_right_after_an_answer_cannot_vouch_for_input_still_in_flight() {
+        let (session, _queue) = at_prompt();
+        session.write_user("read x\r", false).expect("written");
+        feed(&session, STARTED);
+        session.write_user("answer\r", false).expect("written");
         assert_eq!(feed(&session, PROMPT), ShellPhase::Submitted);
-        session.write_user("\r", false).expect("written");
+    }
+
+    #[test]
+    fn an_answer_long_before_the_prompt_needs_no_extra_enter() {
+        let (session, _queue) = at_prompt();
+        session.write_user("read x; sleep 9\r", false).expect("written");
+        feed(&session, STARTED);
+        session.write_user("answer\r", false).expect("written");
+        session.lock().answered_at = Instant::now().checked_sub(IN_FLIGHT_WINDOW * 2);
         assert_eq!(feed(&session, PROMPT), ShellPhase::AtPrompt);
     }
 

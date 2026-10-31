@@ -81,6 +81,9 @@ jobs:
         run: |
           rustup toolchain install 1.95.0 --profile minimal
           rustup default 1.95.0
+      - name: Install zsh for the readiness tests
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zsh
       - name: Test sessions, screen model and operation broker
         run: cargo test --locked --manifest-path native/terminal-host/Cargo.toml
       - name: Build the terminal host

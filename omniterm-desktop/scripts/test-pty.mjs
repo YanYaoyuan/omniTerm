@@ -82,7 +82,7 @@ async function verifyReadiness(executable, args, supportsMarks) {
   await waitFor(() => recent().includes("AGAIN> "), "The builtin must be waiting under marks");
   await state("busy", "Marks must report a running builtin");
   await send("yes\r");
-  await state("busy", "An answer could be type-ahead, so the next prompt is not trusted");
+  await state("busy", "A prompt right after an answer cannot vouch for input still in flight");
   await send("\r");
   await state("ready", "One line at the prompt must restore readiness");
 
@@ -106,6 +106,47 @@ async function verifyReadiness(executable, args, supportsMarks) {
     for (const line of rest) await send(line);
     await state("ready", `${name} must recover after it ends`);
   }
+  // Queued lines run one by one, and the last may be unfinished when the prompts stop.
+  const holdsBack = async (name, call) => {
+    await state("busy", `${name} must not look idle`);
+    const held = await approved(call, `printf 'BROKER_%s\\n' HELD_${call}`);
+    await delay(300);
+    assert.equal((await host.request("operation.result", { operationId: held })).operation.status, "queued", `${name} must hold the command back`);
+    assert.equal((await host.request("operation.cancel", { operationId: held })).status, "cancelled");
+    assert.ok(!recent().includes(`HELD_${call}`), `${name} must not receive the command`);
+  };
+  await send("sleep 1\r");
+  await delay(200);
+  await send("true\r");
+  await send("echo 'queued\r");
+  await delay(1500);
+  await holdsBack("Input queued behind a running command", "queue");
+  await send("close'\r");
+  await state("ready", "Queued input must recover once it ends");
+
+  // Input can also be queued before the command-start mark, behind a slow preexec hook.
+  if (executable.endsWith("zsh")) {
+    await send("__slow() { sleep 1; }; preexec_functions=(__slow $preexec_functions)\r");
+    await state("ready", "The slow hook must install");
+    await send("true\r");
+    await delay(200);
+    await send("echo 'slow\r");
+    await delay(2000);
+    await holdsBack("Input queued behind a slow hook", "slow");
+    await send("close'\r");
+    await delay(1500);
+    await send("preexec_functions=(${preexec_functions:#__slow})\r");
+    await delay(1500);
+    await state("ready", "The slow hook must uninstall");
+  }
+
+  // An answer the program already consumed leaves nothing queued, so no extra Enter is needed.
+  await send(`${executable.endsWith("zsh") ? "read -r 'answer?LATER> '" : "read -r -p 'LATER> ' answer"}; sleep 2\r`);
+  await waitFor(() => recent().includes("LATER> "), "The answered builtin must be waiting");
+  await send("yes\r");
+  await delay(2500);
+  await state("ready", "An answer long before the prompt must need no extra Enter");
+
   await send("echo 'interrupted\r");
   await delay(200);
   await state("busy", "An interrupted quote must start out busy");
