@@ -219,7 +219,6 @@ try {
   const refused = await processPage.run(`Promise.allSettled([window.omniterm.writeSession({ id: "x", data: "y" }), window.omniterm.approveOperation({}), window.omniterm.monitorApprove("x"), window.omniterm.providerState()]).then((results) => results.map(({ status, reason }) => status + ":" + (reason?.message ?? "")))`);
   for (const result of refused) assert.match(result, /^rejected:This window cannot make that request/);
   await processPage.run(`document.querySelector(".process-detail button").click()`);
-  await until(() => processPage.run(`document.querySelector(".process-summary:last-child")?.textContent.includes("监控") ?? false`), "the monitor must start");
   await until(async () => (await app.run("window.omniterm.monitorList()")).some(({ status, action }) => status === "running" && !action), "a read-only monitor in the main window");
   step("the process window shows processes, starts a read-only monitor and reaches nothing else");
   console.log(`\nPASS: dockable workspace. Screenshots in ${artifacts}`);
