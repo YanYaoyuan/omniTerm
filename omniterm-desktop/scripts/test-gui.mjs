@@ -116,8 +116,9 @@ try {
   await app.click(".agent-scope .scope-chip");
   await until(() => app.run(`Boolean(document.querySelector(".terminal-picker"))`), "the terminal picker");
   await app.run(`document.querySelector(".terminal-picker input[type=radio]:not(:disabled)").click()`);
-  const scope = () => app.run(`({ chips: [...document.querySelectorAll(".scope-chip")].map((chip) => chip.textContent), target: [...document.querySelectorAll(".terminal-picker input[type=radio]")].map((input) => input.checked) })`);
-  await until(async () => (await scope()).target.includes(true), "the execution target");
+  // By session, not by row: rows follow the panes, so their order is allowed to change.
+  const scope = () => app.run(`({ chips: [...document.querySelectorAll(".scope-chip")].map((chip) => chip.textContent), rows: [...document.querySelectorAll(".picker-row")].map((row) => ({ session: row.querySelector(".picker-name").title.split(" · ").at(-1), context: row.querySelector("input[type=checkbox]").checked, target: row.querySelector("input[type=radio]").checked })).sort((a, b) => a.session.localeCompare(b.session)) })`);
+  await until(async () => (await scope()).rows.some(({ target }) => target), "the execution target");
   const selected = await scope();
   await app.screenshot("1-default-layout");
 

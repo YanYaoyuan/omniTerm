@@ -118,6 +118,9 @@ export const AgentPanel = forwardRef(function AgentPanel({ className = "", style
   const selectTarget = (id) => setTargets(id ? new Set([id]) : new Set());
 
   useImperativeHandle(ref, () => ({
+    // Rearranging must not change what is shared: focus moves with a pane, and the default
+    // scope follows focus until something fixes it.
+    holdScope() { contextTouched.current = true; },
     attachSelection(id, selection) {
       contextTouched.current = true;
       setContext((ids) => new Set(ids).add(id));

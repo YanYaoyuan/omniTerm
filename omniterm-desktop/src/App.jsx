@@ -540,6 +540,7 @@ export function App() {
     const id = draggedPane;
     endPaneDrag();
     if (!id) return;
+    agentPanel.current?.holdScope();
     const next = movePaneInTabs(tabsRef.current, id, destination, () => ({ id: newTabId(), root: null, focus: id, title: "", broadcast: false, zoomed: null }));
     if (next === tabsRef.current) return;
     setTabs(next);
@@ -550,6 +551,7 @@ export function App() {
   }, [draggedPane, endPaneDrag, focusLater]);
   const endPanelDrag = useCallback(() => { setDraggedPanel(null); setDropHint(null); }, []);
   const dropPanel = useCallback((target, side) => {
+    agentPanel.current?.holdScope();
     setDock((previous) => moveDockPanel(previous, draggedPanel, target, side));
     endPanelDrag();
   }, [draggedPanel, endPanelDrag]);
