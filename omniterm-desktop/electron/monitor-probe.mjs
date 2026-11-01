@@ -4,8 +4,10 @@
 // because they travel as `sh -c '<script>'`, and every value in them is validated here first.
 
 const NAME = /^[\w.+@-]{1,128}$/;
-const PATH = /^\/[\w./+@-]{0,4095}$/;
-const WINDOWS_PATH = /^[A-Za-z]:\\[\w .\\+@()-]{0,4000}$/;
+// Letters and digits of any language, but no quotes of any kind: PowerShell also treats curly
+// quotes as quotes, and these paths sit inside quoted strings.
+const PATH = /^\/[\p{L}\p{N}_ ./+@~#,-]{0,4095}$/u;
+const WINDOWS_PATH = /^[A-Za-z]:\\[\p{L}\p{N}_ .\\+@()~#,-]{0,4000}$/u;
 const MAX_LOG_BYTES = 64 * 1024;
 const MAX_REGION_BYTES = 4096;
 export const TARGET_KINDS = Object.freeze(["process", "thread", "log", "sharedMemory"]);

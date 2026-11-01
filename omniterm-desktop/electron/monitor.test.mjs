@@ -262,6 +262,13 @@ test("Windows paths are validated as Windows paths", () => {
   for (const path of ["relative.log", "/var/log/x", "C:\\logs\\..\\x", "C:\\a'b", "C:\\a\"b", "C:\\$(x)", "\\\\host\\share\\x"]) assert.throws(() => validateTarget({ kind: "log", path }, { platform: "win32" }), undefined, path);
 });
 
+test("real paths are accepted, including Unicode and short names, and quotes never are", () => {
+  for (const path of ["C:\\Users\\RUNNER~1\\AppData\\app.log", "D:\\日志\\服务 1\\app.log", "C:\\logs\\app#2,old.log"]) assert.equal(validateTarget({ kind: "log", path }, { platform: "win32" }).path, path);
+  assert.equal(validateTarget({ kind: "log", path: "/var/log/日志/app.log" }).path, "/var/log/日志/app.log");
+  for (const quote of ["\u2018", "\u2019", "\u201a", "\u201c", "\u201d", "`", "$"]) assert.throws(() => validateTarget({ kind: "log", path: `C:\\a${quote}b` }, { platform: "win32" }), undefined, quote);
+  for (const quote of ['"', "`", "$", "\\"]) assert.throws(() => validateTarget({ kind: "log", path: `/a${quote}b` }), undefined, quote);
+});
+
 test("probes reach PowerShell encoded, never through a command line", () => {
   const [file, args] = localProbeCommand("'a b'; $x", "win32");
   assert.equal(file, "powershell.exe");
