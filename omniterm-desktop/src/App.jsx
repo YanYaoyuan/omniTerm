@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   ArrowDown, ArrowUp, ArrowsLeftRight, ArrowsOut, ArrowsIn, Broadcast, CaretRight, Check, Circle,
-  CircleNotch, Command, Copy, DotsThree, FolderOpen, FolderSimple,
+  CircleNotch, Command, Copy, DotsSixVertical, DotsThree, FolderOpen, FolderSimple,
   GearSix, HardDrives, MagnifyingGlass, Monitor, PaperPlaneTilt, Palette, PencilSimple,
   PlugsConnected, Plus, Robot, SidebarSimple, SquareSplitHorizontal, SquareSplitVertical, TerminalWindow, Trash, X,
   ClipboardText, WarningCircle, SlidersHorizontal, ArrowClockwise, TextAa,
@@ -13,7 +13,7 @@ import { CommandPalette } from "./CommandPalette.jsx";
 import { MetricsBar, SftpPanel } from "./RemotePanels.jsx";
 import { createRemoteStore } from "./remote-utils.js";
 import { isTerminalReply } from "./terminal-utils.js";
-import { computeLayout, dropSide, equalize, movePaneInTabs, neighborPane, pane, paneIds, removePane, setRatio, splitPane } from "./layout.js";
+import { DOCK_KEY, computeLayout, defaultDock, dropSide, equalize, moveDockPanel, movePaneInTabs, neighborPane, pane, paneIds, parseDock, removePane, setRatio, splitPane, visibleDock } from "./layout.js";
 import { SHORTCUTS, matchShortcut, shortcutLabel, tabCycle, tabNumber } from "./shortcuts.js";
 import { THEMES, backdrop, themeFor, themeTokens } from "./themes.js";
 import { WORKSPACE_KEY, parseWorkspace, restoreTree, serializeWorkspace } from "./workspace.js";
@@ -56,6 +56,16 @@ function paneStyle(rect) {
     height: `calc(${rect.h * 100}% - ${vertical.start + vertical.end}px)`,
     right: "auto", bottom: "auto",
   };
+}
+
+function readDock() {
+  try { return parseDock(localStorage.getItem(DOCK_KEY)) || defaultDock(); }
+  catch { return defaultDock(); }
+}
+
+// Drag handle for a docked panel.
+function PanelGrip({ panel, label, onStart, onEnd }) {
+  return <span className="panel-grip" draggable title={`拖动以移动${label}：放到其他面板的任一边缘`} onDragStart={(event) => { event.stopPropagation(); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/omniterm-panel", panel); onStart(panel); }} onDragEnd={onEnd}><DotsSixVertical size={14} weight="bold" /></span>;
 }
 
 function IconButton({ label, children, className = "", ...props }) {
@@ -193,6 +203,9 @@ export function App() {
   const [draggedTab, setDraggedTab] = useState(null);
   const [draggedPane, setDraggedPane] = useState(null);
   const [dropHint, setDropHint] = useState(null);
+  const [dock, setDock] = useState(readDock);
+  const [draggedPanel, setDraggedPanel] = useState(null);
+  const dockRef = useRef(null);
   const [sidebarView, setSidebarView] = useState("files");
   const controls = useRef(new Map());
   const remoteMemory = useRef(new Map());
@@ -411,6 +424,11 @@ export function App() {
   }, [tabs, sessions, focusedId, activeTabId]);
 
   useEffect(() => {
+    try { localStorage.setItem(DOCK_KEY, JSON.stringify(dock)); }
+    catch { /* The arrangement still applies for this session. */ }
+  }, [dock]);
+
+  useEffect(() => {
     try { localStorage.setItem("omniterm-terminal-settings", JSON.stringify(settings)); }
     catch { notify("无法保存终端外观设置，本次会话中仍然生效。"); }
   }, [settings, notify]);
@@ -530,6 +548,11 @@ export function App() {
     setFocusedId(id);
     focusLater(id);
   }, [draggedPane, endPaneDrag, focusLater]);
+  const endPanelDrag = useCallback(() => { setDraggedPanel(null); setDropHint(null); }, []);
+  const dropPanel = useCallback((target, side) => {
+    setDock((previous) => moveDockPanel(previous, draggedPanel, target, side));
+    endPanelDrag();
+  }, [draggedPanel, endPanelDrag]);
   const reorderTab = (fromId, toId) => setTabs((previous) => {
     const from = previous.findIndex((tab) => tab.id === fromId);
     const to = previous.findIndex((tab) => tab.id === toId);
@@ -601,6 +624,7 @@ export function App() {
       { id: "open-folder", group: "工作区", label: "在文件夹中打开终端…", icon: FolderOpen, run: chooseDirectory },
       { id: "agent-send", group: "omniTerm Agent", label: "附加选中内容到 omniTerm Agent", icon: PaperPlaneTilt, shortcut: key("sendToAgent"), run: actions.sendToAgent },
       { id: "agent-toggle", group: "omniTerm Agent", label: agentVisible ? "隐藏 omniTerm Agent 面板" : "显示 omniTerm Agent 面板", icon: SidebarSimple, shortcut: key("toggleAgent"), run: actions.toggleAgent },
+      { id: "reset-dock", group: "外观", label: "重置面板布局", keywords: "dock layout panel", icon: SidebarSimple, run: () => setDock(defaultDock()) },
       { id: "font-bigger", group: "外观", label: "放大字体", icon: TextAa, shortcut: key("fontBigger"), run: actions.fontBigger },
       { id: "font-smaller", group: "外观", label: "缩小字体", icon: TextAa, shortcut: key("fontSmaller"), run: actions.fontSmaller },
       { id: "font-reset", group: "外观", label: "重置字体大小", icon: TextAa, shortcut: key("fontReset"), run: actions.fontReset },
@@ -631,9 +655,9 @@ export function App() {
     return result;
   }, [tabs, layouts]);
 
-  const startDividerDrag = (event, tabId, divider) => {
+  const startDividerDrag = (event, container, divider, update) => {
     event.preventDefault();
-    const stack = stackRef.current?.getBoundingClientRect();
+    const stack = container.current?.getBoundingClientRect();
     if (!stack) return;
     const target = event.currentTarget;
     target.setPointerCapture(event.pointerId);
@@ -641,13 +665,19 @@ export function App() {
       const row = divider.direction === "row";
       const fraction = row ? (moveEvent.clientX - stack.left) / stack.width : (moveEvent.clientY - stack.top) / stack.height;
       const ratio = row ? (fraction - divider.parent.x) / divider.parent.w : (fraction - divider.parent.y) / divider.parent.h;
-      setTabs((previous) => previous.map((tab) => tab.id === tabId ? { ...tab, root: setRatio(tab.root, divider.path, ratio) } : tab));
+      update(ratio);
     };
     const stop = () => { target.removeEventListener("pointermove", move); target.removeEventListener("pointerup", stop); target.removeEventListener("pointercancel", stop); };
     target.addEventListener("pointermove", move);
     target.addEventListener("pointerup", stop);
     target.addEventListener("pointercancel", stop);
   };
+
+  const hiddenPanels = agentVisible ? [] : ["agent"];
+  const dockLayout = computeLayout(visibleDock(dock, hiddenPanels));
+  const dockPlacement = new Map(dockLayout.panes.map(({ sessionId, rect }) => [sessionId, paneStyle(rect)]));
+  const dockStyle = (panel) => dockPlacement.get(panel) ?? { display: "none" };
+  const panelGrip = (panel, label) => <PanelGrip panel={panel} label={label} onStart={setDraggedPanel} onEnd={endPanelDrag} />;
 
   if (!info) return <div className="app-boot"><div className="boot-logo"><TerminalWindow size={32} /></div><h1>omniTerm</h1>{bootError ? <><p className="boot-error">{bootError}</p><button className="button secondary" onClick={() => window.location.reload()}><ArrowClockwise size={16} />重新连接</button></> : <p><CircleNotch size={16} className="spin" />正在打开工作区…</p>}</div>;
 
@@ -671,8 +701,9 @@ export function App() {
       </div>
     </header>
 
-    <div className={`workspace-layout ${filesView ? "with-files" : ""}`}>
-      <aside className="sidebar">
+    <div className="workspace-layout" ref={dockRef}>
+      <aside className="sidebar dock-panel" style={dockStyle("sidebar")}>
+        <div className="sidebar-grip">{panelGrip("sidebar", "工作区面板")}</div>
         {remote && <div className="sidebar-views" role="tablist" aria-label="侧边栏视图"><button role="tab" aria-selected={filesView} className={filesView ? "active" : ""} onClick={() => setSidebarView("files")}><FolderOpen size={14} />文件</button><button role="tab" aria-selected={!filesView} className={filesView ? "" : "active"} onClick={() => setSidebarView("connections")}><HardDrives size={14} />工作区</button></div>}
         {filesView ? <SftpPanel key={remoteSession.id} session={remoteSession} remote={remote} store={remoteStore} api={api} notify={notify} memory={remoteMemory.current} /> : <>
         <div className="sidebar-section-heading"><span>工作区</span><IconButton label="打开工作文件夹" onClick={chooseDirectory}><FolderOpen size={16} /></IconButton></div>
@@ -692,9 +723,9 @@ export function App() {
         </>}
       </aside>
 
-      <main className="main-workspace">
-        <div className="workspace-toolbar"><div className="breadcrumb" title={shownCwd}><FolderSimple size={16} /><span>工作区</span><CaretRight size={12} /><strong>{pathLabel(shownCwd, info.home)}</strong></div><button className="button toolbar-button" onClick={chooseDirectory}><FolderOpen size={15} />打开文件夹</button></div>
-        <div className={`panes ${agentVisible ? "with-agent" : ""}`}>
+      <main className="main-workspace dock-panel" style={dockStyle("terminals")}>
+        <div className="workspace-toolbar">{panelGrip("terminals", "终端区域")}<div className="breadcrumb" title={shownCwd}><FolderSimple size={16} /><span>工作区</span><CaretRight size={12} /><strong>{pathLabel(shownCwd, info.home)}</strong></div><button className="button toolbar-button" onClick={chooseDirectory}><FolderOpen size={15} />打开文件夹</button></div>
+        <div className="panes">
           <section className="terminal-pane" aria-label="终端工作区">
             <div className="tabstrip"><div className="tabs" role="tablist" aria-label="终端会话">{tabs.map((tab, index) => {
               const focused = sessions.find((session) => session.id === tab.focus);
@@ -752,7 +783,7 @@ export function App() {
                 const style = row
                   ? { left: `calc(${divider.position * 100}% - ${DIVIDER / 2}px)`, top: `${divider.parent.y * 100}%`, width: DIVIDER, height: `${divider.parent.h * 100}%` }
                   : { top: `calc(${divider.position * 100}% - ${DIVIDER / 2}px)`, left: `${divider.parent.x * 100}%`, height: DIVIDER, width: `${divider.parent.w * 100}%` };
-                return <div key={divider.path.join("-") || "root"} className={`pane-divider ${row ? "row" : "column"}`} style={style} role="separator" aria-orientation={row ? "vertical" : "horizontal"} title="拖动调整大小，双击平均分配" onPointerDown={(event) => startDividerDrag(event, activeTab.id, divider)} onDoubleClick={() => setTabs((previous) => previous.map((tab) => tab.id === activeTab.id ? { ...tab, root: setRatio(tab.root, divider.path, 0.5) } : tab))} />;
+                return <div key={divider.path.join("-") || "root"} className={`pane-divider ${row ? "row" : "column"}`} style={style} role="separator" aria-orientation={row ? "vertical" : "horizontal"} title="拖动调整大小，双击平均分配" onPointerDown={(event) => startDividerDrag(event, stackRef, divider, (ratio) => setTabs((previous) => previous.map((tab) => tab.id === activeTab.id ? { ...tab, root: setRatio(tab.root, divider.path, ratio) } : tab)))} onDoubleClick={() => setTabs((previous) => previous.map((tab) => tab.id === activeTab.id ? { ...tab, root: setRatio(tab.root, divider.path, 0.5) } : tab))} />;
               })}
               {!tabs.length && <div className="terminal-empty"><div className="empty-terminal-icon"><TerminalWindow size={34} weight="light" /></div><h2>开始一个新的会话</h2><p>打开本地终端，或连接到你的远程主机。</p><button className="button primary" onClick={() => safely(() => addTab())}><Plus size={16} />新建终端<kbd>{key("newTab")}</kbd></button><p className="empty-hint">按 <kbd>{key("palette")}</kbd> 打开命令面板</p></div>}
             </div>
@@ -760,9 +791,21 @@ export function App() {
             <div className="terminal-footnote"><span>{pathLabel(shownCwd, info.home)}</span><span>{theme.name} · {settings.gpu ? "GPU" : "DOM"} · UTF-8</span></div>
           </section>
 
-          <AgentPanel ref={agentPanel} api={api} info={info} visible={agentVisible} sessionsVersion={sessions.length} focusedId={activeTab?.focus ?? null} getSelection={getSelection} onActivate={activatePane} onHide={() => setAgentVisible(false)} notify={notify} />
         </div>
       </main>
+      <AgentPanel ref={agentPanel} className="dock-panel" style={dockStyle("agent")} grip={panelGrip("agent", "omniTerm Agent 面板")} api={api} info={info} visible={agentVisible} sessionsVersion={sessions.length} focusedId={activeTab?.focus ?? null} getSelection={getSelection} onActivate={activatePane} onHide={() => setAgentVisible(false)} notify={notify} />
+      {dockLayout.dividers.map((divider) => {
+        const row = divider.direction === "row";
+        const style = row
+          ? { left: `calc(${divider.position * 100}% - ${DIVIDER / 2}px)`, top: `${divider.parent.y * 100}%`, width: DIVIDER, height: `${divider.parent.h * 100}%` }
+          : { top: `calc(${divider.position * 100}% - ${DIVIDER / 2}px)`, left: `${divider.parent.x * 100}%`, height: DIVIDER, width: `${divider.parent.w * 100}%` };
+        return <div key={divider.path.join("-") || "root"} className={`pane-divider dock-divider ${row ? "row" : "column"}`} style={style} role="separator" aria-orientation={row ? "vertical" : "horizontal"} title="拖动调整面板大小" onPointerDown={(event) => startDividerDrag(event, dockRef, divider, (ratio) => setDock((previous) => setRatio(previous, divider.path, ratio)))} />;
+      })}
+      {/* Panels swallow drag events, so targets sit above them during a drag. */}
+      {draggedPanel && dockLayout.panes.filter(({ sessionId }) => sessionId !== draggedPanel).map(({ sessionId }) => {
+        const side = dropHint?.target === sessionId ? dropHint.side : null;
+        return <div key={sessionId} className="pane-drop-target" data-panel={sessionId} style={dockStyle(sessionId)} onDragOver={(event) => { event.preventDefault(); const box = event.currentTarget.getBoundingClientRect(); const next = dropSide((event.clientX - box.left) / box.width, (event.clientY - box.top) / box.height); if (dropHint?.target !== sessionId || dropHint.side !== next) setDropHint({ target: sessionId, side: next }); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setDropHint(null); }} onDrop={(event) => { event.preventDefault(); dropPanel(sessionId, side ?? "right"); }}>{side && <span className={`pane-drop-preview side-${side}`} />}</div>;
+      })}
     </div>
     <footer className="statusbar"><div><Monitor size={13} /><span>{platformNames[info.platform] || info.platform}</span><span className="statusbar-separator" /><span className="status-dot" /><span>{runningCount} 个活动会话</span>{activeTab?.broadcast && <><span className="statusbar-separator" /><Broadcast size={12} /><span>广播输入中</span></>}</div><div><span className={`status-dot ${info.agent?.available ? "" : "muted"}`} /><span>omniTerm Agent {info.agent?.available ? "已就绪" : "未就绪"}</span><span className="statusbar-separator" /><button onClick={() => setPaletteOpen(true)} title="命令面板"><Command size={12} /><span>{key("palette")}</span></button></div></footer>
     {dialog && <ConnectionDialog initial={dialog} onClose={() => setDialog(null)} onSave={async (profile) => setProfiles(await api.saveProfile(profile))} onConnect={addTab} />}

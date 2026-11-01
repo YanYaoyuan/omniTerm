@@ -86,13 +86,20 @@ A separate window showing processes on the selected local or remote host.
 
 `electron/remote-metrics.mjs` already collects host metrics and may be a starting point for remote hosts.
 
-## 5. Draggable panels
+## 5. Dockable workspace
 
-Status: **implemented** (branch `feat/draggable-panes`). Pure layout logic is tested; the drag gesture itself needs manual testing in a window.
+Maintainer scope: terminal panes, the Agent panel, workspace and file panels, and future monitoring panels all dock, resize, save and restore, with live state preserved. Moving a panel must not change the Agent's context or execution target.
 
-- Drag a panel to the left, right, top or bottom of another to change the split layout.
-- Move a panel into another tab.
-- Preserve the resulting layout.
-- Moving a panel preserves its live session rather than recreating the terminal.
+| Requirement | Status |
+| --- | --- |
+| Terminal panes: dock on any side, move between tabs, new tab | Implemented |
+| Agent panel and workspace/file panel: dock on any side of each other or the terminal area | Implemented |
+| Resize docked regions | Implemented |
+| Save and restore arrangement and sizes | Implemented |
+| Live state survives moves | Implemented by construction: panels and terminals are never remounted. `npm run test:gui` verifies it |
+| Reset the layout | Implemented, in the command palette |
+| A single terminal pane docked directly beside the Agent or workspace panel | **Outstanding.** Docking has two levels: panels at the top, and terminal panes inside the terminal area |
+| Monitoring panels | **Outstanding** until they exist; they join `DOCK_PANELS` |
+| Separate windows or floating panels | Not requested, not implemented |
 
-Terminal views are already rendered flat and positioned from the layout tree, so a move can be a layout change without touching the xterm instance or session; `src/layout.js` needs a move operation. Workspace restore needs to handle the new layouts. Operations pin to session and epoch, so add a regression that a move can't affect execution targets.
+Terminal views and panels are rendered flat and positioned from their layout trees, so a move only changes layout state. A stored layout is used only if it holds every panel exactly once, so a layout saved by a build with different panels falls back to the default.

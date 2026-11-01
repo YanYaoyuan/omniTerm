@@ -69,6 +69,49 @@ export function movePaneInTabs(tabs, sessionId, { tabId, target = null, side = "
   return tabId ? next : [...next, moved];
 }
 
+// Panels share the pane tree, with the panel ID in place of a session ID. New panels join here.
+export const DOCK_PANELS = Object.freeze(["sidebar", "terminals", "agent"]);
+export const DOCK_KEY = "omniterm-dock-layout";
+
+export const defaultDock = () => ({
+  type: "split", direction: "row", ratio: 0.18,
+  children: [pane("sidebar"), { type: "split", direction: "row", ratio: 0.72, children: [pane("terminals"), pane("agent")] }],
+});
+
+export function moveDockPanel(root, id, target, side) {
+  if (id === target) return root;
+  const remaining = removePane(root, id);
+  return remaining && paneIds(remaining).includes(target) ? insertPane(remaining, target, id, side) : root;
+}
+
+// The layout to draw with hidden panels left out. Splits remember their place in the full tree,
+// so resizing a divider changes the saved layout even while a panel is hidden.
+export function visibleDock(node, hidden = [], path = []) {
+  if (node.type === "pane") return hidden.includes(node.sessionId) ? null : node;
+  const [first, second] = node.children.map((child, index) => visibleDock(child, hidden, [...path, index]));
+  return first && second ? { ...node, origin: path, children: [first, second] } : first || second;
+}
+
+// A stored layout is used only if it holds every panel exactly once, so a layout saved by a
+// build with other panels falls back to the default instead of losing one.
+export function parseDock(raw, panels = DOCK_PANELS) {
+  let data;
+  try { data = typeof raw === "string" ? JSON.parse(raw) : raw; } catch { return null; }
+  const clean = (value, depth) => {
+    if (!value || typeof value !== "object" || depth > 8) return null;
+    if (value.type === "pane") return panels.includes(value.sessionId) ? pane(value.sessionId) : null;
+    if (value.type !== "split" || !["row", "column"].includes(value.direction) || !Array.isArray(value.children) || value.children.length !== 2) return null;
+    const [first, second] = value.children.map((child) => clean(child, depth + 1));
+    if (!first || !second) return null;
+    const ratio = Number.isFinite(value.ratio) ? Math.min(1 - MIN_RATIO, Math.max(MIN_RATIO, value.ratio)) : 0.5;
+    return { type: "split", direction: value.direction, ratio, children: [first, second] };
+  };
+  const root = clean(data, 0);
+  if (!root) return null;
+  const ids = paneIds(root);
+  return ids.length === panels.length && panels.every((panel) => ids.includes(panel)) ? root : null;
+}
+
 export function removePane(node, target) {
   if (!node) return null;
   if (node.type === "pane") return node.sessionId === target ? null : node;
@@ -96,7 +139,7 @@ export function computeLayout(node, rect = { x: 0, y: 0, w: 1, h: 1 }, path = []
   const size = (row ? rect.w : rect.h) * node.ratio;
   const first = row ? { ...rect, w: size } : { ...rect, h: size };
   const second = row ? { x: rect.x + size, y: rect.y, w: rect.w - size, h: rect.h } : { x: rect.x, y: rect.y + size, w: rect.w, h: rect.h - size };
-  out.dividers.push({ path, direction: node.direction, parent: rect, position: row ? rect.x + size : rect.y + size });
+  out.dividers.push({ path: node.origin ?? path, direction: node.direction, parent: rect, position: row ? rect.x + size : rect.y + size });
   computeLayout(node.children[0], first, [...path, 0], out);
   computeLayout(node.children[1], second, [...path, 1], out);
   return out;

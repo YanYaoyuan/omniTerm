@@ -2,7 +2,7 @@
 import test from "node:test";
 import { citationParts, conversationReducer, emptyConversation, executable, mentionMatches, mentionQuery, operationReason, pruneSelection, refsFor, scopeSummary } from "./agent/agent-logic.js";
 import assert from "node:assert/strict";
-import { computeLayout, dropSide, equalize, insertPane, MIN_RATIO, movePaneInTabs, neighborPane, pane, paneIds, removePane, setRatio, splitPane } from "./layout.js";
+import { DOCK_PANELS, computeLayout, defaultDock, dropSide, equalize, insertPane, MIN_RATIO, moveDockPanel, movePaneInTabs, neighborPane, pane, paneIds, parseDock, removePane, setRatio, splitPane, visibleDock } from "./layout.js";
 import { isAppShortcut, matchShortcut, shortcutLabel, tabCycle, tabNumber } from "./shortcuts.js";
 import { createRemoteStore, formatBytes, formatUptime, joinRemote, nextSelection, parentRemote, percent, sortEntries, validEntryName } from "./remote-utils.js";
 import { cwdFromOsc7, fuzzyScore, isTerminalReply, quotePath } from "./terminal-utils.js";
@@ -389,4 +389,42 @@ test("moving clears zoom, and a moved layout survives a save and restore", async
   const saved = parseWorkspace(JSON.stringify(serializeWorkspace(next, sessions, "two")));
   assert.deepEqual(saved.tabs[1].root.children.map(({ cwd }) => cwd), ["/b", "/c"]);
   assert.equal(saved.tabs[1].root.direction, "row");
+});
+
+test("dock panels move to any edge of each other and none is lost", () => {
+  for (const side of ["left", "right", "top", "bottom"]) {
+    const moved = moveDockPanel(defaultDock(), "agent", "sidebar", side);
+    assert.deepEqual(paneIds(moved).sort(), [...DOCK_PANELS].sort());
+    const { panes } = computeLayout(moved);
+    const agent = panes.find(({ sessionId }) => sessionId === "agent").rect;
+    const sidebar = panes.find(({ sessionId }) => sessionId === "sidebar").rect;
+    assert.ok({ left: agent.x < sidebar.x, right: agent.x > sidebar.x, top: agent.y < sidebar.y, bottom: agent.y > sidebar.y }[side], side);
+  }
+});
+
+test("a panel dropped on itself or on nothing stays put", () => {
+  const dock = defaultDock();
+  assert.equal(moveDockPanel(dock, "agent", "agent", "left"), dock);
+  assert.equal(moveDockPanel(dock, "agent", "missing", "left"), dock);
+});
+
+test("a hidden panel frees its space, and resizing still reaches the saved layout", () => {
+  const dock = defaultDock();
+  const shown = computeLayout(visibleDock(dock, ["agent"]));
+  assert.deepEqual(shown.panes.map(({ sessionId }) => sessionId), ["sidebar", "terminals"]);
+  assert.equal(shown.dividers.length, 1);
+  assert.deepEqual(shown.dividers[0].path, []);
+  const swapped = moveDockPanel(dock, "sidebar", "agent", "right");
+  const [divider] = computeLayout(visibleDock(swapped, ["agent"])).dividers.length ? computeLayout(visibleDock(swapped, ["agent"])).dividers : [{ path: [] }];
+  assert.deepEqual(paneIds(setRatio(swapped, divider.path, 0.4)).sort(), [...DOCK_PANELS].sort());
+  assert.deepEqual(computeLayout(visibleDock(dock, [])).dividers.map(({ path }) => path), [[], [1]]);
+});
+
+test("a dock layout survives a save, and a damaged one is refused", () => {
+  const moved = setRatio(moveDockPanel(defaultDock(), "agent", "sidebar", "left"), [], 0.3);
+  assert.deepEqual(parseDock(JSON.stringify(moved)), moved);
+  for (const raw of ["not json", null, "{}", JSON.stringify(pane("agent")), JSON.stringify({ type: "split", direction: "row", children: [pane("agent"), pane("agent")] }), JSON.stringify({ type: "split", direction: "up", children: [pane("agent"), pane("sidebar")] })]) assert.equal(parseDock(raw), null, String(raw));
+  const missing = { type: "split", direction: "row", ratio: 0.5, children: [pane("agent"), pane("sidebar")] };
+  assert.equal(parseDock(JSON.stringify(missing)), null);
+  assert.equal(parseDock(JSON.stringify({ ...defaultDock(), ratio: 5 })).ratio, 1 - MIN_RATIO);
 });

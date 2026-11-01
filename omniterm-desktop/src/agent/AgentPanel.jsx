@@ -70,7 +70,7 @@ function TerminalPicker({ terminals, context, targets, onContext, onTargets, onA
   </div>;
 }
 
-export const AgentPanel = forwardRef(function AgentPanel({ api, info, visible, sessionsVersion, focusedId, getSelection, onActivate, onHide, notify }, ref) {
+export const AgentPanel = forwardRef(function AgentPanel({ className = "", style, grip, api, info, visible, sessionsVersion, focusedId, getSelection, onActivate, onHide, notify }, ref) {
   const [conversation, dispatch] = useReducer(conversationReducer, emptyConversation);
   const [terminals, setTerminals] = useState([]);
   const [context, setContext] = useState(new Set());
@@ -181,8 +181,8 @@ export const AgentPanel = forwardRef(function AgentPanel({ api, info, visible, s
   const available = info.agent?.available;
   const targetName = useMemo(() => targets.size ? scopeSummary(terminals, targets) : "只读", [terminals, targets]);
   const contextName = useMemo(() => paused ? "已暂停" : scopeSummary(terminals, context), [terminals, context, paused]);
-  return <aside className={`agent-pane ${visible ? "is-visible" : ""}`} aria-label="omniTerm Agent 面板">
-    <div className="agent-heading"><Robot size={18} /><strong>omniTerm Agent</strong><div className="agent-heading-actions">
+  return <aside className={`agent-pane ${className} ${visible ? "is-visible" : ""}`} style={style} aria-label="omniTerm Agent 面板">
+    <div className="agent-heading">{grip}<Robot size={18} /><strong>omniTerm Agent</strong><div className="agent-heading-actions">
       <button type="button" className="icon-button" title={paused ? "恢复共享" : "暂停共享"} aria-label={paused ? "恢复共享" : "暂停共享"} onClick={togglePause}>{paused ? <Play size={15} /> : <Pause size={15} />}</button>
       <button type="button" className="icon-button" title="新建对话（清除此前共享的内容）" aria-label="新建对话" onClick={newConversation}><Broom size={15} /></button>
       <button type="button" className="icon-button" title="隐藏 Agent 面板" aria-label="隐藏 Agent 面板" onClick={onHide}><SidebarSimple size={17} /></button>
