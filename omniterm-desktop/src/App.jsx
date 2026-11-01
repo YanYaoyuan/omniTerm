@@ -13,7 +13,7 @@ import { CommandPalette } from "./CommandPalette.jsx";
 import { MetricsBar, SftpPanel } from "./RemotePanels.jsx";
 import { createRemoteStore } from "./remote-utils.js";
 import { isTerminalReply } from "./terminal-utils.js";
-import { computeLayout, equalize, neighborPane, pane, paneIds, removePane, setRatio, splitPane } from "./layout.js";
+import { computeLayout, dropSide, equalize, movePaneInTabs, neighborPane, pane, paneIds, removePane, setRatio, splitPane } from "./layout.js";
 import { SHORTCUTS, matchShortcut, shortcutLabel, tabCycle, tabNumber } from "./shortcuts.js";
 import { THEMES, backdrop, themeFor, themeTokens } from "./themes.js";
 import { WORKSPACE_KEY, parseWorkspace, restoreTree, serializeWorkspace } from "./workspace.js";
@@ -191,6 +191,8 @@ export function App() {
   const [searchFound, setSearchFound] = useState(true);
   const [searchOptions, setSearchOptions] = useState({ caseSensitive: false, regex: false });
   const [draggedTab, setDraggedTab] = useState(null);
+  const [draggedPane, setDraggedPane] = useState(null);
+  const [dropHint, setDropHint] = useState(null);
   const [sidebarView, setSidebarView] = useState("files");
   const controls = useRef(new Map());
   const remoteMemory = useRef(new Map());
@@ -514,6 +516,20 @@ export function App() {
     setTabs((previous) => previous.map((tab) => tab.id === tabId ? { ...tab, title } : tab));
     if (tabId === activeTabId && selectedSession) focusLater(selectedSession.id);
   };
+  const endPaneDrag = useCallback(() => { setDraggedPane(null); setDropHint(null); }, []);
+  const startPaneDrag = useCallback((id) => setDraggedPane(id), []);
+  const dropPane = useCallback((destination) => {
+    const id = draggedPane;
+    endPaneDrag();
+    if (!id) return;
+    const next = movePaneInTabs(tabsRef.current, id, destination, () => ({ id: newTabId(), root: null, focus: id, title: "", broadcast: false, zoomed: null }));
+    if (next === tabsRef.current) return;
+    setTabs(next);
+    const tab = next.find((item) => paneIds(item.root).includes(id));
+    setActiveTabId(tab.id);
+    setFocusedId(id);
+    focusLater(id);
+  }, [draggedPane, endPaneDrag, focusLater]);
   const reorderTab = (fromId, toId) => setTabs((previous) => {
     const from = previous.findIndex((tab) => tab.id === fromId);
     const to = previous.findIndex((tab) => tab.id === toId);
@@ -685,7 +701,7 @@ export function App() {
               const Icon = kindIcons[focused?.kind] || TerminalWindow;
               const ids = paneIds(tab.root);
               const allDone = ids.every((id) => finished(sessions.find((session) => session.id === id)?.status));
-              return <div key={tab.id} className={`tab ${activeTabId === tab.id ? "active" : ""} ${draggedTab === tab.id ? "dragging" : ""}`} draggable onDragStart={(event) => { setDraggedTab(tab.id); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/omniterm-tab", tab.id); }} onDragEnd={() => setDraggedTab(null)} onDragOver={(event) => { if (draggedTab) event.preventDefault(); }} onDrop={(event) => { event.preventDefault(); if (draggedTab) reorderTab(draggedTab, tab.id); setDraggedTab(null); }} onAuxClick={(event) => { if (event.button === 1) closeTab(tab.id); }}>
+              return <div key={tab.id} className={`tab ${activeTabId === tab.id ? "active" : ""} ${draggedTab === tab.id ? "dragging" : ""}`} draggable onDragStart={(event) => { setDraggedTab(tab.id); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/omniterm-tab", tab.id); }} onDragEnd={() => setDraggedTab(null)} onDragOver={(event) => { if (draggedTab || draggedPane) event.preventDefault(); }} onDrop={(event) => { event.preventDefault(); if (draggedPane) dropPane({ tabId: tab.id }); else if (draggedTab) reorderTab(draggedTab, tab.id); setDraggedTab(null); }} onAuxClick={(event) => { if (event.button === 1) closeTab(tab.id); }}>
                 <button role="tab" aria-selected={activeTabId === tab.id} onClick={() => selectTab(tab.id)} title={`${tabLabel(tab)}${index < 9 ? `（${info.platform === "darwin" ? "⌘" : "Alt+"}${index + 1}）` : ""}`}>
                   <Icon size={15} />
                   <TabTitle tab={tab} title={tabLabel(tab)} onEdit={cancelFocus} onRename={renameTab} />
@@ -695,7 +711,7 @@ export function App() {
                 </button>
                 <IconButton label={`关闭 ${tabLabel(tab)}`} onClick={() => closeTab(tab.id)}><X size={12} /></IconButton>
               </div>;
-            })}</div><IconButton className="new-tab" label={`新建终端（${key("newTab")}）`} onClick={() => safely(() => addTab())}><Plus size={17} /></IconButton></div>
+            })}</div><IconButton className="new-tab" label={`新建终端（${key("newTab")}）；也可以把窗格拖到这里变成新标签`} onClick={() => safely(() => addTab())} onDragOver={(event) => { if (draggedPane) event.preventDefault(); }} onDrop={(event) => { event.preventDefault(); if (draggedPane) dropPane({}); }}><Plus size={17} /></IconButton></div>
             <div className="terminal-toolbar">
               <div className="session-detail">{activeSession ? <><span className={`status-dot ${activeSession.status === "running" ? "" : "muted"}`} /><span>{activeSession.kind === "shell" ? "本地 Shell" : connectionLabels[activeSession.kind]}</span><span className="toolbar-dot">·</span><span>{activeSession.status === "exited" ? "会话已结束" : activeSession.status === "error" ? "启动失败" : activeSession.status === "running" ? "已连接" : "正在连接"}</span>{paneCount > 1 && <><span className="toolbar-dot">·</span><span>{paneCount} 个窗格{activeTab.zoomed ? "（已最大化）" : ""}</span></>}{activeTab?.broadcast && <span className="broadcast-pill"><Broadcast size={12} />广播输入</span>}</> : <span>终端</span>}</div>
               <div className="terminal-actions">
@@ -722,7 +738,14 @@ export function App() {
                 const visible = place.tab.id === activeTabId && !place.hidden;
                 const multiple = paneIds(place.tab.root).length > 1 && !place.tab.zoomed;
                 const isFocused = multiple && place.tab.focus === session.id;
-                return <TerminalView key={session.id} session={session} visible={visible} selected={visible && place.tab.focus === session.id} focused={isFocused} dimmed={multiple && settings.dimInactive && place.tab.focus !== session.id} style={place.style} onFocus={focusPane} {...viewProps} />;
+                return <TerminalView key={session.id} session={session} visible={visible} selected={visible && place.tab.focus === session.id} focused={isFocused} dimmed={multiple && settings.dimInactive && place.tab.focus !== session.id} style={place.style} onFocus={focusPane} onPaneDragStart={startPaneDrag} onPaneDragEnd={endPaneDrag} {...viewProps} />;
+              })}
+              {/* Terminals swallow drag events, so targets sit above them during a drag. */}
+              {draggedPane && sessions.map((session) => {
+                const place = placement.get(session.id);
+                if (!place || place.tab.id !== activeTabId || place.hidden || session.id === draggedPane) return null;
+                const side = dropHint?.target === session.id ? dropHint.side : null;
+                return <div key={session.id} className="pane-drop-target" style={place.style} onDragOver={(event) => { event.preventDefault(); const box = event.currentTarget.getBoundingClientRect(); const next = dropSide((event.clientX - box.left) / box.width, (event.clientY - box.top) / box.height); if (dropHint?.target !== session.id || dropHint.side !== next) setDropHint({ target: session.id, side: next }); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setDropHint(null); }} onDrop={(event) => { event.preventDefault(); dropPane({ tabId: activeTabId, target: session.id, side: side ?? "right" }); }}>{side && <span className={`pane-drop-preview side-${side}`} />}</div>;
               })}
               {activeTab && !activeTab.zoomed && layouts.get(activeTab.id)?.dividers.map((divider) => {
                 const row = divider.direction === "row";

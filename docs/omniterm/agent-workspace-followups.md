@@ -88,6 +88,8 @@ A separate window showing processes on the selected local or remote host.
 
 ## 5. Draggable panels
 
+Status: **implemented** (branch `feat/draggable-panes`). Pure layout logic is tested; the drag gesture itself needs manual testing in a window.
+
 - Drag a panel to the left, right, top or bottom of another to change the split layout.
 - Move a panel into another tab.
 - Preserve the resulting layout.

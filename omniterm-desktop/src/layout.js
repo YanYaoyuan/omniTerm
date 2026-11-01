@@ -20,6 +20,55 @@ export function splitPane(node, target, sessionId, direction) {
   return { ...node, children: node.children.map((child) => splitPane(child, target, sessionId, direction)) };
 }
 
+const SIDES = {
+  left: { direction: "row", before: true },
+  right: { direction: "row", before: false },
+  top: { direction: "column", before: true },
+  bottom: { direction: "column", before: false },
+};
+
+// Places `sessionId` on one side of `target`, splitting the target in half.
+export function insertPane(node, target, sessionId, side) {
+  if (node.type === "pane") {
+    if (node.sessionId !== target) return node;
+    const { direction, before } = SIDES[side];
+    return { type: "split", direction, ratio: 0.5, children: before ? [pane(sessionId), node] : [node, pane(sessionId)] };
+  }
+  return { ...node, children: node.children.map((child) => insertPane(child, target, sessionId, side)) };
+}
+
+// The edge of a pane nearest to a pointer, as fractions of that pane.
+export function dropSide(x, y) {
+  const distances = { left: x, right: 1 - x, top: y, bottom: 1 - y };
+  return Object.keys(distances).reduce((best, side) => distances[side] < distances[best] ? side : best);
+}
+
+// Moves a pane within or between tabs. Only layout changes: sessions and their terminal views
+// are keyed by session ID, so a moved pane keeps its live session. A source tab left with no
+// panes goes away. `tabId` omitted means a new tab, from `createTab`.
+export function movePaneInTabs(tabs, sessionId, { tabId, target = null, side = "right" } = {}, createTab = null) {
+  const source = tabs.find((tab) => paneIds(tab.root).includes(sessionId));
+  const destination = tabId ? tabs.find((tab) => tab.id === tabId) : createTab?.(sessionId);
+  if (!source || !destination || target === sessionId) return tabs;
+  const sameTab = destination.id === source.id;
+  const remaining = removePane(source.root, sessionId);
+  const base = sameTab ? remaining : destination.root;
+  if (!base && sameTab) return tabs;
+  const anchor = target ?? (base ? (destination.focus !== sessionId && paneIds(base).includes(destination.focus) ? destination.focus : paneIds(base).at(-1)) : null);
+  if (base && !paneIds(base).includes(anchor)) return tabs;
+  if (!tabId && !remaining) return tabs;
+  const root = base ? insertPane(base, anchor, sessionId, side) : pane(sessionId);
+  const moved = { ...destination, root, focus: sessionId, zoomed: null };
+  const next = tabs.flatMap((tab) => {
+    if (tab.id === moved.id) return [moved];
+    if (tab.id !== source.id) return [tab];
+    if (!remaining) return [];
+    const ids = paneIds(remaining);
+    return [{ ...tab, root: remaining, focus: ids.includes(tab.focus) ? tab.focus : ids[0], zoomed: tab.zoomed === sessionId ? null : tab.zoomed }];
+  });
+  return tabId ? next : [...next, moved];
+}
+
 export function removePane(node, target) {
   if (!node) return null;
   if (node.type === "pane") return node.sessionId === target ? null : node;

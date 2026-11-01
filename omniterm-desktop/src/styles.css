@@ -516,3 +516,11 @@ kbd { font-family: var(--mono); font-size: 10px; background: rgb(var(--ink) / 0.
 .provider-verified .muted { color: var(--muted); }
 .agent-error details, .inline-error details { margin-top: 4px; font-size: 10px; color: var(--muted); }
 .agent-error pre, .inline-error pre { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.pane-grip { position: absolute; top: 4px; right: 6px; z-index: 3; display: grid; place-items: center; width: 20px; height: 20px; color: var(--muted); background: var(--surface-soft); border: 1px solid var(--border); border-radius: 4px; cursor: grab; opacity: 0; transition: opacity .12s ease; }
+.terminal-view:hover .pane-grip { opacity: 1; }
+.pane-drop-target { position: absolute; z-index: 4; }
+.pane-drop-preview { position: absolute; background: rgb(var(--accent-rgb) / 0.18); border: 1.5px dashed rgb(var(--accent-rgb) / 0.565); border-radius: 4px; pointer-events: none; }
+.pane-drop-preview.side-left { inset: 0 50% 0 0; }
+.pane-drop-preview.side-right { inset: 0 0 0 50%; }
+.pane-drop-preview.side-top { inset: 0 0 50% 0; }
+.pane-drop-preview.side-bottom { inset: 50% 0 0 0; }
