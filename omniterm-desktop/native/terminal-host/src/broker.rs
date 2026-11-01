@@ -22,6 +22,8 @@ const MAX_COMMAND_TIMEOUT_MS: u64 = 900_000;
 const MAX_COMMAND_BYTES: usize = 16 * 1024;
 const MAX_FINISHED_OPERATIONS: usize = 200;
 const INTERRUPT: &[u8] = b"\x03";
+/// How long a line editor gets to answer. Silence is never treated as readiness.
+const PROBE_TIMEOUT_MS: u64 = 5_000;
 const TARGET_REMOVED: &str = "This terminal is no longer an execution target of the task.";
 
 /// Stable identity of a terminal connection. Titles, tabs and aliases are display only.
@@ -111,6 +113,8 @@ pub struct Operation {
     commands_at_start: u64,
     #[serde(skip)]
     execute_requested: bool,
+    #[serde(skip)]
+    probe_sent_at: Option<u64>,
 }
 
 /// What the broker may read about a terminal when deciding.
@@ -126,11 +130,25 @@ pub struct TargetView {
     /// False where nothing can prove the shell's state across the link: commands are only
     /// ever typed in, and a person submits them.
     pub auto_submit: bool,
+    /// Submitting here needs the line editor's confirmation immediately before the write.
+    pub requires_handshake: bool,
+    pub handshake: Handshake,
+}
+
+/// Progress of a dispatch probe. It only ever describes the moment of one write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Handshake {
+    #[default]
+    Idle,
+    Pending,
+    Confirmed,
 }
 
 pub trait Terminals {
     fn view(&self, session_id: &str) -> Option<TargetView>;
     fn agent_write(&self, session_id: &str, bytes: &[u8]) -> Result<(), String>;
+    fn send_probe(&self, session_id: &str) -> Result<(), String>;
+    fn dispatch(&self, session_id: &str, bytes: &[u8]) -> Result<(), String>;
 }
 
 #[derive(Debug, Clone, Default)]
@@ -287,6 +305,7 @@ impl Broker {
             started_at: 0,
             commands_at_start: 0,
             execute_requested: false,
+            probe_sent_at: None,
         };
         let id = operation.operation_id.clone();
         self.calls.insert(call_key, id.clone());
@@ -337,7 +356,7 @@ impl Broker {
             }
         };
         if mode == SubmitMode::Run && !view.auto_submit {
-            return Err("SSH commands are never submitted automatically. Approve it as text, then press Enter in the terminal.".to_string());
+            return Err("SSH commands are never submitted automatically until the terminal is opted in and its readiness check is available. Approve it as text, then press Enter in the terminal.".to_string());
         }
         let expires_at = (scope == ApprovalScope::TaskTarget)
             .then(|| now + ttl_ms.unwrap_or(600_000).min(3_600_000));
@@ -609,7 +628,7 @@ impl Broker {
             return reject(self, OperationStatus::Invalidated, "The terminal changed after approval.".to_string(), changed);
         }
         if authorization.mode == SubmitMode::Run && !view.auto_submit {
-            return reject(self, OperationStatus::Blocked, "SSH commands are never submitted automatically.".to_string(), changed);
+            return reject(self, OperationStatus::Blocked, "SSH commands are never submitted automatically without an opted-in terminal.".to_string(), changed);
         }
         // Anything written now would be appended to text already on the input line.
         if view.interaction.source == StateSource::PendingInput {
@@ -642,6 +661,24 @@ impl Broker {
                 return reject(self, OperationStatus::Invalidated, "The terminal cannot accept commands.".to_string(), changed);
             }
         };
+        if submit && view.requires_handshake {
+            match (operation.probe_sent_at, view.handshake) {
+                (None, _) => {
+                    if let Err(reason) = terminals.send_probe(&operation.target.session_id) {
+                        return reject(self, OperationStatus::Blocked, format!("{reason} Nothing was sent; approve it as text to submit it yourself."), changed);
+                    }
+                    if let Some(entry) = self.operations.get_mut(id) {
+                        entry.probe_sent_at = Some(now);
+                    }
+                    return false;
+                }
+                (Some(_), Handshake::Confirmed) => {}
+                (Some(sent_at), Handshake::Pending) if now.saturating_sub(sent_at) < PROBE_TIMEOUT_MS => return false,
+                _ => {
+                    return reject(self, OperationStatus::Blocked, "The shell did not confirm an empty prompt, so the command was not sent. Approve it as text to submit it yourself.".to_string(), changed);
+                }
+            }
+        }
         let mut bytes = Vec::with_capacity(operation.command.len() + 12);
         if multi_line {
             bytes.extend_from_slice(b"\x1b[200~");
@@ -653,12 +690,22 @@ impl Broker {
         if submit {
             bytes.push(b'\r');
         }
+        // Checked and written as one step, so a refusal here means nothing was sent.
+        if submit && view.requires_handshake {
+            if let Err(reason) = terminals.dispatch(&operation.target.session_id, &bytes) {
+                return reject(self, OperationStatus::Blocked, format!("{reason} Nothing was sent."), changed);
+            }
+        }
         // Status moves first: from here the command counts as sent, even if the write fails.
         if let Some(entry) = self.operations.get_mut(id) {
             entry.status = if submit { OperationStatus::Running } else { OperationStatus::Staged };
             entry.started_at = now;
             entry.seq_start = Some(view.output_seq);
             entry.commands_at_start = view.commands_finished;
+        }
+        if submit && view.requires_handshake {
+            changed.push(self.operations[id].clone());
+            return false;
         }
         if let Err(error) = terminals.agent_write(&operation.target.session_id, &bytes) {
             self.finish(id, OperationStatus::OutcomeUnknown, Some(format!("The write failed and will not be retried: {error}")), None);
@@ -725,11 +772,14 @@ fn current_view(terminals: &dyn Terminals, target: &TerminalRef) -> Result<Targe
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     use std::cell::RefCell;
 
     struct Fake {
         views: RefCell<HashMap<String, TargetView>>,
         writes: RefCell<Vec<(String, String)>>,
+        probes: Cell<u32>,
+        refuse_probe: Cell<bool>,
     }
 
     fn interaction(state: InteractionState, source: StateSource) -> Interaction {
@@ -751,10 +801,14 @@ mod tests {
                 last_exit_code: None,
                 bracketed_paste: false,
                 auto_submit: true,
+                requires_handshake: false,
+                handshake: Handshake::Idle,
             };
             Self {
                 views: RefCell::new(sessions.iter().map(|id| ((*id).to_string(), view.clone())).collect()),
                 writes: RefCell::default(),
+                probes: Cell::default(),
+                refuse_probe: Cell::default(),
             }
         }
 
@@ -775,6 +829,23 @@ mod tests {
         fn agent_write(&self, session_id: &str, bytes: &[u8]) -> Result<(), String> {
             self.writes.borrow_mut().push((session_id.to_string(), String::from_utf8_lossy(bytes).into_owned()));
             Ok(())
+        }
+
+        fn send_probe(&self, session_id: &str) -> Result<(), String> {
+            self.probes.set(self.probes.get() + 1);
+            if self.refuse_probe.get() {
+                return Err("The terminal cannot answer a readiness check right now.".to_string());
+            }
+            self.update(session_id, |view| view.handshake = Handshake::Pending);
+            Ok(())
+        }
+
+        fn dispatch(&self, session_id: &str, bytes: &[u8]) -> Result<(), String> {
+            if self.view(session_id).map(|view| view.handshake) != Some(Handshake::Confirmed) {
+                return Err("The readiness check no longer holds.".to_string());
+            }
+            self.update(session_id, |view| view.handshake = Handshake::Idle);
+            self.agent_write(session_id, bytes)
         }
     }
 
@@ -996,6 +1067,96 @@ mod tests {
         broker.tick(&fake, 1100);
         assert_eq!(status(&broker, &id), OperationStatus::Staged);
         assert_eq!(fake.written(), [("b".to_string(), "uptime".to_string())]);
+    }
+
+    /// A queued `run` operation on an opted-in SSH-style target.
+    fn dispatching() -> (Fake, Broker, String) {
+        let (fake, mut broker) = fixture();
+        fake.update("b", |view| view.requires_handshake = true);
+        let id = propose(&mut broker, &fake, "1", "uptime");
+        approve(&mut broker, &fake, &id);
+        broker.execute(&id, 1000).expect("queued");
+        (fake, broker, id)
+    }
+
+    #[test]
+    fn a_handshake_target_is_probed_before_anything_is_written() {
+        let (fake, mut broker, id) = dispatching();
+        broker.tick(&fake, 1100);
+        assert_eq!(fake.probes.get(), 1);
+        assert!(fake.written().is_empty());
+        assert_eq!(status(&broker, &id), OperationStatus::Queued);
+        fake.update("b", |view| view.handshake = Handshake::Confirmed);
+        broker.tick(&fake, 1200);
+        assert_eq!(fake.written(), [("b".to_string(), "uptime\r".to_string())]);
+        assert_eq!(status(&broker, &id), OperationStatus::Running);
+        broker.tick(&fake, 1300);
+        assert_eq!(fake.written().len(), 1);
+        assert_eq!(fake.probes.get(), 1);
+    }
+
+    #[test]
+    fn silence_is_never_readiness() {
+        let (fake, mut broker, id) = dispatching();
+        broker.tick(&fake, 1100);
+        broker.tick(&fake, 1100 + PROBE_TIMEOUT_MS);
+        assert_eq!(status(&broker, &id), OperationStatus::Blocked);
+        assert!(fake.written().is_empty());
+    }
+
+    #[test]
+    fn a_refused_handshake_blocks_instead_of_falling_back_to_enter() {
+        let (fake, mut broker, id) = dispatching();
+        broker.tick(&fake, 1100);
+        fake.update("b", |view| view.handshake = Handshake::Idle);
+        broker.tick(&fake, 1200);
+        assert_eq!(status(&broker, &id), OperationStatus::Blocked);
+        assert!(fake.written().is_empty());
+    }
+
+    #[test]
+    fn a_probe_the_terminal_refuses_blocks_the_command() {
+        let (fake, mut broker, id) = dispatching();
+        fake.refuse_probe.set(true);
+        broker.tick(&fake, 1100);
+        assert_eq!(status(&broker, &id), OperationStatus::Blocked);
+        assert!(fake.written().is_empty());
+    }
+
+    #[test]
+    fn no_probe_goes_to_a_terminal_that_is_not_at_a_prompt() {
+        for state in [InteractionState::Fullscreen, InteractionState::Password, InteractionState::Busy, InteractionState::Unknown] {
+            let (fake, mut broker, _id) = dispatching();
+            fake.update("b", |view| view.interaction = interaction(state, StateSource::None));
+            broker.tick(&fake, 1100);
+            assert_eq!(fake.probes.get(), 0, "{state:?}");
+            assert!(fake.written().is_empty());
+        }
+    }
+
+    #[test]
+    fn input_during_the_handshake_invalidates_the_operation() {
+        let (fake, mut broker, id) = dispatching();
+        broker.tick(&fake, 1100);
+        fake.update("b", |view| {
+            view.revision += 1;
+            view.handshake = Handshake::Confirmed;
+        });
+        broker.tick(&fake, 1200);
+        assert_eq!(status(&broker, &id), OperationStatus::Invalidated);
+        assert!(fake.written().is_empty());
+    }
+
+    #[test]
+    fn a_stage_approval_never_probes() {
+        let (fake, mut broker) = fixture();
+        fake.update("b", |view| view.requires_handshake = true);
+        let id = propose(&mut broker, &fake, "1", "uptime");
+        broker.approve(&fake, &id, ApprovalScope::Once, SubmitMode::Stage, None, 1000).expect("approved");
+        broker.execute(&id, 1000).expect("queued");
+        broker.tick(&fake, 1100);
+        assert_eq!(fake.probes.get(), 0);
+        assert_eq!(status(&broker, &id), OperationStatus::Staged);
     }
 
     #[test]

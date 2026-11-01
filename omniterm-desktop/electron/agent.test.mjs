@@ -495,7 +495,8 @@ test("without a real OS store a key lives only for the session", () => {
 test("shell integration signs marks with the session nonce and rejects anything else", () => {
   const nonce = "0123456789abcdef0123456789abcdef";
   const script = shellIntegrationScript(nonce);
-  assert.match(script, /133;A;k=0123456789abcdef0123456789abcdef;q=%s/);
+  assert.match(script, /133;A;k=0123456789abcdef0123456789abcdef;q=%s;h=%s/);
+  assert.match(script, /\[\[ -o emacs \]\] && h=1/);
   assert.match(script, /\[ \$\? -eq 1 \] \|\| q=1/);
   assert.ok(!script.includes("\n") && !script.includes("\r"));
   assert.ok(script.startsWith(" "));

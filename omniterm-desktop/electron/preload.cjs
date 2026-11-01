@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld("omniterm", Object.freeze({
   closeSession: (id) => invoke("omniterm:close-session", id),
   getSessionBuffer: (id) => invoke("omniterm:get-session-buffer", id),
   stageShellIntegration: (id) => invoke("omniterm:stage-shell-integration", id),
+  allowAutoSubmit: (request) => invoke("omniterm:allow-auto-submit", request),
   updateWorkspace: (layout) => invoke("omniterm:workspace-update", layout),
   listWorkspace: () => invoke("omniterm:workspace-list"),
   providerState: () => invoke("omniterm:provider-state"),
