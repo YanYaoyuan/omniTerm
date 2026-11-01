@@ -26,6 +26,8 @@ contextBridge.exposeInMainWorld("omniterm", Object.freeze({
   getSessionBuffer: (id) => invoke("omniterm:get-session-buffer", id),
   stageShellIntegration: (id) => invoke("omniterm:stage-shell-integration", id),
   allowAutoSubmit: (request) => invoke("omniterm:allow-auto-submit", request),
+  openProcessWindow: (host) => invoke("omniterm:open-process-window", host),
+  processSnapshot: (host) => invoke("omniterm:process-snapshot", host),
   monitorList: () => invoke("omniterm:monitor-list"),
   monitorCreate: (request) => invoke("omniterm:monitor-create", request),
   monitorApprove: (id) => invoke("omniterm:monitor-approve", id),

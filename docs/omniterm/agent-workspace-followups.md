@@ -96,6 +96,8 @@ Design questions: where collection runs and how it survives disconnects, sleep a
 
 ## 4. Visual process-monitor window
 
+Status: **implemented** (branch `feat/process-monitor-window`). Thread-level and shared-memory views are not included. The original notes follow.
+
 A separate window showing processes on the selected local or remote host.
 
 - Process tree and list, with search and filtering.

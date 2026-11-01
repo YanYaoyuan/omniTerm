@@ -4,7 +4,7 @@ import { spawn, execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { conditionHolds, parseProbe, probeScript, validateCondition, validateTarget } from "./monitor-probe.mjs";
+import { PROCESS_LIST_SCRIPT, conditionHolds, parseProbe, parseProcessList, probeScript, validateCondition, validateTarget } from "./monitor-probe.mjs";
 import { MonitorService } from "./monitor-service.mjs";
 
 const unix = process.platform !== "win32";
@@ -229,4 +229,11 @@ test("requests that cannot be honoured are refused up front", () => {
   assert.throws(() => service.propose({ ...request, conditions: [], action }), /触发条件/);
   assert.throws(() => service.propose({ ...request, action: { ...action, command: "a\nb" } }), /一行/);
   assert.throws(() => service.propose({ ...request, action: { ...action, terminal: { sessionId: "b" } } }), /目标终端/);
+});
+
+test("process lists parse real ps output, including spaces in names", { skip: !unix }, () => {
+  const processes = parseProcessList(sh(PROCESS_LIST_SCRIPT));
+  assert.ok(processes.some(({ pid }) => pid === process.pid));
+  assert.ok(processes.every(({ pid, ppid, cpu, memoryKb }) => [pid, ppid, cpu, memoryKb].every(Number.isFinite)));
+  assert.deepEqual(parseProcessList("  12   1  3.5  2048 Google Chrome Helper\nnot a row\n"), [{ pid: 12, ppid: 1, cpu: 3.5, memoryKb: 2048, command: "Google Chrome Helper" }]);
 });
