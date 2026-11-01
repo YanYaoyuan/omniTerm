@@ -2,6 +2,14 @@
 
 export const MONITOR_STATUS = { pending: "等待批准", running: "监控中", paused: "已暂停", stopped: "已停止", expired: "已到期", failed: "已失败" };
 
+// Mirrors what a host can read, so a choice that can't work is explained before it is made.
+export function kindNote(kind, host, platform) {
+  if (host !== "local") return kind === "thread" || kind === "sharedMemory" ? "需要 Linux 远程主机。" : "";
+  if (platform === "win32" && kind === "sharedMemory") return "Windows 本机暂不支持。";
+  if (platform === "darwin" && (kind === "thread" || kind === "sharedMemory")) return "macOS 暂不支持。";
+  return "";
+}
+
 export const emptyMonitorForm = Object.freeze({
   host: "local", kind: "process", process: "", pid: "", tid: "", path: "", region: "", layout: "", field: "", value: "",
   intervalSeconds: "5", durationMinutes: "60", withAction: false, command: "", terminal: "", maxRuns: "1",

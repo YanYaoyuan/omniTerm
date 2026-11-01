@@ -1,6 +1,6 @@
 // Copyright 2026 omniTerm contributors. SPDX-License-Identifier: Apache-2.0
 import { randomUUID } from "node:crypto";
-import { conditionHolds, parseProbe, probeScript, validateCondition, validateTarget } from "./monitor-probe.mjs";
+import { conditionHolds, parseProbe, probeScript, validateCondition, validateTarget, withCpuRate } from "./monitor-probe.mjs";
 
 const MAX_MONITORS = 16;
 const MAX_HISTORY = 200;
@@ -12,7 +12,7 @@ const MAX_DURATION_MIN = 7 * 24 * 60;
 const MAX_ACTIONS = 100;
 const REF = (value) => ({ sessionId: value?.sessionId, epoch: value?.epoch });
 
-function validateRequest(input = {}) {
+function validateRequest(input = {}, localPlatform) {
   const hostRef = input.host === "local" ? "local" : typeof input.host?.sessionId === "string" ? { sessionId: input.host.sessionId } : null;
   if (!hostRef) throw new Error("请选择监控所在的主机。");
   const intervalSeconds = input.intervalSeconds ?? 5;
@@ -22,7 +22,7 @@ function validateRequest(input = {}) {
   if (!Array.isArray(input.conditions) || input.conditions.length > 8) throw new Error("最多可以设置 8 个条件。");
   const action = input.action ? validateAction(input.action) : null;
   if (action && !input.conditions.length) throw new Error("自动操作需要至少一个触发条件。");
-  return { host: hostRef, label: typeof input.label === "string" ? input.label.slice(0, 80) : "", target: validateTarget(input.target), conditions: input.conditions.map(validateCondition), intervalSeconds, durationMinutes, action, proposedBy: input.proposedBy === "agent" ? "agent" : "user" };
+  return { host: hostRef, label: typeof input.label === "string" ? input.label.slice(0, 80) : "", target: validateTarget(input.target, { platform: hostRef === "local" ? localPlatform : "linux" }), conditions: input.conditions.map(validateCondition), intervalSeconds, durationMinutes, action, proposedBy: input.proposedBy === "agent" ? "agent" : "user" };
 }
 
 function validateAction({ command, terminal, maxRuns = 1 } = {}) {
@@ -36,8 +36,8 @@ function validateAction({ command, terminal, maxRuns = 1 } = {}) {
 // approves the task: one exact command on one pinned terminal, run through the broker with
 // its usual checks, for at most the task's duration and `maxRuns` times.
 export class MonitorService {
-  constructor({ run, host, emit = () => {}, now = Date.now, schedule = setTimeout, unschedule = clearTimeout }) {
-    Object.assign(this, { run, host, emit, now, schedule, unschedule });
+  constructor({ run, host, emit = () => {}, now = Date.now, schedule = setTimeout, unschedule = clearTimeout, platform = process.platform }) {
+    Object.assign(this, { run, host, emit, now, schedule, unschedule, platform });
     this.monitors = new Map();
     this.operations = new Map();
   }
@@ -56,7 +56,7 @@ export class MonitorService {
   // A proposal only records intent. Nothing is collected until the user approves it.
   propose(input) {
     if (this.monitors.size >= MAX_MONITORS) throw new Error(`最多可以保留 ${MAX_MONITORS} 个监控任务，请先删除不需要的任务。`);
-    const request = validateRequest(input);
+    const request = validateRequest(input, this.platform);
     const monitor = { id: randomUUID(), ...request, status: "pending", createdAt: this.now(), startedAt: null, expiresAt: null, lastSample: null, series: [], history: [], triggers: 0, actionRuns: 0, failures: 0, timer: null, probeState: {}, streaks: new Map() };
     this.monitors.set(monitor.id, monitor);
     this.record(monitor, "state", request.proposedBy === "agent" ? "Agent 提议了这个任务" : "已创建");
@@ -142,9 +142,10 @@ export class MonitorService {
     if (monitor.status !== "running") return;
     if (this.now() >= monitor.expiresAt) { await this.finish(monitor, "expired", "已到达设定时长"); return; }
     try {
-      const output = await this.run(monitor.host, probeScript(monitor.target, monitor.probeState));
+      const platform = monitor.host === "local" ? this.platform : "linux";
+      const output = await this.run(monitor.host, probeScript(monitor.target, monitor.probeState, platform));
       if (monitor.status !== "running") return;
-      const sample = { ...parseProbe(monitor.target, output), at: this.now() };
+      const sample = withCpuRate({ ...parseProbe(monitor.target, output), at: this.now() }, monitor.lastSample);
       if (monitor.target.kind === "log" && sample.nextOffset !== undefined) monitor.probeState.offset = sample.nextOffset;
       monitor.failures = 0;
       monitor.lastSample = sample.text === undefined ? sample : { ...sample, text: sample.text.slice(-2000) };

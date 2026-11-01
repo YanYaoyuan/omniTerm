@@ -1,6 +1,5 @@
 // Copyright 2026 omniTerm contributors. SPDX-License-Identifier: Apache-2.0
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, safeStorage, shell } from "electron";
-import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { copyFile, mkdir, readdir, rm, stat } from "node:fs/promises";
@@ -10,7 +9,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { buildCommandPlan, externalUrl, resolveDesktopAgent, validateProfile } from "./command-plan.mjs";
 import { describeFailure } from "./agent-runtime.mjs";
 import { AgentService } from "./agent-service.mjs";
-import { PROCESS_LIST_SCRIPT, parseProcessList } from "./monitor-probe.mjs";
+import { runLocalProbe } from "./local-probe.mjs";
+import { parseProcessList, processListScript, withProcessRates } from "./monitor-probe.mjs";
 import { MonitorService } from "./monitor-service.mjs";
 import { ProfileStore } from "./profile-store.mjs";
 import { CredentialVault, PROVIDER_PRESETS, ProviderStore } from "./provider-store.mjs";
@@ -73,11 +73,18 @@ async function chooseBackgroundImage() {
   return { url: pathToFileURL(path.join(directory, name)).href, name: path.basename(source) };
 }
 
-function runLocalProbe(script) {
-  if (process.platform === "win32") throw new Error("Windows 本机监控尚未支持。");
-  return new Promise((resolve, reject) => {
-    execFile("sh", ["-c", script], { timeout: 10_000, maxBuffer: 256 * 1024 }, (error, stdout) => { if (error) reject(new Error("本机采样失败。")); else resolve(stdout); });
-  });
+// Windows lists hold cumulative CPU time, so rates need the list before them.
+const previousLists = new Map();
+
+async function processSnapshot(host) {
+  const local = host === "local";
+  const platform = local ? process.platform : "linux";
+  const script = processListScript(platform);
+  const output = local ? await runLocalProbe(script) : await remote.exec(host, script);
+  const at = Date.now();
+  const processes = withProcessRates(parseProcessList(output, platform), previousLists.get(host), at);
+  previousLists.set(host, { processes, at });
+  return processes;
 }
 
 function send(channel, payload) {
@@ -152,7 +159,7 @@ let monitors;
       catch (error) { return { state: providerState(), failure: describeFailure(error.message) }; }
     },
     "open-process-window": (host) => openProcessWindow(host),
-    "process-snapshot": async (host) => parseProcessList(host === "local" ? await runLocalProbe(PROCESS_LIST_SCRIPT) : await remote.exec(host, PROCESS_LIST_SCRIPT)),
+    "process-snapshot": processSnapshot,
     // Clicking the button is the approval, so this path can never carry an action.
     "process-monitor-start": async (request) => {
       const { id } = monitors.propose({ ...request, action: null, proposedBy: "user" });

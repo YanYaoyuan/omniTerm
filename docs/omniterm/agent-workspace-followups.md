@@ -75,7 +75,7 @@ Status: **first increment implemented** (branch `feat/persistent-monitoring`).
 
 | Requirement | Status |
 | --- | --- |
-| Process, thread, log and shared-memory targets on a selected host | Implemented. Threads and shared memory are Linux only; Windows local hosts aren't supported |
+| Process, thread, log and shared-memory targets on a selected host | Implemented. See the capability table below |
 | Continuous sampling and notifications, with no message per sample | Implemented, with no model calls |
 | Automatic actions with a scope, trigger, duration and run limit | Implemented: one exact command on one pinned terminal, through the broker |
 | Pause, stop, revoke, history | Implemented |
@@ -83,6 +83,15 @@ Status: **first increment implemented** (branch `feat/persistent-monitoring`).
 | The Agent reacting to a trigger with a model turn | **Outstanding.** A trigger notifies you and runs the approved command; the Agent reads status when asked |
 | Monitors surviving an app restart | **Outstanding.** They stop with the app, in line with approvals not surviving a restart |
 | System V shared memory | **Outstanding** |
+
+| Target | Linux local or remote | macOS local | Windows local |
+| --- | --- | --- | --- |
+| Process | Yes | Yes | Yes, through PowerShell |
+| Thread | Yes | **No** | Yes, through PowerShell |
+| Log file | Yes | Yes | Yes, through PowerShell |
+| Shared memory (read-only) | Yes | **No** | **No**, marked unavailable in the form |
+
+Remote hosts are reached through a POSIX shell, so Windows SSH hosts aren't supported.
 
 A persistent task watching a process, thread, log or shared-memory region, rather than a one-time snapshot or a chat message per observation. This stays separate from scraping a terminal screen.
 
@@ -96,7 +105,7 @@ Design questions: where collection runs and how it survives disconnects, sleep a
 
 ## 4. Visual process-monitor window
 
-Status: **implemented** (branch `feat/process-monitor-window`). Thread-level and shared-memory views are not included. The original notes follow.
+Status: **implemented** for Linux, macOS and Windows local hosts (branches `feat/process-monitor-window`, `feat/windows-monitoring`). Thread-level and shared-memory views are not included. The original notes follow.
 
 A separate window showing processes on the selected local or remote host.
 

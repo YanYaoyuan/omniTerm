@@ -212,7 +212,7 @@ export const AgentPanel = forwardRef(function AgentPanel({ api, info, visible, s
       <button type="button" className="icon-button" title="隐藏 Agent 面板" aria-label="隐藏 Agent 面板" onClick={onHide}><SidebarSimple size={17} /></button>
     </div></div>
     <div className="agent-views" role="tablist" aria-label="Agent 视图"><button role="tab" aria-selected={view === "chat"} className={view === "chat" ? "active" : ""} onClick={() => setView("chat")}>对话</button><button role="tab" aria-selected={view === "monitors"} className={view === "monitors" ? "active" : ""} onClick={() => setView("monitors")}>监控</button></div>
-    {view === "monitors" && <MonitorView api={api} terminals={terminals} notify={notify} />}
+    {view === "monitors" && <MonitorView api={api} terminals={terminals} platform={info.platform} notify={notify} />}
     <div className="agent-chat" hidden={view !== "chat"}>
     <div className="agent-scope">
       <button className="scope-chip" aria-expanded={pickerOpen} onClick={() => setPickerOpen(!pickerOpen)} title="选择共享给模型的终端"><Stack size={13} /><span><small>上下文</small>{contextName}</span></button>

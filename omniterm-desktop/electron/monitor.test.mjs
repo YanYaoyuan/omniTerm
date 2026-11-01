@@ -4,10 +4,12 @@ import { spawn, execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { PROCESS_LIST_SCRIPT, conditionHolds, parseProbe, parseProcessList, probeScript, validateCondition, validateTarget } from "./monitor-probe.mjs";
+import { localProbeCommand, runLocalProbe } from "./local-probe.mjs";
+import { conditionHolds, parseProbe, parseProcessList, probeScript, processListScript, targetSupport, validateCondition, validateTarget, withCpuRate, withProcessRates } from "./monitor-probe.mjs";
 import { MonitorService } from "./monitor-service.mjs";
 
 const unix = process.platform !== "win32";
+const windows = process.platform === "win32";
 const sh = (script) => execFileSync("sh", ["-c", script], { encoding: "utf8" });
 
 test("targets are validated before they can reach a script", () => {
@@ -241,8 +243,95 @@ test("requests that cannot be honoured are refused up front", () => {
 });
 
 test("process lists parse real ps output, including spaces in names", { skip: !unix }, () => {
-  const processes = parseProcessList(sh(PROCESS_LIST_SCRIPT));
+  const processes = parseProcessList(sh(processListScript()));
   assert.ok(processes.some(({ pid }) => pid === process.pid));
   assert.ok(processes.every(({ pid, ppid, cpu, memoryKb }) => [pid, ppid, cpu, memoryKb].every(Number.isFinite)));
   assert.deepEqual(parseProcessList("  12   1  3.5  2048 Google Chrome Helper\nnot a row\n"), [{ pid: 12, ppid: 1, cpu: 3.5, memoryKb: 2048, command: "Google Chrome Helper" }]);
+});
+
+test("unsupported targets say so before anything runs", () => {
+  assert.match(targetSupport("sharedMemory", "win32"), /Windows/);
+  assert.equal(targetSupport("process", "win32"), null);
+  assert.equal(targetSupport("thread", "win32"), null);
+  assert.match(targetSupport("thread", "darwin"), /macOS/);
+  assert.throws(() => validateTarget({ kind: "sharedMemory", name: "x", access: "posix-shm", layout: [{ field: "a", offset: 0, type: "u8" }] }, { platform: "win32" }), /Windows/);
+});
+
+test("Windows paths are validated as Windows paths", () => {
+  assert.equal(validateTarget({ kind: "log", path: "C:\\logs\\app 1.log" }, { platform: "win32" }).path, "C:\\logs\\app 1.log");
+  for (const path of ["relative.log", "/var/log/x", "C:\\logs\\..\\x", "C:\\a'b", "C:\\a\"b", "C:\\$(x)", "\\\\host\\share\\x"]) assert.throws(() => validateTarget({ kind: "log", path }, { platform: "win32" }), undefined, path);
+});
+
+test("probes reach PowerShell encoded, never through a command line", () => {
+  const [file, args] = localProbeCommand("'a b'; $x", "win32");
+  assert.equal(file, "powershell.exe");
+  assert.ok(!args.join(" ").includes("a b"));
+  assert.equal(Buffer.from(args.at(-1), "base64").toString("utf16le"), "'a b'; $x");
+  assert.deepEqual(localProbeCommand("x", "linux"), ["sh", ["-c", "x"]]);
+});
+
+test("CPU is a rate between samples where the system only reports a total", () => {
+  const first = { pid: 7, cpuSeconds: 10, at: 1000 };
+  assert.equal(withCpuRate(first, null).cpu, undefined, "one sample has no rate");
+  assert.equal(withCpuRate({ pid: 7, cpuSeconds: 11, at: 3000 }, first).cpu, 50);
+  assert.equal(withCpuRate({ pid: 8, cpuSeconds: 11, at: 3000 }, first).cpu, undefined, "a different process is not a continuation");
+  assert.equal(withCpuRate({ pid: 7, cpuSeconds: 1, at: 3000 }, first).cpu, 0, "a reset counter is not negative");
+  assert.deepEqual(withCpuRate({ cpu: 5, at: 1 }, null), { cpu: 5, at: 1 });
+  const previous = { at: 1000, processes: [{ pid: 1, cpuTicks: 0 }] };
+  const [known, fresh] = withProcessRates([{ pid: 1, cpuTicks: 5_000_000, cpu: 0 }, { pid: 2, cpuTicks: 9, cpu: 0 }], previous, 2000);
+  assert.equal(known.cpu, 50);
+  assert.equal(fresh.cpu, 0);
+  assert.deepEqual(parseProcessList("12\t1\t500\t2048\tmy app.exe\r\nbad\r\n", "win32"), [{ pid: 12, ppid: 1, cpuTicks: 500, cpu: 0, memoryKb: 2048, command: "my app.exe" }]);
+});
+
+test("a real Windows process reports through PowerShell", { skip: !windows, timeout: 60_000 }, async () => {
+  const target = validateTarget({ kind: "process", pid: process.pid }, { platform: "win32" });
+  const sample = parseProbe(target, await runLocalProbe(probeScript(target, {}, "win32")));
+  assert.equal(sample.exists, true);
+  assert.equal(sample.pid, process.pid);
+  assert.ok(sample.memoryKb > 0);
+  assert.ok(sample.threads > 0);
+  assert.ok(String(sample.command).toLowerCase().includes("node"));
+  const byName = validateTarget({ kind: "process", name: "node.exe" }, { platform: "win32" });
+  assert.equal(parseProbe(byName, await runLocalProbe(probeScript(byName, {}, "win32"))).exists, true);
+  const missing = validateTarget({ kind: "process", pid: 4_000_000 }, { platform: "win32" });
+  assert.equal(parseProbe(missing, await runLocalProbe(probeScript(missing, {}, "win32"))).exists, false);
+});
+
+test("a real Windows log is followed across appends and rotation", { skip: !windows, timeout: 60_000 }, async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "omniterm log "));
+  try {
+    const file = path.join(directory, "app.log");
+    writeFileSync(file, "old\n");
+    const target = validateTarget({ kind: "log", path: file }, { platform: "win32" });
+    const read = async (state) => parseProbe(target, await runLocalProbe(probeScript(target, state, "win32")));
+    const first = await read({});
+    assert.equal(first.text, "");
+    appendFileSync(file, "新 ERROR line\n");
+    const second = await read({ offset: first.nextOffset });
+    assert.equal(second.text, "新 ERROR line\n");
+    writeFileSync(file, "x\n");
+    assert.equal((await read({ offset: second.nextOffset })).text, "x\n");
+  } finally { rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
+});
+
+test("a real Windows process list has names, parents and rates", { skip: !windows, timeout: 60_000 }, async () => {
+  const first = parseProcessList(await runLocalProbe(processListScript("win32")), "win32");
+  const self = first.find(({ pid }) => pid === process.pid);
+  assert.ok(self && self.command.toLowerCase().includes("node") && self.ppid > 0 && self.memoryKb > 0);
+  const started = Date.now();
+  while (Date.now() - started < 300);
+  const second = withProcessRates(parseProcessList(await runLocalProbe(processListScript("win32")), "win32"), { processes: first, at: started - 100 }, Date.now());
+  assert.ok(second.find(({ pid }) => pid === process.pid).cpu > 0);
+});
+
+test("a monitor runs on Windows with a rate from its second sample", { skip: !windows, timeout: 60_000 }, async () => {
+  const times = [];
+  const service = new MonitorService({ host: { request: async () => true }, run: (_host, script) => runLocalProbe(script), schedule: (callback) => { times.push(callback); return 1; }, unschedule: () => {} });
+  const { id } = service.propose({ host: "local", target: { kind: "process", pid: process.pid }, conditions: [{ op: "gone" }], intervalSeconds: 1, durationMinutes: 1 });
+  await service.approve(id);
+  await new Promise((resolve) => { const check = () => times.length ? resolve() : setTimeout(check, 50); check(); });
+  await times.shift()();
+  assert.equal(typeof service.get(id).lastSample.cpu, "number");
+  await service.stop(id);
 });
