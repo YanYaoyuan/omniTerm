@@ -402,6 +402,8 @@ test("a target a host can't read is explained up front", () => {
   assert.match(kindNote("thread", "local", "darwin"), /macOS/);
   assert.match(kindNote("sharedMemory", "s1", "win32"), /Linux/);
   assert.equal(kindNote("log", "s1", "win32"), "");
+});
+
 const tab = (id, root, focus = paneIds(root)[0]) => ({ id, root, focus, title: id, broadcast: false, zoomed: null });
 const newTab = () => ({ id: "new", root: null, focus: null, title: "", broadcast: false, zoomed: null });
 
