@@ -216,6 +216,21 @@ async function scenarios(shellName, shellArgs, proxy, port, latency) {
       await ready(a);
     });
   }
+  await check(`${label}: many lost checks never let an old reply through`, async () => {
+    proxy.holdDown = true;
+    const mark = marker();
+    const stale = [];
+    try {
+      for (let index = 0; index < 3; index++) stale.push(await a.run(printMark(`${mark}${index}`)));
+      for (const operationId of stale) assert.equal(await a.finished(operationId, 9000), "blocked");
+    } finally { proxy.release(); }
+    await delay(400 + latency * 2);
+    assert.ok(!a.text().includes(mark));
+    const next = marker();
+    const fresh = await a.run(`printf '%s_%s\\n' FRESH ${next}`);
+    assert.equal(await a.finished(fresh), "completed");
+    await until(() => hasOutputLine(a.text(), `FRESH_${next}`), "the output must arrive", 3000);
+  });
   await check(`${label}: a vi keymap falls back to staging`, async () => {
     await a.send(`${shellName === "zsh" ? "setopt vi" : "set -o vi"}\r`);
     await until(async () => (await a.terminal()).autoSubmit === false, "the capability must drop");
