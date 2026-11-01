@@ -1,6 +1,7 @@
 // Copyright 2026 omniTerm contributors. SPDX-License-Identifier: Apache-2.0
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
+import path from "node:path";
 import { AgentRuntime, actionableError, isForbiddenItem, normalizeNotification } from "./agent-runtime.mjs";
 import { ToolRunner } from "./agent-tools.mjs";
 
@@ -69,10 +70,12 @@ export class AgentService {
     const credential = profile.auth === "api-key" ? this.vault.get(profile.id) : null;
     if (profile.auth === "api-key" && !credential) throw new Error("这个模型配置还没有 API Key，请先在模型设置中填写。");
     // API-key profiles run from a private home, so the user's engine config, MCP servers
-    // and hooks are not part of a terminal task.
-    let codexHome = null;
-    if (profile.auth === "api-key") { mkdirSync(this.agentHome, { recursive: true }); codexHome = this.agentHome; }
-    const runtime = this.createRuntime({ command: this.resolveCommand(), profile, credential, env: this.env, codexHome, spawnProcess: this.spawnProcess, onNotification, onToolCall, onExit });
+    // and hooks are not part of a terminal task. A login profile needs the real home for its
+    // credentials, but every profile keeps its databases in a directory only omniTerm uses.
+    const stateHome = path.join(this.agentHome, "state");
+    mkdirSync(stateHome, { recursive: true });
+    const codexHome = profile.auth === "api-key" ? this.agentHome : null;
+    const runtime = this.createRuntime({ command: this.resolveCommand(), profile, credential, env: this.env, codexHome, stateHome, spawnProcess: this.spawnProcess, onNotification, onToolCall, onExit });
     await runtime.start({ clientVersion: this.clientVersion });
     return runtime;
   }

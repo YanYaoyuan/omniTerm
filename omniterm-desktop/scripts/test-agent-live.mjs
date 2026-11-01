@@ -19,6 +19,7 @@ import { PROVIDER_PRESETS, validateProviderProfile } from "../electron/provider-
 import { SessionManager } from "../electron/session-manager.mjs";
 import { shellIntegrationScript } from "../electron/shell-integration.mjs";
 import { TerminalHost, resolveTerminalHost } from "../electron/terminal-host.mjs";
+import { operationsIn, runTurn, settleTurn } from "./live-harness.mjs";
 import { CURSOR_QUERY, CURSOR_REPLY, hasOutputLine, printParts } from "./pty-output.mjs";
 
 const { OMNITERM_LIVE_PROVIDER: presetId, OMNITERM_LIVE_MODEL: model, OMNITERM_LIVE_API_KEY: apiKey, OMNITERM_LIVE_BASE_URL: baseUrl, OMNITERM_LIVE_WIRE_API: wireApi, OMNITERM_LIVE_SSH_HOST: sshHost } = process.env;
@@ -72,28 +73,18 @@ const open = async (request) => {
   return session;
 };
 const reference = (session) => ({ sessionId: session.id, epoch: 1 });
-const operationEvents = () => events.filter(({ type }) => type === "operation").map(({ operation }) => operation);
-async function turn(text, context, targets, onOperation = async () => {}) {
-  const start = events.length;
-  const handled = new Set();
-  const pump = setInterval(() => {
-    for (const operation of operationEvents()) {
-      if (operation.status === "pendingApproval" && !handled.has(operation.operationId)) {
-        handled.add(operation.operationId);
-        onOperation(operation).catch((error) => { events.push({ type: "error", message: error.message }); notify(); });
-      }
-    }
-  }, 100);
-  try {
-    await agent.send({ profileId: profile.id, text, context: context.map(reference), targets: targets.map(reference), selections: {}, cwd: repositoryRoot });
-    const finished = await until(() => events.slice(start).find(({ type }) => type === "turn-completed" || type === "error"), "the turn must finish", 240_000);
-    return { finished, events: events.slice(start) };
-  } finally { clearInterval(pump); }
-}
+const report = (event) => { events.push(event); notify(); };
+const turn = (text, context, targets, onOperation) => runTurn({ agent, events, until, report, onOperation, request: { profileId: profile.id, text, context: context.map(reference), targets: targets.map(reference), selections: {}, cwd: repositoryRoot } });
 const results = [];
 async function step(name, run) {
+  const start = events.length;
   try { await run(); results.push(true); console.log(`PASS  ${name}`); }
-  catch (error) { results.push(false); console.log(`FAIL  ${name}: ${error.message}`); }
+  catch (error) {
+    results.push(false);
+    console.log(`FAIL  ${name}: ${error.message}`);
+    // One failed check must leave nothing running for the next one to trip over.
+    await settleTurn({ agent, events, until, start });
+  }
 }
 const token = () => randomBytes(4).toString("hex").toUpperCase();
 const statusOf = async (operationId) => (await host.request("operation.result", { operationId })).operation;
@@ -116,20 +107,20 @@ try {
 
   await step("a denied command is not run, and the model is told", async () => {
     const mark = token();
-    const { finished } = await turn(`Propose and then execute this exact command in terminal ${short}: ${printParts(["__DENIED_", `${mark}__`], windows)}`, [local], [local], (operation) => host.request("operation.deny", { operationId: operation.operationId }));
+    const { finished, events: seen } = await turn(`Propose and then execute this exact command in terminal ${short}: ${printParts(["__DENIED_", `${mark}__`], windows)}`, [local], [local], (operation) => host.request("operation.deny", { operationId: operation.operationId }));
     assert.equal(finished.type, "turn-completed", finished.message);
     assert.ok(!hasOutputLine(outputs.get(local.id) ?? "", `__DENIED_${mark}__`), "denied command ran");
-    assert.ok(operationEvents().some(({ status }) => status === "denied"), "no denied operation");
+    assert.ok(operationsIn(seen).some(({ status }) => status === "denied"), "no denied operation");
   });
 
   await step("an approved command reaches only its target", async () => {
     const mark = token();
     const other = await open({ kind: "shell" });
-    const { finished } = await turn(`Propose and then execute this exact command in terminal ${short}: ${printParts(["__LIVE_", `${mark}__`], windows)}`, [local], [local], async (operation) => {
+    const { finished, events: seen } = await turn(`Propose and then execute this exact command in terminal ${short}: ${printParts(["__LIVE_", `${mark}__`], windows)}`, [local], [local], async (operation) => {
       await host.request("operation.approve", { operationId: operation.operationId, scope: "once", mode: await localMode() });
     });
     assert.equal(finished.type, "turn-completed", finished.message);
-    if (operationEvents().at(-1).status === "staged") await manager.write({ id: local.id, data: "\r" });
+    if (operationsIn(seen).at(-1).status === "staged") await manager.write({ id: local.id, data: "\r" });
     await until(() => hasOutputLine(outputs.get(local.id) ?? "", `__LIVE_${mark}__`), "the marker must appear", 20_000);
     assert.ok(!(outputs.get(other.id) ?? "").includes(mark), "output reached another terminal");
     await manager.close(other.id);
@@ -137,11 +128,12 @@ try {
 
   await step("cancelling stops the turn and voids its pending command", async () => {
     const start = events.length;
-    const sending = turn(`Propose and then execute this exact command in terminal ${short}: ${windows ? "Start-Sleep -Seconds 120" : "sleep 120"}`, [local], [local], async () => {});
-    const pending = await until(() => events.slice(start).find(({ type, operation }) => type === "operation" && operation.status === "pendingApproval"), "a proposal must arrive");
-    await agent.cancel();
-    await sending;
-    assert.equal((await statusOf(pending.operation.operationId)).status, "cancelled");
+    const sending = turn(`Propose and then execute this exact command in terminal ${short}: ${windows ? "Start-Sleep -Seconds 120" : "sleep 120"}`, [local], [local]);
+    try {
+      const pending = await until(() => events.slice(start).find(({ type, operation }) => type === "operation" && operation.status === "pendingApproval"), "a proposal must arrive");
+      await agent.cancel();
+      assert.equal((await statusOf(pending.operation.operationId)).status, "cancelled");
+    } finally { await sending; }
   });
 
   if (sshHost) {

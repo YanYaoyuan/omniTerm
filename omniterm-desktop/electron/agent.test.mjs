@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -69,6 +69,29 @@ test("existing engine logins are pinned to OpenAI and define no provider", () =>
   assert.ok(args.includes('model_provider="openai"'));
   assert.ok(args.includes("features.dynamic_tools_only=true"));
   assert.ok(engineArguments(profile).includes('model_provider="omniterm"'));
+});
+
+test("engine databases live in omniTerm's own directory, whatever the user's config says", async () => {
+  const stateHome = path.join(path.sep, "private", "state");
+  const { launch } = await runtimeFixture({ stateHome, env: { PATH: "/bin", CODEX_SQLITE_HOME: "/other/install" } });
+  const [, args, options] = launch();
+  assert.equal(options.env.CODEX_SQLITE_HOME, stateHome);
+  assert.ok(args.includes(`sqlite_home=${JSON.stringify(stateHome)}`));
+  assert.ok(args.includes(`log_dir=${JSON.stringify(stateHome)}`));
+  assert.ok(engineArguments(profile, "C:\\Users\\me\\state").includes('sqlite_home="C:\\\\Users\\\\me\\\\state"'));
+});
+
+test("a login profile keeps the user's home for credentials but not for databases", async () => {
+  const launches = [];
+  const { service } = serviceFixture();
+  service.spawnProcess = (...args) => { launches.push(args); return fakeEngine(); };
+  service.providers.get = (id) => ({ ...profile, id, auth: "engine-login", baseUrl: "" });
+  await service.send({ ...message, targets: [] });
+  const [, args, options] = launches[0];
+  assert.equal(options.env.CODEX_HOME, undefined);
+  assert.equal(options.env.CODEX_SQLITE_HOME, path.join(service.agentHome, "state"));
+  assert.ok(args.includes('model_provider="openai"'));
+  assert.ok(statSync(path.join(service.agentHome, "state")).isDirectory());
 });
 
 test("threads run with no environment, no built-in approvals, and only client tools", async () => {

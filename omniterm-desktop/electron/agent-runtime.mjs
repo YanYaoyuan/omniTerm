@@ -11,7 +11,7 @@ const FORBIDDEN_ITEMS = new Set(["commandExecution", "fileChange", "mcpToolCall"
 const tomlString = (value) => JSON.stringify(value);
 
 // Everything is passed per launch, so a user's engine config file is never rewritten.
-export function engineArguments(profile) {
+export function engineArguments(profile, stateHome) {
   const overrides = {
     "features.dynamic_tools_only": "true",
     "features.code_mode": "false",
@@ -20,6 +20,9 @@ export function engineArguments(profile) {
     "history.persistence": tomlString("none"),
     model: tomlString(profile.model),
   };
+  // Another Codex installation's databases carry its own migration checksums, and can refuse
+  // this build. Overrides here also beat `sqlite_home` and `log_dir` in the user's config.
+  if (stateHome) Object.assign(overrides, { sqlite_home: tomlString(stateHome), log_dir: tomlString(stateHome) });
   // Naming the provider keeps a login profile on OpenAI even if the user's engine config
   // defaults to some other service, which would otherwise receive the terminal context.
   if (profile.auth === "engine-login") overrides.model_provider = tomlString("openai");
@@ -41,12 +44,13 @@ export const CREDENTIAL_ENV = "OMNITERM_PROVIDER_API_KEY";
 // One engine process per provider profile: the key reaches that process alone, and a turn
 // can never fall back to another provider.
 export class AgentRuntime {
-  constructor({ command, profile, credential, env, codexHome, spawnProcess = spawn, onNotification = () => {}, onToolCall, onExit = () => {} }) {
+  constructor({ command, profile, credential, env, codexHome, stateHome, spawnProcess = spawn, onNotification = () => {}, onToolCall, onExit = () => {} }) {
     this.command = command;
     this.profile = profile;
     this.credential = credential;
     this.env = env;
     this.codexHome = codexHome;
+    this.stateHome = stateHome;
     this.spawnProcess = spawnProcess;
     this.onNotification = onNotification;
     this.onToolCall = onToolCall;
@@ -61,7 +65,8 @@ export class AgentRuntime {
     delete env[CREDENTIAL_ENV];
     if (this.credential) env[CREDENTIAL_ENV] = this.credential;
     if (this.codexHome) env.CODEX_HOME = this.codexHome;
-    const args = [...this.command.args, ...engineArguments(this.profile), "app-server", "--listen", "stdio://"];
+    if (this.stateHome) env.CODEX_SQLITE_HOME = this.stateHome;
+    const args = [...this.command.args, ...engineArguments(this.profile, this.stateHome), "app-server", "--listen", "stdio://"];
     const child = this.spawnProcess(this.command.executable, args, { env, stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
     this.child = child;
     createInterface({ input: child.stdout }).on("line", (line) => this.receive(line));
