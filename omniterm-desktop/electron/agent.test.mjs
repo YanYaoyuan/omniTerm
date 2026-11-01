@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
-import { AgentRuntime, CREDENTIAL_ENV, actionableError, engineArguments, isForbiddenItem, normalizeNotification } from "./agent-runtime.mjs";
+import { AgentRuntime, CREDENTIAL_ENV, actionableError, describeFailure, engineArguments, isForbiddenItem, normalizeNotification } from "./agent-runtime.mjs";
 import { AgentService, renderContext, runtimeFingerprint } from "./agent-service.mjs";
 import { AGENT_INSTRUCTIONS, TERMINAL_TOOLS, ToolRunner } from "./agent-tools.mjs";
 import { CredentialVault, PROVIDER_PRESETS, ProviderStore, validateBaseUrl, validateProviderProfile } from "./provider-store.mjs";
@@ -149,14 +149,17 @@ test("notifications normalize, and built-in items count as forbidden", () => {
   assert.equal(isForbiddenItem({ type: "dynamicToolCall" }), false);
 });
 
-test("provider failures say what to do next", () => {
+test("provider failures say what to do next, with the raw text kept apart", () => {
   assert.match(actionableError("unexpected status 401 Unauthorized"), /API Key/);
   assert.match(actionableError("rate limit exceeded"), /限速/);
   assert.match(actionableError("stream error: idle timeout"), /超时/);
   assert.match(actionableError("context window exceeded"), /上下文/);
   assert.match(actionableError("api error 404: model not found"), /模型 ID/);
   assert.match(actionableError("tool calling is not supported"), /仅聊天/);
-  assert.equal(actionableError("something else"), "something else");
+  assert.match(actionableError("The Agent engine stopped (exit code 1)."), /引擎未能启动或已退出/);
+  assert.ok(!actionableError("something internal").includes("internal"));
+  assert.deepEqual(describeFailure("HTTP 401"), { message: actionableError("HTTP 401"), detail: "HTTP 401" });
+  assert.deepEqual(describeFailure("请先配置模型。"), { message: "请先配置模型。" });
 });
 
 function brokerHost() {
@@ -379,6 +382,55 @@ test("a missing API key stops before the engine starts", async () => {
   service.vault.get = () => null;
   await assert.rejects(service.send(message), /API Key/);
   assert.equal(engines.length, 0);
+});
+
+test("engine failures reach the panel as a message with details, not as a thrown internal error", async () => {
+  const { service, events } = serviceFixture();
+  service.createRuntime = () => ({ start: async () => { throw new Error("The Agent engine stopped (exit code 3)."); } });
+  assert.deepEqual(await service.send(message), { failed: true });
+  const failure = events.find(({ type }) => type === "error");
+  assert.match(failure.message, /引擎未能启动/);
+  assert.equal(failure.detail, "The Agent engine stopped (exit code 3).");
+});
+
+test("a turn failure carries its raw text separately", async () => {
+  const { service, events, engines } = serviceFixture();
+  await service.send(message);
+  engines[0].notify("turn/completed", { turn: { id: "turn-1", status: "failed", error: { message: "HTTP 429 slow down" } } });
+  await tick();
+  const completed = events.find(({ type }) => type === "turn-completed");
+  assert.match(completed.error, /限速/);
+  assert.ok(!completed.error.includes("HTTP 429"));
+  assert.equal(completed.errorDetail, "HTTP 429 slow down");
+});
+
+test("empty and invalid fields read as instructions", () => {
+  assert.throws(() => validateProviderProfile({ ...profile, model: "" }), { message: "请输入模型 ID。" });
+  assert.throws(() => validateProviderProfile({ ...profile, model: "   " }), { message: "请输入模型 ID。" });
+  assert.throws(() => validateProviderProfile({ ...profile, name: "" }), { message: "请输入配置名称。" });
+  assert.throws(() => validateProviderProfile({ ...profile, baseUrl: "" }), { message: "请输入Base URL。" });
+  assert.throws(() => validateProviderProfile({ ...profile, model: "x".repeat(201) }), /不能超过 200/);
+  assert.throws(() => validateProviderProfile({ ...profile, baseUrl: "nonsense" }), /格式不正确/);
+});
+
+async function loadPreload(invoke) {
+  let exposed;
+  const electron = { contextBridge: { exposeInMainWorld: (_name, api) => { exposed = api; } }, ipcRenderer: { invoke, on() {}, removeListener() {}, send() {} }, webUtils: {} };
+  const source = readFileSync(new URL("./preload.cjs", import.meta.url), "utf8");
+  new Function("require", source)((name) => { assert.equal(name, "electron"); return electron; });
+  return exposed;
+}
+
+test("no renderer call exposes Electron's IPC wrapper text", async () => {
+  const api = await loadPreload(async (channel) => { throw new Error(`Error invoking remote method '${channel}': Error: 请输入模型 ID。`); });
+  await assert.rejects(api.saveProvider({}), { message: "请输入模型 ID。" });
+  await assert.rejects(api.remoteList({}), { message: "请输入模型 ID。" });
+  const typed = await loadPreload(async () => { throw new Error("Error invoking remote method 'x': TypeError: nope"); });
+  await assert.rejects(typed.getAppInfo(), { message: "nope" });
+  const plain = await loadPreload(async () => { throw new Error("already clean"); });
+  await assert.rejects(plain.getAppInfo(), { message: "already clean" });
+  const passing = await loadPreload(async (channel, payload) => [channel, payload]);
+  assert.deepEqual(await passing.writeSession({ id: "s" }), ["omniterm:write-session", { id: "s" }]);
 });
 
 test("base URLs must be https and free of embedded secrets", () => {

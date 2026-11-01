@@ -7,6 +7,7 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { buildCommandPlan, externalUrl, resolveDesktopAgent, validateProfile } from "./command-plan.mjs";
+import { describeFailure } from "./agent-runtime.mjs";
 import { AgentService } from "./agent-service.mjs";
 import { ProfileStore } from "./profile-store.mjs";
 import { CredentialVault, PROVIDER_PRESETS, ProviderStore } from "./provider-store.mjs";
@@ -121,7 +122,10 @@ function registerHandlers() {
       vault.delete(id);
       return providerState();
     },
-    "provider-test": async (id) => { await agent.testProvider(id); return providerState(); },
+    "provider-test": async (id) => {
+      try { await agent.testProvider(id); return { state: providerState() }; }
+      catch (error) { return { state: providerState(), failure: describeFailure(error.message) }; }
+    },
     "agent-send": (request) => agent.send(request),
     "agent-cancel": () => agent.cancel(),
     "agent-pause": ({ paused, context, targets }) => agent.pause(paused, { context, targets }),

@@ -174,14 +174,21 @@ export function normalizeNotification(method, params) {
   }
 }
 
-// Provider failures are the same across engines; the message says what to do about them.
+// What a user can act on. The engine's own text is kept apart, as details for a bug report.
 export function actionableError(message = "") {
   const text = message.toLowerCase();
-  if (/\b401\b|\b403\b|unauthorized|invalid[_ ]api[_ ]key|authentication|rejected the api key/.test(text)) return `服务拒绝了凭据，请在模型设置中检查 API Key 和权限。（${message}）`;
-  if (/\b429\b|rate.?limit|overloaded|quota|usage limit/.test(text)) return `请求受到限速或额度不足，请稍后重试或检查服务额度。（${message}）`;
-  if (/timed? ?out|idle timeout|stopped responding/.test(text)) return `模型服务响应超时，未执行后续操作。请检查网络和 Base URL。（${message}）`;
-  if (/context.*(window|length)|too many tokens|prompt is too long/.test(text)) return `内容超出模型上下文，请减少共享终端或新建对话。（${message}）`;
-  if (/\b404\b|model.*not.*found|does not exist/.test(text)) return `找不到该模型或端点，请核对模型 ID、协议和 Base URL。（${message}）`;
-  if (/tool|function/.test(text) && /support|invalid|unavailable/.test(text)) return `该模型可能不支持工具调用，可在模型设置中改为“仅聊天”。（${message}）`;
-  return message;
+  if (/\b401\b|\b403\b|unauthorized|invalid[_ ]api[_ ]key|authentication|rejected the api key/.test(text)) return "服务拒绝了凭据，请在模型设置中检查 API Key 和权限。";
+  if (/\b429\b|rate.?limit|overloaded|quota|usage limit/.test(text)) return "请求受到限速或额度不足，请稍后重试或检查服务额度。";
+  if (/timed? ?out|idle timeout|stopped responding/.test(text)) return "模型服务响应超时，未执行后续操作。请检查网络和 Base URL。";
+  if (/context.*(window|length)|too many tokens|prompt is too long/.test(text)) return "内容超出模型上下文，请减少共享的终端或新建对话。";
+  if (/\b404\b|model.*not.*found|does not exist/.test(text)) return "找不到该模型或端点，请核对模型 ID、协议和 Base URL。";
+  if (/tool|function/.test(text) && /support|invalid|unavailable/.test(text)) return "该模型可能不支持工具调用，可在模型设置中改为“仅聊天”。";
+  if (/agent engine (could not start|stopped|did not answer|is not running)/.test(text)) return "omniTerm Agent 引擎未能启动或已退出，本轮没有继续执行。请重试；如果反复出现，请把技术详情发给开发者。";
+  if (/[\u4e00-\u9fff]/.test(message)) return message;
+  return "模型服务返回了错误，本轮没有继续执行。可以重试，或查看技术详情。";
+}
+
+export function describeFailure(message = "") {
+  const friendly = actionableError(message);
+  return friendly === message ? { message: friendly } : { message: friendly, detail: message };
 }

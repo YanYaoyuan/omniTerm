@@ -633,7 +633,7 @@ impl Broker {
                 return false;
             }
             (_, InteractionState::Fullscreen) => {
-                return reject(self, OperationStatus::Blocked, "A full-screen program is active, so the command was not sent.".to_string(), changed);
+                return reject(self, OperationStatus::Blocked, "A full-screen program is active, so the command was not sent. Only shell commands at a prompt are supported; text cannot be sent to a program running in the terminal.".to_string(), changed);
             }
             (_, InteractionState::Password) => {
                 return reject(self, OperationStatus::Blocked, "A password prompt is active, so the command was not sent.".to_string(), changed);

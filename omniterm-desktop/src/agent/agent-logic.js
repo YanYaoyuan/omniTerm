@@ -45,10 +45,10 @@ export function conversationReducer(state, event) {
       return hasEntry(state, match) ? replaceWhere(state, match, () => entry) : append(state, entry);
     }
     case "retrying": return { ...state, retrying: true };
-    case "error": return { ...append(state, { kind: "error", id: `error-${state.entries.length}`, text: event.message }), running: false, retrying: false };
+    case "error": return { ...append(state, { kind: "error", id: `error-${state.entries.length}`, text: event.message, detail: event.detail }), running: false, retrying: false };
     case "turn-completed": {
       const next = { ...state, running: false, retrying: false };
-      return event.error ? append(next, { kind: "error", id: `error-${state.entries.length}`, text: event.error }) : next;
+      return event.error ? append(next, { kind: "error", id: `error-${state.entries.length}`, text: event.error, detail: event.errorDetail }) : next;
     }
     case "notice": return append(state, { kind: "notice", id: `notice-${state.entries.length}`, text: event.text });
     case "reset": return { ...state, running: false, retrying: false };
@@ -56,6 +56,16 @@ export function conversationReducer(state, event) {
     default: return state;
   }
 }
+
+// Broker reasons are written for the model; these say what they mean to the person at the card.
+const BLOCK_REASONS = [
+  [/full-screen/, "目标终端正在运行全屏程序，命令没有发送。omniTerm Agent 目前只能在 shell 提示符执行命令，不能向编辑器、REPL 或终端内的其他 Agent 发送文本。"],
+  [/password/, "目标终端正在等待密码，命令没有发送。"],
+  [/unsent text/, "终端输入行上还有未提交的内容，命令没有发送。请先按回车提交或按 Ctrl+C 清除。"],
+  [/stayed busy/, "终端一直处于忙碌状态，命令没有发送。如果它已回到 shell 提示符，请在终端按一次回车后重试。"],
+  [/cannot be confirmed/, "无法确认终端状态，命令没有提交。请选择“输入但不回车”，由你检查后按回车。"],
+];
+export const operationReason = (reason) => BLOCK_REASONS.find(([pattern]) => pattern.test(reason ?? ""))?.[1] ?? reason;
 
 export const terminalName = (terminal) => `${terminal.label} · ${terminal.shortId}`;
 

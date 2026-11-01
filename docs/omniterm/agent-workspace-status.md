@@ -124,5 +124,17 @@ API Key 配置使用独立的 `CODEX_HOME`，不读取用户的引擎配置；�
 Issue 的 A 批次（真包 app-server 回环）和 E 批次必须在这些环境完成后才算通过。
 记录测试时请写明模型、端点和平台组合。
 
+## 仍待完成的验收
+
+合并前：
+
+- 在包含修正的提交上重新运行未修改的 `npm run test:live`，并记录提交、模型、认证方式和结果。
+- 完成面板手动验收（上下文与目标选择、发送、拒绝、批准与输入、手动提交、取消、撤回目标）。本轮手动测试的反馈已处理保存与错误提示，其余项目不视为已通过。
+
+#4 完成前：Qwen、Claude、Kimi、OpenRouter 与 OpenAI API Key；跨网络 SSH；macOS 与 Linux 的真实模型回合。
+
+后续工作（SSH 自动执行方案、终端内程序交互、持续监控、进程监视窗口、面板拖动）不属于本 PR，见
+[后续工作](agent-workspace-followups.md)。
+
 真实服务验收脚本：`npm run test:live`（`omniterm-desktop/scripts/test-agent-live.mjs`）。它在随机标记的
 无害命令上覆盖连续工具调用、审批、执行、取消和 SSH 暂存，用法见脚本开头。

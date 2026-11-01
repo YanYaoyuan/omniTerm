@@ -18,16 +18,19 @@ const MAX_PROFILES = 50;
 const CONTROL = /[\u0000-\u001f\u007f]/;
 
 function text(value, label, maximum) {
-  if (typeof value !== "string" || !value.trim() || value.length > maximum || CONTROL.test(value)) throw new Error(`${label} must be text of at most ${maximum} characters.`);
+  if (typeof value !== "string" || !value.trim()) throw new Error(`请输入${label}。`);
+  if (value.length > maximum) throw new Error(`${label}不能超过 ${maximum} 个字符。`);
+  if (CONTROL.test(value)) throw new Error(`${label}不能包含控制字符。`);
   return value.trim();
 }
 
 export function validateBaseUrl(value) {
   let url;
-  try { url = new URL(text(value, "Base URL", 2048)); } catch { throw new Error("Base URL is not a valid URL."); }
+  const input = text(value, "Base URL", 2048);
+  try { url = new URL(input); } catch { throw new Error("Base URL 格式不正确，请填写完整地址，例如 https://example.com/v1。"); }
   const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
-  if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) throw new Error("Base URL must use https (http is only allowed for localhost).");
-  if (url.username || url.password || url.search || url.hash) throw new Error("Base URL cannot contain credentials or a query string.");
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) throw new Error("Base URL 必须使用 https（仅 localhost 可以使用 http）。");
+  if (url.username || url.password || url.search || url.hash) throw new Error("Base URL 不能包含账号、密码或查询参数，API Key 请填写在单独的字段中。");
   return url.href.replace(/\/$/, "");
 }
 
@@ -40,9 +43,9 @@ export function validateProviderProfile(input = {}) {
   if (!Number.isSafeInteger(budget) || budget < 4096 || budget > 512 * 1024) throw new Error("The context budget must be 4–512 KiB.");
   const auth = preset.auth ?? "api-key";
   return {
-    id: input.id || randomUUID(), presetId: input.presetId, name: text(input.name, "Name", 120), auth, wireApi: input.wireApi,
+    id: input.id || randomUUID(), presetId: input.presetId, name: text(input.name, "配置名称", 120), auth, wireApi: input.wireApi,
     baseUrl: auth === "engine-login" ? "" : validateBaseUrl(input.baseUrl),
-    model: text(input.model, "Model ID", 200),
+    model: text(input.model, "模型 ID", 200),
     chatOnly: input.chatOnly === true,
     contextBudgetBytes: budget,
     verified: input.verified && typeof input.verified === "object" ? { connection: input.verified.connection === true, tools: input.verified.tools === true, at: Number(input.verified.at) || null } : { connection: false, tools: false, at: null },
@@ -114,7 +117,7 @@ export class CredentialVault {
     catch { return {}; }
   }
   set(id, secret) {
-    const value = text(secret, "API key", 8192);
+    const value = text(secret, "API Key", 8192);
     if (!this.persistent) { this.session.set(id, value); return { persistent: false }; }
     const store = this.readFile();
     store[id] = this.safeStorage.encryptString(value).toString("base64");

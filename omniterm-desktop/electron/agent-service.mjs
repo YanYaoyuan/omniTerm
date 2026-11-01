@@ -2,7 +2,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
-import { AgentRuntime, actionableError, isForbiddenItem, normalizeNotification } from "./agent-runtime.mjs";
+import { AgentRuntime, describeFailure, isForbiddenItem, normalizeNotification } from "./agent-runtime.mjs";
 import { ToolRunner } from "./agent-tools.mjs";
 
 const refList = (value, label) => {
@@ -63,7 +63,7 @@ export class AgentService {
     this.runtime = null;
     this.conversation = null;
     this.host.request("task.invalidateAll", { reason: "The Agent engine stopped; approvals and queued operations were voided." }).catch(() => {});
-    this.emit({ type: "error", message: actionableError(error.message) });
+    this.emit({ type: "error", ...describeFailure(error.message) });
     this.emit({ type: "reset" });
   }
   async launch(profile, { onNotification, onToolCall, onExit }) {
@@ -113,7 +113,13 @@ export class AgentService {
     const contextRefs = refList(context, "Context");
     const targetRefs = refList(targets, "Execution target");
     if (this.conversation?.turnId) throw new Error("The current turn is still running.");
-    const conversation = await this.ensureConversation(profileId, cwd);
+    let conversation;
+    try { conversation = await this.ensureConversation(profileId, cwd); }
+    catch (error) {
+      if (!/engine/i.test(error.message)) throw error;
+      this.emit({ type: "error", ...describeFailure(error.message) });
+      return { failed: true };
+    }
     if (!conversation.tools && targetRefs.length) throw new Error("仅聊天模型不能执行终端操作，请把执行目标设为“只读”。");
     await this.host.request("task.update", { taskId: conversation.taskId, context: contextRefs, targets: targetRefs, paused: paused === true });
     let prompt = text;
@@ -128,7 +134,11 @@ export class AgentService {
       const turnId = await conversation.thread.startTurn(conversation.threadId, prompt);
       // A turn that failed at once may have completed before this response was handled.
       conversation.turnId = conversation.lastCompletedTurn === turnId ? null : turnId;
-    } catch (error) { conversation.turnId = null; throw new Error(actionableError(error.message)); }
+    } catch (error) {
+      conversation.turnId = null;
+      this.emit({ type: "error", ...describeFailure(error.message) });
+      return { threadId: conversation.threadId, taskId: conversation.taskId, failed: true };
+    }
     return { threadId: conversation.threadId, taskId: conversation.taskId };
   }
   notification(runtime, method, params) {
@@ -141,9 +151,9 @@ export class AgentService {
     if (event.type === "turn-completed" && conversation) {
       conversation.turnId = null;
       conversation.lastCompletedTurn = event.turnId;
-      if (event.error) event.error = actionableError(event.error);
+      if (event.error) { const { message, detail } = describeFailure(event.error); event.error = message; event.errorDetail = detail; }
     }
-    if (event.type === "error") event.message = actionableError(event.message);
+    if (event.type === "error") Object.assign(event, describeFailure(event.message));
     this.emit(event);
   }
   // The feature gate should make this impossible; if it ever fires, nothing keeps running.
@@ -193,8 +203,8 @@ export class AgentService {
       runtime = await this.launch(profile, {
         onNotification: (method, params) => {
           const event = normalizeNotification(method, params);
-          if (event?.type === "turn-completed") { if (event.error) settle.reject(new Error(actionableError(event.error))); else settle.resolve(); }
-          if (event?.type === "error") settle.reject(new Error(actionableError(event.message)));
+          if (event?.type === "turn-completed") { if (event.error) settle.reject(new Error(event.error)); else settle.resolve(); }
+          if (event?.type === "error") settle.reject(new Error(event.message));
         },
         onToolCall: async () => { toolCalled = true; return { ok: true, value: "omniterm" }; },
         onExit: (error) => settle.reject(error),

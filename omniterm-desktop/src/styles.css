@@ -514,3 +514,5 @@ kbd { font-family: var(--mono); font-size: 10px; background: rgb(var(--ink) / 0.
 .provider-verified { display: flex; gap: 12px; font-size: 10px; color: var(--accent); }
 .provider-verified span { display: flex; align-items: center; gap: 4px; }
 .provider-verified .muted { color: var(--muted); }
+.agent-error details, .inline-error details { margin-top: 4px; font-size: 10px; color: var(--muted); }
+.agent-error pre, .inline-error pre { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }

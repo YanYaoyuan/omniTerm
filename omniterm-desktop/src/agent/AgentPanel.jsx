@@ -1,7 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useReducer, useRef, useState } from "react";
 import { Broom, Check, CircleNotch, Cpu, Crosshair, GearSix, HardDrives, Pause, PaperPlaneTilt, Play, Robot, ShieldCheck, SidebarSimple, Stack, Stop, TerminalWindow, WarningCircle, X } from "@phosphor-icons/react";
 import { ProviderDialog } from "./ProviderDialog.jsx";
-import { INTERACTION_LABELS, OPEN_OPERATIONS, OPERATION_LABELS, WIRE_LABELS, citationParts, conversationReducer, emptyConversation, executable, mentionMatches, mentionQuery, pruneSelection, refsFor, scopeSummary, terminalName } from "./agent-logic.js";
+import { INTERACTION_LABELS, OPEN_OPERATIONS, OPERATION_LABELS, WIRE_LABELS, citationParts, conversationReducer, operationReason, emptyConversation, executable, mentionMatches, mentionQuery, pruneSelection, refsFor, scopeSummary, terminalName } from "./agent-logic.js";
 
 const POLL_MS = 1500;
 const PROFILE_KEY = "omniterm-agent-profile";
@@ -18,14 +18,14 @@ function OperationCard({ entry, terminals, api, notify }) {
   const pending = operation.status === "pendingApproval";
   const interaction = target?.interaction?.state ?? "unknown";
   const canRun = interaction === "ready" && target?.autoSubmit === true;
-  const manualReason = target?.autoSubmit === false ? "SSH 终端不会自动提交：批准后命令只输入到终端，由你检查后按回车。" : canRun ? "" : "无法确认空闲，只能输入后由你手动回车。";
+  const manualReason = interaction === "fullscreen" ? "全屏程序不是 shell：omniTerm Agent 目前只能执行 shell 命令，不能向交互程序发送文本。" : target?.autoSubmit === false ? "SSH 终端不会自动提交：批准后命令只输入到终端，由你检查后按回车。" : canRun ? "" : "无法确认空闲，只能输入后由你手动回车。";
   const act = (task) => Promise.resolve().then(task).catch((error) => notify(error.message));
   const approve = (scope, mode) => act(() => api.approveOperation({ operationId: operation.operationId, scope, mode, ...(scope === "taskTarget" ? { ttlMs: GRANT_MS } : {}) }));
   return <div className={`operation-card status-${operation.status}`}>
     <div className="operation-target"><Crosshair size={14} /><span>执行于 <strong>{name}</strong></span><span className="operation-status">{OPERATION_LABELS[operation.status] ?? operation.status}</span></div>
     {operation.rationale && <p>{operation.rationale}</p>}
     <pre>{operation.command}</pre>
-    {operation.reason && <p className="operation-reason">{operation.reason}</p>}
+    {operation.reason && <p className="operation-reason">{operationReason(operation.reason)}</p>}
     {operation.exitCode !== null && operation.exitCode !== undefined && <p className="operation-reason">退出码 {operation.exitCode}</p>}
     {pending && <>
       <div className="operation-state">终端状态：{INTERACTION_LABELS[interaction] ?? interaction}{manualReason && `。${manualReason}`}</div>
@@ -48,7 +48,7 @@ function Entry({ entry, terminals, api, notify, onLocate }) {
     case "tool": return <div className={`agent-tool ${entry.success === false ? "failed" : ""}`}>{entry.status === "inProgress" ? <CircleNotch className="spin" size={12} /> : entry.success === false ? <WarningCircle size={12} /> : <Check size={12} />}<span>{entry.tool}</span></div>;
     case "context": return <div className="agent-shared"><Stack size={13} /><span>已向 {entry.provider} · {entry.model} 共享：{entry.terminals.map((terminal) => `${terminal.label} · ${terminal.ref.sessionId.slice(0, 8)}${terminal.truncated ? `（省略 ${terminal.omittedLines} 行）` : ""}`).join("，") || "无"}{entry.unavailable.length ? `；${entry.unavailable.length} 个终端已关闭或重连，未共享` : ""}</span></div>;
     case "operation": return <OperationCard entry={entry} terminals={terminals} api={api} notify={notify} />;
-    case "error": return <div className="agent-error"><WarningCircle size={15} /><span>{entry.text}</span></div>;
+    case "error": return <div className="agent-error"><WarningCircle size={15} /><div><span>{entry.text}</span>{entry.detail && <details><summary>技术详情</summary><pre>{entry.detail}</pre></details>}</div></div>;
     case "notice": return <div className="agent-notice">{entry.text}</div>;
     default: return null;
   }

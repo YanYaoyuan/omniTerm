@@ -14,32 +14,34 @@ export function ProviderDialog({ api, state, onState, onClose, notify }) {
   const [form, setForm] = useState(current ?? blank(state.presets));
   const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState("");
-  const [error, setError] = useState("");
+  const [error, setError] = useState(null);
   useEffect(() => { dialog.current.showModal(); }, []);
   const preset = state.presets[form.presetId];
   const engineLogin = preset.auth === "engine-login";
   const update = (key) => (event) => setForm((previous) => ({ ...previous, [key]: event.target.type === "checkbox" ? event.target.checked : event.target.value }));
-  const choose = (profile) => { setSelected(profile?.id ?? null); setForm(profile ?? blank(state.presets)); setApiKey(""); setError(""); };
+  const choose = (profile) => { setSelected(profile?.id ?? null); setForm(profile ?? blank(state.presets)); setApiKey(""); setError(null); };
   const changePreset = (event) => { const next = blank(state.presets, event.target.value); setForm({ ...next, id: form.id, model: form.model }); };
   async function run(label, task) {
-    setBusy(label); setError("");
+    setBusy(label); setError(null);
     try { return await task(); }
-    catch (failure) { setError(failure.message || String(failure)); return null; }
+    catch (failure) { setError({ message: failure.message || String(failure) }); return null; }
     finally { setBusy(""); }
   }
   const save = () => run("save", async () => {
     const result = await api.saveProvider({ profile: form, ...(apiKey ? { apiKey } : {}) });
-    onState(result.state); setSelected(result.saved.id); setForm(result.saved); setApiKey("");
-    return result.saved;
+    onState(result.state);
+    notify("模型配置已保存。", "success");
+    onClose(result.saved.id);
   });
   const test = () => run("test", async () => {
     const saved = await api.saveProvider({ profile: form, ...(apiKey ? { apiKey } : {}) });
     setApiKey("");
-    const next = await api.testProvider(saved.saved.id);
+    const { state: next, failure } = await api.testProvider(saved.saved.id);
     onState(next);
     setSelected(saved.saved.id);
     setForm(next.profiles.find((profile) => profile.id === saved.saved.id) ?? saved.saved);
-    notify("模型服务测试通过。", "success");
+    if (failure) setError(failure);
+    else notify("模型服务测试通过。", "success");
   });
   const remove = () => run("delete", async () => { const next = await api.deleteProvider(selected); onState(next); choose(next.profiles[0] ?? null); });
   const verified = current?.verified;
@@ -61,9 +63,9 @@ export function ProviderDialog({ api, state, onState, onClose, notify }) {
         {engineLogin && <p className="provider-note">使用引擎已有的登录状态。此配置读取你现有的引擎主目录。</p>}
         <label className="provider-check"><input type="checkbox" checked={form.chatOnly} onChange={update("chatOnly")} />仅聊天（模型不支持工具调用时使用；不能读取或操作终端）</label>
         {verified && <div className="provider-verified">{verified.connection ? <span><CheckCircle size={14} />连接已验证</span> : <span className="muted"><WarningCircle size={14} />连接未验证</span>}{verified.tools ? <span><CheckCircle size={14} />工具调用已验证</span> : <span className="muted"><WarningCircle size={14} />工具调用未验证</span>}</div>}
-        {error && <div className="inline-error">{error}</div>}
+        {error && <div className="inline-error">{error.message}{error.detail && <details><summary>技术详情</summary><pre>{error.detail}</pre></details>}</div>}
       </div>
     </div>
-    <div className="modal-actions">{selected ? <button className="button ghost" disabled={Boolean(busy)} onClick={remove}><Trash size={15} />删除</button> : <span />}<div className="action-group"><button className="button secondary" disabled={Boolean(busy)} onClick={test}>{busy === "test" && <CircleNotch className="spin" size={15} />}测试连接与工具</button><button className="button primary" disabled={Boolean(busy)} onClick={save}>保存</button></div></div>
+    <div className="modal-actions">{selected ? <button className="button ghost" disabled={Boolean(busy)} onClick={remove}><Trash size={15} />删除</button> : <span />}<div className="action-group"><button className="button secondary" disabled={Boolean(busy)} onClick={test}>{busy === "test" && <CircleNotch className="spin" size={15} />}测试连接与工具</button><button className="button ghost" disabled={Boolean(busy)} onClick={() => onClose(selected)}>取消</button><button className="button primary" disabled={Boolean(busy)} onClick={save}>保存并关闭</button></div></div>
   </dialog>;
 }

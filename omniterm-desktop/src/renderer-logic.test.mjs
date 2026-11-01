@@ -1,6 +1,6 @@
 // Copyright 2026 omniTerm contributors. SPDX-License-Identifier: Apache-2.0
 import test from "node:test";
-import { citationParts, conversationReducer, emptyConversation, executable, mentionMatches, mentionQuery, pruneSelection, refsFor, scopeSummary } from "./agent/agent-logic.js";
+import { citationParts, conversationReducer, emptyConversation, executable, mentionMatches, mentionQuery, operationReason, pruneSelection, refsFor, scopeSummary } from "./agent/agent-logic.js";
 import assert from "node:assert/strict";
 import { computeLayout, equalize, MIN_RATIO, neighborPane, pane, paneIds, removePane, setRatio, splitPane } from "./layout.js";
 import { isAppShortcut, matchShortcut, shortcutLabel, tabCycle, tabNumber } from "./shortcuts.js";
@@ -303,4 +303,18 @@ test("mentions resolve while typing and citations link only known terminals", ()
   const parts = citationParts("see bbbbbbbb and deadbeef here", terminals);
   assert.equal(parts[1].terminal.label, "B");
   assert.equal(parts.at(-1), " and deadbeef here");
+});
+
+test("errors keep technical details apart from the message", () => {
+  const failed = conversationReducer(emptyConversation, { type: "error", message: "friendly", detail: "raw" });
+  assert.deepEqual([failed.entries[0].text, failed.entries[0].detail], ["friendly", "raw"]);
+  const turn = conversationReducer(emptyConversation, { type: "turn-completed", error: "friendly", errorDetail: "raw" });
+  assert.equal(turn.entries[0].detail, "raw");
+});
+
+test("a blocked command explains the limit in the user's terms", () => {
+  assert.match(operationReason("A full-screen program is active, so the command was not sent. Only shell commands at a prompt are supported."), /不能向编辑器、REPL 或终端内的其他 Agent 发送文本/);
+  assert.match(operationReason("The terminal stayed busy, so the command was not sent."), /按一次回车/);
+  assert.equal(operationReason("Cancelled."), "Cancelled.");
+  assert.equal(operationReason(null), null);
 });
