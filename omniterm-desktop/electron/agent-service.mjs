@@ -36,7 +36,7 @@ export function runtimeFingerprint(profile, credential) {
 }
 
 export class AgentService {
-  constructor({ host, providers, vault, resolveCommand, env, agentHome, clientVersion, emit, spawnProcess, createRuntime = (options) => new AgentRuntime(options) }) {
+  constructor({ host, providers, vault, monitors = null, resolveCommand, env, agentHome, clientVersion, emit, spawnProcess, createRuntime = (options) => new AgentRuntime(options) }) {
     this.host = host;
     this.providers = providers;
     this.vault = vault;
@@ -51,7 +51,7 @@ export class AgentService {
     this.conversation = null;
     this.listeners = new Set();
     this.reasons = new Map();
-    this.tools = new ToolRunner({ host, reasons: this.reasons, operations: (listener) => { this.listeners.add(listener); return () => this.listeners.delete(listener); } });
+    this.tools = new ToolRunner({ host, monitors, reasons: this.reasons, operations: (listener) => { this.listeners.add(listener); return () => this.listeners.delete(listener); } });
   }
   operationChanged(operation) {
     for (const listener of [...this.listeners]) listener(operation);

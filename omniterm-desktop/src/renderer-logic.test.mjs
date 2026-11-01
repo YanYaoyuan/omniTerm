@@ -1,5 +1,6 @@
 // Copyright 2026 omniTerm contributors. SPDX-License-Identifier: Apache-2.0
 import test from "node:test";
+import { buildMonitorRequest, emptyMonitorForm, monitorMetrics, monitorReducer, sparkline, targetSummary } from "./agent/monitor-logic.js";
 import { citationParts, conversationReducer, emptyConversation, executable, mentionMatches, mentionQuery, operationReason, pruneSelection, refsFor, scopeSummary } from "./agent/agent-logic.js";
 import assert from "node:assert/strict";
 import { computeLayout, equalize, MIN_RATIO, neighborPane, pane, paneIds, removePane, setRatio, splitPane } from "./layout.js";
@@ -317,4 +318,38 @@ test("a blocked command explains the limit in the user's terms", () => {
   assert.match(operationReason("The terminal stayed busy, so the command was not sent."), /按一次回车/);
   assert.equal(operationReason("Cancelled."), "Cancelled.");
   assert.equal(operationReason(null), null);
+});
+
+const form = (patch) => ({ ...emptyMonitorForm, ...patch });
+
+test("monitor forms become precise requests", () => {
+  assert.deepEqual(buildMonitorRequest(form({ process: "42", field: "cpu", value: "80" }), []).target, { kind: "process", pid: 42 });
+  assert.deepEqual(buildMonitorRequest(form({ process: "nginx" }), []).target, { kind: "process", name: "nginx" });
+  const log = buildMonitorRequest(form({ host: "s1", kind: "log", path: "/var/log/x", field: "text", value: "ERROR" }), []);
+  assert.deepEqual([log.host, log.conditions], [{ sessionId: "s1" }, [{ field: "text", op: "contains", value: "ERROR" }]]);
+  const shm = buildMonitorRequest(form({ kind: "sharedMemory", region: "r", layout: "count:0:u32\nflag : 4 : u8", field: "count", value: "9" }), []);
+  assert.deepEqual(shm.target.layout, [{ field: "count", offset: 0, type: "u32" }, { field: "flag", offset: 4, type: "u8" }]);
+  assert.deepEqual(buildMonitorRequest(form({ process: "1", field: "exists" }), []).conditions, [{ op: "gone" }]);
+});
+
+test("an action carries the terminal's pinned identity", () => {
+  const terminals = [{ ref: { sessionId: "s1", epoch: 3 } }];
+  const { action } = buildMonitorRequest(form({ process: "1", field: "cpu", value: "1", withAction: true, command: "restart", terminal: "s1", maxRuns: "2" }), terminals);
+  assert.deepEqual(action, { command: "restart", terminal: { sessionId: "s1", epoch: 3 }, maxRuns: 2 });
+  assert.throws(() => buildMonitorRequest(form({ process: "1", withAction: true, terminal: "gone" }), terminals), /目标终端/);
+});
+
+test("monitor events update the list in place", () => {
+  const first = monitorReducer([], { type: "monitor", monitor: { id: "a", status: "pending" } });
+  const second = monitorReducer(first, { type: "monitor", monitor: { id: "a", status: "running" } });
+  assert.deepEqual(second, [{ id: "a", status: "running" }]);
+  assert.deepEqual(monitorReducer(second, { type: "monitor-removed", id: "a" }), []);
+});
+
+test("monitor values and trends read cleanly", () => {
+  assert.deepEqual(monitorMetrics({ at: 1, exists: true, pid: 3, cpu: 4, memoryKb: 5, command: "x" }), [["cpu", 4], ["memoryKb", 5]]);
+  assert.deepEqual(monitorMetrics({ exists: false }), [["目标", "不存在"]]);
+  assert.equal(sparkline([{ cpu: 1 }], "cpu"), "");
+  assert.equal(sparkline([{ cpu: 0 }, { cpu: 10 }], "cpu"), "0.0,25.0 100.0,1.0");
+  assert.equal(targetSummary({ kind: "thread", pid: 1, tid: 2 }), "线程 1/2");
 });

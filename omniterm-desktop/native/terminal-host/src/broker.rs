@@ -212,6 +212,16 @@ impl Broker {
         );
     }
 
+    /// A grant the user gave up front, for a task that acts without a person present.
+    pub fn grant(&mut self, task_id: &str, target: TerminalRef, expires_at: u64) -> Result<(), String> {
+        let task = self.tasks.get_mut(task_id).ok_or("The Agent task has ended.")?;
+        if !task.targets.contains(&target) {
+            return Err("That terminal is not an execution target of this task.".to_string());
+        }
+        task.grants.push(Grant { target: Some(target), mode: Some(SubmitMode::Run), expires_at });
+        Ok(())
+    }
+
     /// Replaces the task's scope. Removing a target drops its grants and voids everything not
     /// yet written to it; a command already running stays tracked until it ends.
     pub fn update_task(
@@ -1257,6 +1267,31 @@ mod tests {
         broker.tick(&fake, 1100);
         assert_eq!(fake.probes.get(), 0);
         assert_eq!(status(&broker, &id), OperationStatus::Staged);
+    }
+
+    #[test]
+    fn an_upfront_grant_covers_only_its_target_and_ends_with_its_task() {
+        let (fake, mut broker) = fixture();
+        assert!(broker.grant("task", reference("a"), 9000).is_err(), "A is read-only");
+        broker.grant("task", reference("b"), 9000).expect("granted");
+        let covered = broker.propose(&fake, "task", "1", &reference("b"), "one", None, 2000).expect("proposed");
+        assert_eq!(covered.status, OperationStatus::Approved);
+        let late = broker.propose(&fake, "task", "2", &reference("b"), "two", None, 9500).expect("proposed");
+        assert_eq!(late.status, OperationStatus::PendingApproval);
+        broker.end_task(&fake, "task");
+        assert!(broker.grant("task", reference("b"), 9000).is_err());
+    }
+
+    #[test]
+    fn an_upfront_grant_cannot_submit_to_an_ssh_style_target() {
+        let (fake, mut broker) = fixture();
+        fake.update("b", |view| view.auto_submit = false);
+        broker.grant("task", reference("b"), 9000).expect("granted");
+        let id = propose(&mut broker, &fake, "1", "uptime");
+        broker.execute(&id, 2000).expect("queued");
+        broker.tick(&fake, 2100);
+        assert_eq!(status(&broker, &id), OperationStatus::Blocked);
+        assert!(fake.written().is_empty());
     }
 
     #[test]

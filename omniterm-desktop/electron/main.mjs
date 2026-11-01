@@ -1,5 +1,6 @@
 // Copyright 2026 omniTerm contributors. SPDX-License-Identifier: Apache-2.0
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, safeStorage, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, safeStorage, shell } from "electron";
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { copyFile, mkdir, readdir, rm, stat } from "node:fs/promises";
@@ -9,6 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { buildCommandPlan, externalUrl, resolveDesktopAgent, validateProfile } from "./command-plan.mjs";
 import { describeFailure } from "./agent-runtime.mjs";
 import { AgentService } from "./agent-service.mjs";
+import { MonitorService } from "./monitor-service.mjs";
 import { ProfileStore } from "./profile-store.mjs";
 import { CredentialVault, PROVIDER_PRESETS, ProviderStore } from "./provider-store.mjs";
 import { RemoteManager } from "./remote-manager.mjs";
@@ -22,6 +24,7 @@ let manager;
 let remote;
 let host;
 let agent;
+let monitors;
 let providers;
 let vault;
 let profiles;
@@ -67,6 +70,13 @@ async function chooseBackgroundImage() {
   return { url: pathToFileURL(path.join(directory, name)).href, name: path.basename(source) };
 }
 
+function runLocalProbe(script) {
+  if (process.platform === "win32") throw new Error("Windows 本机监控尚未支持。");
+  return new Promise((resolve, reject) => {
+    execFile("sh", ["-c", script], { timeout: 10_000, maxBuffer: 256 * 1024 }, (error, stdout) => { if (error) reject(new Error("本机采样失败。")); else resolve(stdout); });
+  });
+}
+
 function send(channel, payload) {
   if (window && !window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send(channel, payload);
 }
@@ -78,6 +88,7 @@ function trustedSender(event) {
 // Remote first: it stops each SSH master synchronously through its control
 // socket, which must still exist when the terminals behind them go away.
 function disposeSessions() {
+  monitors?.dispose();
   agent?.dispose();
   remote?.dispose();
   manager?.dispose();
@@ -93,6 +104,7 @@ function registerHandlers() {
   const handlers = {
     "get-app-info": () => {
       let agent;
+let monitors;
       try { const command = resolveDesktopAgent(planOptions); agent = { available: true, path: command.args[0] || command.executable }; }
       catch (error) { agent = { available: false, path: null, error: error.message }; }
       return { platform: process.platform, hostname: os.hostname(), home: os.homedir(), cwd: planOptions.defaultCwd, version: app.getVersion(), agent, profiles: profiles.list(), windowTransparent };
@@ -127,6 +139,15 @@ function registerHandlers() {
       try { await agent.testProvider(id); return { state: providerState() }; }
       catch (error) { return { state: providerState(), failure: describeFailure(error.message) }; }
     },
+    "monitor-list": () => monitors.list(),
+    "monitor-create": (request) => monitors.propose({ ...request, proposedBy: "user" }),
+    "monitor-approve": (id) => monitors.approve(id),
+    "monitor-deny": (id) => monitors.deny(id),
+    "monitor-pause": (id) => monitors.pause(id),
+    "monitor-resume": (id) => monitors.resume(id),
+    "monitor-stop": (id) => monitors.stop(id),
+    "monitor-revoke-action": (id) => monitors.revokeAction(id),
+    "monitor-remove": (id) => monitors.remove(id),
     "agent-send": (request) => agent.send(request),
     "agent-cancel": () => agent.cancel(),
     "agent-pause": ({ paused, context, targets }) => agent.pause(paused, { context, targets }),
@@ -196,7 +217,7 @@ function createWindow() {
     onData: ({ id, data }) => send("omniterm:session-data", { id, data }),
     onEvent: (event, params) => {
       if (event === "session.exit") onExit(params);
-      else if (event === "operation.update") agent.operationChanged(params);
+      else if (event === "operation.update") { agent.operationChanged(params); monitors.operationChanged(params); }
     },
     onExit: () => manager.hostStopped(onExit),
   });
@@ -208,8 +229,16 @@ function createWindow() {
   });
   providers = new ProviderStore(path.join(app.getPath("userData"), "model-providers.json"));
   vault = new CredentialVault({ filename: path.join(app.getPath("userData"), "model-credentials.json"), safeStorage });
+  monitors = new MonitorService({
+    host,
+    run: (target, script) => target === "local" ? runLocalProbe(script) : remote.exec(target.sessionId, script),
+    emit: (event) => {
+      send("omniterm:monitor-event", event);
+      if (event.type === "monitor-alert" && Notification.isSupported()) new Notification({ title: event.label || "omniTerm 监控", body: event.message }).show();
+    },
+  });
   agent = new AgentService({
-    host, providers, vault,
+    host, providers, vault, monitors,
     resolveCommand: () => resolveDesktopAgent(planOptions),
     env: process.env,
     agentHome: path.join(app.getPath("userData"), "agent-home"),
