@@ -76,7 +76,8 @@ async function connect(shellArgs, port) {
   const text = () => output.get(id) ?? "";
   await until(() => text().includes("$ "), "the remote prompt");
   await send(`${shellIntegrationScript(shellNonce)}\r`);
-  await until(async () => await state() === "ready", "readiness marks");
+  try { await until(async () => await state() === "ready", "readiness marks"); }
+  catch (error) { throw new Error(`${error.message}; state ${JSON.stringify((await terminal()).interaction)}, output tail ${JSON.stringify(text().slice(-400))}`); }
   const taskId = `task-${id}`;
   await host.request("task.begin", { taskId, context: [], targets: [{ sessionId: id, epoch: 1 }] });
   const run = async (command) => {
