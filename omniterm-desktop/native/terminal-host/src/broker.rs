@@ -8,6 +8,7 @@
 
 use crate::interaction::Interaction;
 use crate::interaction::InteractionState;
+use crate::interaction::StateSource;
 use serde::Deserialize;
 use serde::Serialize;
 use sha2::Digest;
@@ -21,6 +22,7 @@ const MAX_COMMAND_TIMEOUT_MS: u64 = 900_000;
 const MAX_COMMAND_BYTES: usize = 16 * 1024;
 const MAX_FINISHED_OPERATIONS: usize = 200;
 const INTERRUPT: &[u8] = b"\x03";
+const TARGET_REMOVED: &str = "This terminal is no longer an execution target of the task.";
 
 /// Stable identity of a terminal connection. Titles, tabs and aliases are display only.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -121,6 +123,9 @@ pub struct TargetView {
     pub commands_finished: u64,
     pub last_exit_code: Option<i32>,
     pub bracketed_paste: bool,
+    /// False where nothing can prove the shell's state across the link: commands are only
+    /// ever typed in, and a person submits them.
+    pub auto_submit: bool,
 }
 
 pub trait Terminals {
@@ -174,14 +179,15 @@ impl Broker {
         );
     }
 
-    /// Replaces the scope between turns. Changing a target drops its unattended grants.
+    /// Replaces the task's scope. Removing a target drops its grants and voids everything not
+    /// yet written to it; a command already running stays tracked until it ends.
     pub fn update_task(
         &mut self,
         task_id: &str,
         context: Vec<TerminalRef>,
         targets: Vec<TerminalRef>,
         paused: bool,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<Operation>, String> {
         let task = self.tasks.get_mut(task_id).ok_or("The Agent task has ended.")?;
         task.grants.retain(|grant| {
             grant
@@ -192,7 +198,23 @@ impl Broker {
         task.context = context;
         task.targets = targets;
         task.paused = paused;
-        Ok(())
+        let removed: Vec<String> = self
+            .operations
+            .values()
+            .filter(|operation| {
+                operation.task_id == task_id
+                    && !operation.status.is_final()
+                    && operation.status != OperationStatus::Running
+                    && !self.tasks[task_id].targets.contains(&operation.target)
+            })
+            .map(|operation| operation.operation_id.clone())
+            .collect();
+        let mut changed = Vec::with_capacity(removed.len());
+        for id in removed {
+            self.finish(&id, OperationStatus::Invalidated, Some(TARGET_REMOVED.to_string()), None);
+            changed.push(self.operations[&id].clone());
+        }
+        Ok(changed)
     }
 
     pub fn task(&self, task_id: &str) -> Result<&Task, String> {
@@ -314,6 +336,9 @@ impl Broker {
                 return Err(reason);
             }
         };
+        if mode == SubmitMode::Run && !view.auto_submit {
+            return Err("SSH commands are never submitted automatically. Approve it as text, then press Enter in the terminal.".to_string());
+        }
         let expires_at = (scope == ApprovalScope::TaskTarget)
             .then(|| now + ttl_ms.unwrap_or(600_000).min(3_600_000));
         self.authorize(operation_id, scope, mode, view.revision, expires_at);
@@ -563,8 +588,12 @@ impl Broker {
         let Some(authorization) = operation.authorization.clone() else {
             return reject(self, OperationStatus::Invalidated, "No valid authorization.".to_string(), changed);
         };
-        if !self.tasks.contains_key(&operation.task_id) {
+        let Some(task) = self.tasks.get(&operation.task_id) else {
             return reject(self, OperationStatus::Invalidated, "The Agent task has ended.".to_string(), changed);
+        };
+        // Checked again here: this is the last moment before bytes reach the terminal.
+        if !task.targets.contains(&operation.target) {
+            return reject(self, OperationStatus::Invalidated, TARGET_REMOVED.to_string(), changed);
         }
         if authorization.expires_at.is_some_and(|expires_at| expires_at <= now) {
             return reject(self, OperationStatus::Invalidated, "The approval expired.".to_string(), changed);
@@ -578,6 +607,13 @@ impl Broker {
         };
         if view.revision != authorization.revision {
             return reject(self, OperationStatus::Invalidated, "The terminal changed after approval.".to_string(), changed);
+        }
+        if authorization.mode == SubmitMode::Run && !view.auto_submit {
+            return reject(self, OperationStatus::Blocked, "SSH commands are never submitted automatically.".to_string(), changed);
+        }
+        // Anything written now would be appended to text already on the input line.
+        if view.interaction.source == StateSource::PendingInput {
+            return reject(self, OperationStatus::Blocked, "The terminal's input line has unsent text. Submit or clear it, then try again.".to_string(), changed);
         }
         let multi_line = operation.command.contains('\n');
         if multi_line && !view.bracketed_paste {
@@ -689,7 +725,6 @@ fn current_view(terminals: &dyn Terminals, target: &TerminalRef) -> Result<Targe
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interaction::StateSource;
     use std::cell::RefCell;
 
     struct Fake {
@@ -715,6 +750,7 @@ mod tests {
                 commands_finished: 0,
                 last_exit_code: None,
                 bracketed_paste: false,
+                auto_submit: true,
             };
             Self {
                 views: RefCell::new(sessions.iter().map(|id| ((*id).to_string(), view.clone())).collect()),
@@ -943,6 +979,97 @@ mod tests {
         broker.tick(&fake, 1100);
         assert_eq!(status(&broker, &id), OperationStatus::Staged);
         assert_eq!(fake.written(), [("b".to_string(), "uptime".to_string())]);
+    }
+
+    #[test]
+    fn ssh_style_targets_can_only_receive_text_for_a_person_to_submit() {
+        let (fake, mut broker) = fixture();
+        fake.update("b", |view| view.auto_submit = false);
+        let id = propose(&mut broker, &fake, "1", "uptime");
+        let error = broker
+            .approve(&fake, &id, ApprovalScope::Once, SubmitMode::Run, None, 1000)
+            .expect_err("run approval");
+        assert!(error.contains("never submitted"));
+        assert_eq!(status(&broker, &id), OperationStatus::PendingApproval);
+        broker.approve(&fake, &id, ApprovalScope::Once, SubmitMode::Stage, None, 1000).expect("approved");
+        broker.execute(&id, 1000).expect("queued");
+        broker.tick(&fake, 1100);
+        assert_eq!(status(&broker, &id), OperationStatus::Staged);
+        assert_eq!(fake.written(), [("b".to_string(), "uptime".to_string())]);
+    }
+
+    #[test]
+    fn a_grant_given_before_the_rule_applied_still_cannot_submit() {
+        let (fake, mut broker) = fixture();
+        let id = propose(&mut broker, &fake, "1", "uptime");
+        approve(&mut broker, &fake, &id);
+        broker.execute(&id, 1000).expect("queued");
+        fake.update("b", |view| view.auto_submit = false);
+        broker.tick(&fake, 1100);
+        assert_eq!(status(&broker, &id), OperationStatus::Blocked);
+        assert!(fake.written().is_empty());
+    }
+
+    #[test]
+    fn removing_a_target_voids_approved_and_queued_operations_at_once() {
+        let (fake, mut broker) = fixture();
+        fake.update("b", |view| view.interaction = interaction(InteractionState::Busy, StateSource::ShellIntegration));
+        let waiting = propose(&mut broker, &fake, "1", "one");
+        let approved = propose(&mut broker, &fake, "2", "two");
+        let queued = propose(&mut broker, &fake, "3", "three");
+        approve(&mut broker, &fake, &approved);
+        approve(&mut broker, &fake, &queued);
+        broker.execute(&queued, 1000).expect("queued");
+        broker.tick(&fake, 1050);
+        assert_eq!(status(&broker, &queued), OperationStatus::Queued);
+        let changed = broker.update_task("task", vec![], vec![], false).expect("updated");
+        assert_eq!(changed.len(), 3);
+        for id in [&waiting, &approved, &queued] {
+            assert_eq!(status(&broker, id), OperationStatus::Invalidated);
+        }
+        fake.update("b", |view| view.interaction = ready());
+        broker.tick(&fake, 1100);
+        assert!(fake.written().is_empty());
+    }
+
+    #[test]
+    fn a_running_command_survives_target_removal_but_nothing_new_follows_it() {
+        let (fake, mut broker) = fixture();
+        let running = propose(&mut broker, &fake, "1", "sleep 100");
+        approve(&mut broker, &fake, &running);
+        broker.execute(&running, 1000).expect("queued");
+        broker.tick(&fake, 1100);
+        broker.update_task("task", vec![], vec![], false).expect("updated");
+        assert_eq!(status(&broker, &running), OperationStatus::Running);
+        assert!(broker.propose(&fake, "task", "2", &reference("b"), "next", None, 1200).is_err());
+    }
+
+    #[test]
+    fn the_write_path_rechecks_the_target_itself() {
+        let (fake, mut broker) = fixture();
+        let id = propose(&mut broker, &fake, "1", "uptime");
+        approve(&mut broker, &fake, &id);
+        broker.execute(&id, 1000).expect("queued");
+        // Scope changed by a path that did not sweep the queue.
+        broker.tasks.get_mut("task").expect("task").targets.clear();
+        let mut changed = Vec::new();
+        broker.advance_queue(&fake, "b", 1100, &mut changed);
+        assert_eq!(status(&broker, &id), OperationStatus::Invalidated);
+        assert!(fake.written().is_empty());
+    }
+
+    #[test]
+    fn nothing_is_written_onto_unsent_input() {
+        for mode in [SubmitMode::Run, SubmitMode::Stage] {
+            let (fake, mut broker) = fixture();
+            fake.update("b", |view| view.interaction = interaction(InteractionState::Unknown, StateSource::PendingInput));
+            let id = propose(&mut broker, &fake, "1", "uptime");
+            broker.approve(&fake, &id, ApprovalScope::Once, mode, None, 1000).expect("approved");
+            broker.execute(&id, 1000).expect("queued");
+            broker.tick(&fake, 1100);
+            assert_eq!(status(&broker, &id), OperationStatus::Blocked);
+            assert!(fake.written().is_empty());
+        }
     }
 
     #[test]

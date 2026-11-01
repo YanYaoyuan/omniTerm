@@ -20,7 +20,10 @@ export function engineArguments(profile) {
     "history.persistence": tomlString("none"),
     model: tomlString(profile.model),
   };
-  if (profile.auth !== "engine-login") {
+  // Naming the provider keeps a login profile on OpenAI even if the user's engine config
+  // defaults to some other service, which would otherwise receive the terminal context.
+  if (profile.auth === "engine-login") overrides.model_provider = tomlString("openai");
+  else {
     Object.assign(overrides, {
       model_provider: tomlString(ENGINE_PROVIDER_ID),
       [`model_providers.${ENGINE_PROVIDER_ID}.name`]: tomlString(profile.name),

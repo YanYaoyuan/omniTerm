@@ -36,6 +36,35 @@ const waitForAsync = async (predicate, label) => {
 };
 const interaction = async (id) => (await host.request("workspace.list")).terminals.find((terminal) => terminal.ref.sessionId === id).interaction.state;
 
+// SSH is judged by session kind, so a plain shell stands in for the remote end here.
+async function verifySshStaging() {
+  const taskId = "ssh-staging";
+  const windows = process.platform === "win32";
+  const before = output.length;
+  const plan = await buildCommandPlan({ kind: "shell" }, { repositoryRoot, defaultCwd: repositoryRoot, env });
+  const { id } = await host.request("session.create", { executable: plan.executable, args: plan.args, cwd: plan.cwd, env: plan.env, kind: "ssh", title: "ssh-staging", connection: {} });
+  await host.request("session.start", { id });
+  await delay(1500);
+  await host.request("task.begin", { taskId, context: [], targets: [{ sessionId: id, epoch: 1 }] });
+  const propose = (callId, command) => host.request("operation.propose", { taskId, callId, terminal: id, command });
+  const command = printParts(["__OMNITERM_", "STAGED__"], windows);
+  const first = await propose("first", command);
+  await assert.rejects(host.request("operation.approve", { operationId: first.operationId, scope: "once", mode: "run" }), /never submitted/);
+  await host.request("operation.approve", { operationId: first.operationId, scope: "once", mode: "stage" });
+  await host.request("operation.execute", { operationId: first.operationId });
+  await waitFor(() => operations.get(first.operationId)?.status === "staged", "The command must be staged");
+  await delay(500);
+  assert.ok(!hasOutputLine(output.slice(before), "__OMNITERM_STAGED__"), "A staged command must not run");
+  const second = await propose("second", "printf second");
+  await host.request("operation.approve", { operationId: second.operationId, scope: "once", mode: "stage" });
+  await host.request("operation.execute", { operationId: second.operationId });
+  await waitFor(() => operations.get(second.operationId)?.status === "blocked", "Staged text must block what follows it");
+  await host.request("session.write", { id, data: "\r" });
+  await waitFor(() => hasOutputLine(output.slice(before), "__OMNITERM_STAGED__"), "Enter must submit the staged command");
+  assert.ok(!output.slice(before).includes("printf second"), "The second command must never join the first");
+  await host.request("session.close", { id });
+}
+
 const FINAL_OPERATION = ["blocked", "cancelled", "completed", "invalidated", "outcomeUnknown", "staged"];
 
 // A shell owning the foreground is not at a prompt: `read` must not receive a command, and a
@@ -189,6 +218,7 @@ try {
     await waitFor(() => stopped(started.pid), "Closing a session must stop its shell");
     assert.ok(stopped(running.pid), "An exited shell must be gone");
   }
+  await verifySshStaging();
   if (!windows) {
     const [major, minor] = execFileSync("/bin/bash", ["-c", "echo ${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}"], { encoding: "utf8" }).trim().split(" ").map(Number);
     await verifyReadiness("/bin/bash", ["--noprofile", "--norc", "-i"], major > 4 || (major === 4 && minor >= 4));

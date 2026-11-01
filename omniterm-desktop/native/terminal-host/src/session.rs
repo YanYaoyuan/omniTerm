@@ -183,6 +183,12 @@ impl Session {
         matches!(self.plan.kind.as_str(), "shell" | "ssh")
     }
 
+    /// A remote shell's state is only ever a report from across the link, and input can cross
+    /// it unseen, so SSH commands always wait for a person.
+    pub fn auto_submit(&self) -> bool {
+        self.plan.kind == "shell"
+    }
+
     pub fn descriptor(&self) -> serde_json::Value {
         let state = self.lock();
         let mut value = json!({
@@ -359,6 +365,12 @@ impl Session {
         // An Agent command can leave the shell at a continuation prompt as easily as a user's.
         if bytes.last() == Some(&b'\r') {
             note_submission(&mut state);
+            state.pending_input = false;
+        } else if bytes == b"\x03" {
+            state.pending_input = false;
+        } else {
+            // Staged text sits on the input line until a person submits or clears it.
+            state.pending_input = true;
         }
         send_input(&state, bytes)
     }
@@ -418,6 +430,7 @@ impl Session {
             commands_finished: state.commands_finished,
             last_exit_code: state.last_exit_code,
             bracketed_paste: state.screen.bracketed_paste(),
+            auto_submit: self.auto_submit(),
         }
     }
 
@@ -985,6 +998,28 @@ mod tests {
         session.write_user("answer\r", false).expect("written");
         session.lock().answered_at = Instant::now().checked_sub(IN_FLIGHT_WINDOW * 2);
         assert_eq!(feed(&session, PROMPT), ShellPhase::AtPrompt);
+    }
+
+    #[test]
+    fn staged_text_counts_as_unsent_input_until_it_is_submitted() {
+        let (session, _queue) = at_prompt();
+        session.write_agent(b"uptime").expect("written");
+        assert!(session.lock().pending_input);
+        let facts = session.view();
+        assert_eq!(facts.interaction.source, crate::interaction::StateSource::PendingInput);
+        session.write_user("\r", false).expect("written");
+        assert!(!session.lock().pending_input);
+        session.write_agent(b"more").expect("written");
+        session.write_agent(b"\x03").expect("written");
+        assert!(!session.lock().pending_input);
+    }
+
+    #[test]
+    fn only_local_shells_may_auto_submit() {
+        let plan = |kind: &str| Plan { kind: kind.to_string(), ..Plan::default() };
+        let auto = |kind| Session::new("s".to_string(), plan(kind), "n".to_string()).view().auto_submit;
+        assert!(auto("shell"));
+        assert!(!auto("ssh"));
     }
 
     #[test]

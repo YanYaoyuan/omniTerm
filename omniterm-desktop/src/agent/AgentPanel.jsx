@@ -17,7 +17,8 @@ function OperationCard({ entry, terminals, api, notify }) {
   const name = target ? terminalName(target) : `${operation.target.sessionId.slice(0, 8)}（已关闭）`;
   const pending = operation.status === "pendingApproval";
   const interaction = target?.interaction?.state ?? "unknown";
-  const canRun = interaction === "ready";
+  const canRun = interaction === "ready" && target?.autoSubmit === true;
+  const manualReason = target?.autoSubmit === false ? "SSH 终端不会自动提交：批准后命令只输入到终端，由你检查后按回车。" : canRun ? "" : "无法确认空闲，只能输入后由你手动回车。";
   const act = (task) => Promise.resolve().then(task).catch((error) => notify(error.message));
   const approve = (scope, mode) => act(() => api.approveOperation({ operationId: operation.operationId, scope, mode, ...(scope === "taskTarget" ? { ttlMs: GRANT_MS } : {}) }));
   return <div className={`operation-card status-${operation.status}`}>
@@ -27,7 +28,7 @@ function OperationCard({ entry, terminals, api, notify }) {
     {operation.reason && <p className="operation-reason">{operation.reason}</p>}
     {operation.exitCode !== null && operation.exitCode !== undefined && <p className="operation-reason">退出码 {operation.exitCode}</p>}
     {pending && <>
-      <div className="operation-state">终端状态：{INTERACTION_LABELS[interaction] ?? interaction}{!canRun && "。无法确认空闲，只能输入后由你手动回车。"}</div>
+      <div className="operation-state">终端状态：{INTERACTION_LABELS[interaction] ?? interaction}{manualReason && `。${manualReason}`}</div>
       <div className="operation-actions">
         {canRun && <button className="button primary" onClick={() => approve("once", "run")}><Check size={14} />批准执行</button>}
         {canRun && <button className="button secondary" title="10 分钟内，本任务发往这个终端的命令不再询问" onClick={() => approve("taskTarget", "run")}><ShieldCheck size={14} />对此目标放行 10 分钟</button>}
@@ -60,7 +61,7 @@ function TerminalPicker({ terminals, context, targets, onContext, onTargets, onA
       const id = terminal.ref.sessionId;
       const Icon = terminal.kind === "shell" ? TerminalWindow : HardDrives;
       return <div className="picker-row" key={id}>
-        <div className="picker-name" title={`${terminal.tab ? `标签 ${terminal.tab.index}${terminal.pane ? ` · 窗格 ${terminal.pane}` : ""}` : "位置未知"} · ${terminal.shortId}`}><Icon size={14} /><span><strong>{terminal.label}</strong><small>{terminal.connection.configured.host ?? (terminal.cwd.value || "目录未知")} · {INTERACTION_LABELS[terminal.interaction.state] ?? "未知"}{terminal.focused ? " · 当前焦点" : ""}</small></span>{terminal.interaction.state === "unknown" && (terminal.kind === "ssh" || (terminal.kind === "shell" && platform !== "win32")) && <button className="picker-link" title="向该终端输入一段启用就绪标记的脚本（zsh 或 bash 4.4+），由你按回车确认。启用后，已批准的命令才能自动提交。" onClick={() => onStage(terminal)}>启用就绪标记</button>}</div>
+        <div className="picker-name" title={`${terminal.tab ? `标签 ${terminal.tab.index}${terminal.pane ? ` · 窗格 ${terminal.pane}` : ""}` : "位置未知"} · ${terminal.shortId}`}><Icon size={14} /><span><strong>{terminal.label}</strong><small>{terminal.connection.configured.host ?? (terminal.cwd.value || "目录未知")} · {INTERACTION_LABELS[terminal.interaction.state] ?? "未知"}{terminal.focused ? " · 当前焦点" : ""}</small></span>{terminal.interaction.state === "unknown" && (terminal.kind === "ssh" || (terminal.kind === "shell" && platform !== "win32")) && <button className="picker-link" title="向该终端输入一段启用就绪标记的脚本（zsh 或 bash 4.4+），由你按回车确认。启用后可以识别忙碌和未完成的输入；本地 shell 中已批准的命令才能自动提交，SSH 始终由你按回车。" onClick={() => onStage(terminal)}>启用就绪标记</button>}</div>
         <input type="checkbox" aria-label={`将 ${terminal.label} 加入上下文`} checked={context.has(id)} onChange={() => onContext(id)} />
         <input type="radio" name="agent-target" aria-label={`将 ${terminal.label} 设为执行目标`} disabled={!executable(terminal)} checked={targets.has(id)} onChange={() => onTargets(id)} />
       </div>;
@@ -105,7 +106,7 @@ export const AgentPanel = forwardRef(function AgentPanel({ api, info, visible, s
   }, [terminals]);
   // Until the user chooses a scope, it follows the focused terminal. Execution never does.
   useEffect(() => {
-    if (!contextTouched.current && focusedId && terminals.some((terminal) => terminal.ref.sessionId === focusedId)) setContext(new Set([focusedId]));
+    if (!contextTouched.current && focusedId && terminals.some((terminal) => terminal.ref.sessionId === focusedId)) setContext((ids) => ids.size === 1 && ids.has(focusedId) ? ids : new Set([focusedId]));
   }, [focusedId, terminals]);
   useEffect(() => { log.current?.scrollTo({ top: log.current.scrollHeight }); }, [conversation.entries]);
   useEffect(() => { if (profile) localStorage.setItem(PROFILE_KEY, profile.id); }, [profile]);
@@ -156,6 +157,12 @@ export const AgentPanel = forwardRef(function AgentPanel({ api, info, visible, s
     } finally { setSending(false); }
   }
   const scopeRefs = () => ({ context: refsFor(terminals, context), targets: refsFor(terminals, targets) });
+  // Scope changes apply at once, so removing a target voids what is waiting for it.
+  const scopeSynced = useRef(false);
+  useEffect(() => {
+    if (!scopeSynced.current) { scopeSynced.current = true; return; }
+    api.agentPause({ paused, context: refsFor(terminals, context), targets: refsFor(terminals, targets) }).catch((error) => notify(error.message));
+  }, [context, targets]);
   const togglePause = async () => {
     const next = !paused;
     setPaused(next);

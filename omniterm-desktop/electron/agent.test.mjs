@@ -63,10 +63,12 @@ test("engine launches keep every built-in path off and the key out of argv", asy
   assert.deepEqual(child.requests.map(({ method }) => method), ["initialize", "initialized"]);
 });
 
-test("existing engine logins do not define a provider", () => {
+test("existing engine logins are pinned to OpenAI and define no provider", () => {
   const args = engineArguments({ ...profile, auth: "engine-login" });
   assert.ok(!args.join(" ").includes("model_providers"));
+  assert.ok(args.includes('model_provider="openai"'));
   assert.ok(args.includes("features.dynamic_tools_only=true"));
+  assert.ok(engineArguments(profile).includes('model_provider="omniterm"'));
 });
 
 test("threads run with no environment, no built-in approvals, and only client tools", async () => {
@@ -175,6 +177,41 @@ test("execution waits for the user's decision, not for the model", async () => {
   assert.equal(finished, false);
   for (const listener of [...listeners]) listener({ operationId: "op", status: "denied" });
   assert.deepEqual(await running, { operation: { status: "completed" } });
+  assert.equal(listeners.size, 0);
+});
+
+test("an operation that ends before the execute response is not missed", async () => {
+  const listeners = new Set();
+  const notify = (operation) => { for (const listener of [...listeners]) listener(operation); };
+  const host = brokerHost();
+  const request = host.request;
+  host.request = async (method, params) => {
+    if (method !== "operation.execute") return request(method, params);
+    notify({ operationId: "op", status: "completed" });
+    return { status: "queued" };
+  };
+  const runner = new ToolRunner({ host, maxWaitMs: 200, operations: (listener) => { listeners.add(listener); return () => listeners.delete(listener); } });
+  const started = Date.now();
+  await runner.run("task", "c", "terminal_execute", { operationId: "op" });
+  assert.ok(Date.now() - started < 150, "must not wait for the timeout");
+  assert.equal(listeners.size, 0);
+});
+
+test("a final status in the execute response itself ends the wait", async () => {
+  const listeners = new Set();
+  const host = brokerHost();
+  const request = host.request;
+  host.request = async (method, params) => method === "operation.execute" ? { status: "staged" } : request(method, params);
+  const runner = new ToolRunner({ host, operations: (listener) => { listeners.add(listener); return () => listeners.delete(listener); } });
+  assert.deepEqual(await runner.run("task", "c", "terminal_execute", { operationId: "op" }), { operation: { status: "completed" } });
+  assert.equal(listeners.size, 0);
+});
+
+test("a failed execute request leaves no listener behind", async () => {
+  const listeners = new Set();
+  const host = { request: async () => { throw new Error("That operation belongs to another task."); } };
+  const runner = new ToolRunner({ host, operations: (listener) => { listeners.add(listener); return () => listeners.delete(listener); } });
+  await assert.rejects(runner.run("task", "c", "terminal_execute", { operationId: "op" }), /another task/);
   assert.equal(listeners.size, 0);
 });
 

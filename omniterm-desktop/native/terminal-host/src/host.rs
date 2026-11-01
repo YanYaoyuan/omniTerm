@@ -351,6 +351,7 @@ impl Host {
                 "lastCommand": state.commands.back(),
                 "contextSelected": shared,
                 "executionTarget": targets.contains(&reference),
+                "autoSubmit": session.auto_submit(),
                 "unknown": unknown,
             })
         };
@@ -605,7 +606,8 @@ impl Host {
             }
             "task.update" => {
                 let TaskParams { task_id, context, targets, paused } = parse(params)?;
-                self.broker().update_task(&task_id, context, targets, paused)?;
+                let changed = self.broker().update_task(&task_id, context, targets, paused)?;
+                self.publish(changed);
                 Ok(json!(true))
             }
             "task.cancel" => {
