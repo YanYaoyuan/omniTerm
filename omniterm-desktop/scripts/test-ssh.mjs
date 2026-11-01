@@ -25,17 +25,23 @@ copyFileSync(file("client.pub"), file("authorized"));
 writeFileSync(file("config"), `Port ${SSHD_PORT}\nListenAddress 127.0.0.1\nHostKey ${file("host")}\nAuthorizedKeysFile ${file("authorized")}\nStrictModes no\nPasswordAuthentication no\nUsePAM no\nPidFile ${file("pid")}\nLogLevel ERROR\n`);
 const server = spawn(sshd, ["-D", "-f", file("config"), "-E", file("log")], { stdio: "ignore" });
 
-// Forwards in order, holding each chunk for the current latency of its direction.
+// One queue and one timer per direction. A timer per chunk could fire out of order, and a single
+// reordered chunk fails SSH's integrity check and kills the connection.
 function createProxy() {
-  const state = { up: 0, down: 0, holdDown: false, held: [], sockets: new Set() };
+  const state = { up: 0, down: 0, holdDown: false, sockets: new Set(), queues: new Set() };
   const relay = (from, to, direction) => {
-    let last = 0;
+    const queue = [];
+    let timer = null;
+    const pump = () => {
+      timer = null;
+      if (direction === "down" && state.holdDown) return;
+      while (queue.length && queue[0].due <= Date.now()) { const { chunk } = queue.shift(); if (!to.destroyed) to.write(chunk); }
+      if (queue.length) timer = setTimeout(pump, queue[0].due - Date.now());
+    };
+    state.queues.add({ direction, queue, pump: () => { if (timer === null) pump(); } });
     from.on("data", (chunk) => {
-      const forward = () => { if (!to.destroyed) to.write(chunk); };
-      if (direction === "down" && state.holdDown) { state.held.push(forward); return; }
-      const due = Math.max(Date.now() + state[direction], last);
-      last = due;
-      setTimeout(forward, due - Date.now());
+      queue.push({ due: Date.now() + state[direction], chunk });
+      if (timer === null) pump();
     });
   };
   const listener = net.createServer((client) => {
@@ -44,8 +50,8 @@ function createProxy() {
     relay(client, upstream, "up");
     relay(upstream, client, "down");
   });
-  state.release = () => { state.holdDown = false; for (const forward of state.held.splice(0)) forward(); };
-  state.disconnect = () => { for (const socket of state.sockets) socket.destroy(); };
+  state.release = () => { state.holdDown = false; for (const { pump } of state.queues) pump(); };
+  state.disconnect = () => { for (const { queue } of state.queues) queue.length = 0; state.holdDown = false; for (const socket of state.sockets) socket.destroy(); };
   state.listen = () => new Promise((resolve) => listener.listen(0, "127.0.0.1", () => resolve(listener.address().port)));
   state.close = () => listener.close();
   return state;
@@ -255,8 +261,6 @@ async function disconnect(shellName, shellArgs, proxy, port) {
     const mark = marker();
     const operationId = await a.run(printMark(mark));
     await delay(300);
-    proxy.held.length = 0;
-    proxy.holdDown = false;
     proxy.disconnect();
     await until(() => exits.has(a.id), "the session must end");
     assert.ok(["blocked", "invalidated"].includes(await a.finished(operationId, 9000)));
