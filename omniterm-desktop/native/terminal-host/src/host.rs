@@ -161,6 +161,17 @@ struct ProposeParams {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ProposeInputParams {
+    task_id: String,
+    call_id: String,
+    terminal: String,
+    text: String,
+    #[serde(default)]
+    append_enter: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct OperationParams {
     operation_id: String,
     /// Set for calls that originate from the model: a task only reaches its own operations.
@@ -671,6 +682,15 @@ impl Host {
                 let target = self.resolve(&terminal)?;
                 let mut broker = self.broker();
                 let operation = broker.propose(self, &task_id, &call_id, &target, &command, timeout_ms, now())?;
+                drop(broker);
+                self.outbox.event("operation.update", json!(operation));
+                Ok(json!(operation))
+            }
+            "operation.proposeInput" => {
+                let ProposeInputParams { task_id, call_id, terminal, text, append_enter } = parse(params)?;
+                let target = self.resolve(&terminal)?;
+                let mut broker = self.broker();
+                let operation = broker.propose_input(self, &task_id, &call_id, &target, &text, append_enter, now())?;
                 drop(broker);
                 self.outbox.event("operation.update", json!(operation));
                 Ok(json!(operation))

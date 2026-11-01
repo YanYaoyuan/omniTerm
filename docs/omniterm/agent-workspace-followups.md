@@ -56,6 +56,8 @@ The widget runs inside the line editor, so a reply proves that the editor on tha
 
 ## 2. Authorized interaction with programs running in a terminal
 
+Status: **implemented** (branch `feat/terminal-program-input`). The original notes follow.
+
 The Agent only runs shell commands at a shell prompt. Asked to send instructions to another Agent in a terminal, the full-screen guard correctly blocked it. PR #5 states this limit on the card and tells the model, but the capability doesn't exist.
 
 Sending text to an interactive program is a different operation from executing a shell command, and needs:

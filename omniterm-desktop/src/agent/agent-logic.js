@@ -1,7 +1,7 @@
 // Pure state for the Agent panel, kept free of JSX so tests can import it.
 
 export const OPERATION_LABELS = {
-  pendingApproval: "等待批准", approved: "已批准", queued: "排队中", running: "执行中", staged: "已输入，等待手动提交",
+  pendingApproval: "等待批准", approved: "已批准", queued: "排队中", running: "执行中", staged: "已输入，等待手动提交", delivered: "已发送给程序",
   completed: "已完成", denied: "已拒绝", cancelled: "已取消", invalidated: "已失效", blocked: "未发送", interrupted: "已中断",
   takenOver: "已由用户接管", outcomeUnknown: "结果未知",
 };
@@ -59,7 +59,10 @@ export function conversationReducer(state, event) {
 
 // Broker reasons are written for the model; these say what they mean to the person at the card.
 const BLOCK_REASONS = [
-  [/full-screen/, "目标终端正在运行全屏程序，命令没有发送。omniTerm Agent 目前只能在 shell 提示符执行命令，不能向编辑器、REPL 或终端内的其他 Agent 发送文本。"],
+  [/full-screen/, "目标终端正在运行全屏程序，shell 命令没有发送。如需向这个程序输入，请让 Agent 使用“发送给运行中的程序”。"],
+  [/not program input/, "终端在 shell 提示符，这不是程序输入，文本没有发送。"],
+  [/not sent with Enter/, "无法确认终端状态，它可能是 shell，所以没有发送。可以选择“只发送文本”。"],
+  [/the text was not sent/, "目标终端正在等待密码，文本没有发送。"],
   [/password/, "目标终端正在等待密码，命令没有发送。"],
   [/unsent text/, "终端输入行上还有未提交的内容，命令没有发送。请先按回车提交或按 Ctrl+C 清除。"],
   [/stayed busy/, "终端一直处于忙碌状态，命令没有发送。如果它已回到 shell 提示符，请在终端按一次回车后重试。"],

@@ -65,7 +65,7 @@ async function verifySshStaging() {
   await host.request("session.close", { id });
 }
 
-const FINAL_OPERATION = ["blocked", "cancelled", "completed", "invalidated", "outcomeUnknown", "staged"];
+const FINAL_OPERATION = ["blocked", "cancelled", "completed", "delivered", "invalidated", "outcomeUnknown", "staged"];
 
 // A shell owning the foreground is not at a prompt: `read` must not receive a command, and a
 // continuation prompt must not inherit the primary prompt before it.
@@ -175,6 +175,26 @@ async function verifyReadiness(executable, args, supportsMarks) {
   await send("yes\r");
   await delay(2500);
   await state("ready", "An answer long before the prompt must need no extra Enter");
+
+  // Program input goes to a running program, and only there.
+  const sendText = async (call, text, mode) => {
+    const { operationId } = await host.request("operation.proposeInput", { taskId, callId: call, terminal: id, text, appendEnter: mode === "run" });
+    await host.request("operation.approve", { operationId, scope: "once", mode });
+    await host.request("operation.execute", { operationId });
+    return finished(operationId, `Program input ${call}`);
+  };
+  const atPrompt = await sendText("at-prompt", "printf 'SHELL_%s\\n' RAN", "run");
+  assert.equal(atPrompt.status, "blocked", "Program input must never reach a shell prompt");
+  assert.ok(!recent().includes("SHELL_RAN"));
+  await send("cat\r");
+  await state("busy", "A running program must hold the terminal");
+  assert.equal((await sendText("typed", "partial", "stage")).status, "delivered");
+  assert.equal((await sendText("entered", " line", "run")).status, "delivered");
+  await waitFor(() => hasOutputLine(recent(), "partial line"), "The program must receive the line, and echo it back");
+  await send("\x04");
+  await delay(1700);
+  await send("\r");
+  await state("ready", "The shell must return after the program ends");
 
   await send("echo 'interrupted\r");
   await delay(200);
