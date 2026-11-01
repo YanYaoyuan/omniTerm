@@ -130,7 +130,7 @@ try {
   const before = await panels(app);
   assert.ok(before.sidebar.left < before.terminals.left && before.terminals.left < before.agent.left, "default order");
 
-  await app.drag(".agent-heading .panel-grip", ".pane-drop-target[data-panel=sidebar]", 0.05, 0.5);
+  await app.drag(".agent-pane .agent-heading .panel-grip", ".pane-drop-target[data-panel=sidebar]", 0.05, 0.5);
   const agentMoved = await panels(app);
   assert.ok(agentMoved.agent.right <= agentMoved.sidebar.left + 8, "the Agent panel docks left of the sidebar");
   step("the Agent panel moves");
