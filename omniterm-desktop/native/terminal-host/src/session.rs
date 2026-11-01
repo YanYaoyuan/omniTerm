@@ -50,8 +50,8 @@ const MAX_UNPARSED: usize = 1024 * 1024;
 const SKIM_AT: usize = MAX_UNPARSED + 512 * 1024;
 const BRACKETED_PASTE: &str = "\x1b[200~";
 const IN_FLIGHT_WINDOW: Duration = Duration::from_millis(1500);
-/// The integration snippet binds this many probe keys. Cycling them makes a late reply to an
-/// earlier probe recognizable, since the key sequence is all a line editor can identify.
+/// The integration snippet binds this many probe keys, and the key is all that identifies a
+/// probe to a line editor. So a key stays out of use while a reply to it could still arrive.
 const PROBE_KEYS: u8 = 16;
 const MAX_CSI_LENGTH: usize = 32;
 const MAX_OSC_LENGTH: usize = 4096;
@@ -117,7 +117,8 @@ pub struct State {
     /// The latest prompt said its line editor can answer a probe.
     handshake_capable: bool,
     handshake: Handshake,
-    pending_probe: u8,
+    /// Probes whose replies could still arrive, oldest first. The newest is the one in force.
+    outstanding_probes: VecDeque<u8>,
     next_probe: u8,
     pub observed_cwd: Option<String>,
     pub commands_finished: u64,
@@ -169,7 +170,7 @@ impl Session {
                 allow_auto_submit: false,
                 handshake_capable: false,
                 handshake: Handshake::Idle,
-                pending_probe: 0,
+                outstanding_probes: VecDeque::new(),
                 next_probe: 0,
                 observed_cwd: None,
                 commands_finished: 0,
@@ -412,9 +413,14 @@ impl Session {
         if interaction.state != InteractionState::Ready || !state.handshake_capable {
             return Err("The terminal cannot answer a readiness check right now.".to_string());
         }
-        let index = state.next_probe;
+        let Some(index) = (0..PROBE_KEYS)
+            .map(|step| (state.next_probe + step) % PROBE_KEYS)
+            .find(|index| !state.outstanding_probes.contains(index))
+        else {
+            return Err("Too many readiness checks went unanswered on this terminal.".to_string());
+        };
         state.next_probe = (index + 1) % PROBE_KEYS;
-        state.pending_probe = index;
+        state.outstanding_probes.push_back(index);
         state.handshake = Handshake::Pending;
         send_input(&state, format!("\x1b[579{index:02}~").as_bytes())
     }
@@ -698,7 +704,14 @@ fn apply_shell_event(state: &mut State, event: ShellEvent) {
         }
         // Accepted only for the probe in flight, and only if nothing has moved the shell since.
         ShellEvent::ProbeReply { trusted: true, index, empty, primary } => {
-            if state.handshake == Handshake::Pending && index == state.pending_probe {
+            let Some(position) = state.outstanding_probes.iter().position(|probe| *probe == index) else {
+                return;
+            };
+            // Input and output are both in order, so no probe sent earlier can be answered after
+            // this one. Their keys are free again, and only the newest probe can confirm.
+            let current = position + 1 == state.outstanding_probes.len();
+            state.outstanding_probes.drain(..=position);
+            if current && state.handshake == Handshake::Pending {
                 state.handshake = if empty && primary && state.phase == ShellPhase::AtPrompt {
                     Handshake::Confirmed
                 } else {
@@ -1153,6 +1166,80 @@ mod tests {
         session.send_probe().expect("first probe");
         session.send_probe().expect("second probe");
         assert_eq!(feed_handshake(&session, REPLY_0), Handshake::Pending);
+    }
+
+    fn reply(index: u8) -> Vec<u8> {
+        format!("\x1b]133;R;k=n;i={index};e=1;p=1\x07").into_bytes()
+    }
+
+    #[test]
+    fn a_key_is_never_reused_while_its_reply_could_still_arrive() {
+        let (session, queue) = ssh_at_prompt();
+        for _ in 0..PROBE_KEYS {
+            session.send_probe().expect("probe");
+            session.lock().handshake = Handshake::Idle;
+        }
+        let sent: Vec<Vec<u8>> = queue.try_iter().collect();
+        let unique: std::collections::HashSet<_> = sent.iter().collect();
+        assert_eq!(unique.len(), usize::from(PROBE_KEYS));
+        assert!(session.send_probe().is_err(), "the 17th check must refuse rather than reuse a key");
+        assert_eq!(session.lock().handshake, Handshake::Idle);
+        assert!(queue.try_recv().is_err());
+        assert_eq!(feed_handshake(&session, REPLY_0), Handshake::Idle, "an old reply confirms nothing");
+        assert!(session.dispatch(b"echo __STALE_REPLY__\r").is_err());
+        assert!(queue.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_reply_from_an_earlier_check_cannot_authorize_a_later_one() {
+        let (session, queue) = ssh_at_prompt();
+        session.send_probe().expect("first");
+        session.lock().handshake = Handshake::Idle;
+        session.send_probe().expect("second");
+        assert_eq!(feed_handshake(&session, &reply(0)), Handshake::Pending);
+        assert_eq!(feed_handshake(&session, &reply(1)), Handshake::Confirmed);
+        drop(queue);
+        let (session, _queue) = ssh_at_prompt();
+        session.send_probe().expect("first");
+        session.lock().handshake = Handshake::Idle;
+        session.send_probe().expect("second");
+        feed(&session, &reply(0));
+        assert!(session.dispatch(b"ls\r").is_err(), "the earlier reply must not allow a write");
+    }
+
+    #[test]
+    fn a_reply_after_a_key_is_freed_authorizes_nothing() {
+        let (session, _queue) = ssh_at_prompt();
+        session.send_probe().expect("probe");
+        feed(&session, &reply(0));
+        // The same key answered twice: only the first can match anything.
+        session.lock().handshake = Handshake::Idle;
+        session.send_probe().expect("next probe uses key 1");
+        assert_eq!(feed_handshake(&session, &reply(0)), Handshake::Pending);
+    }
+
+    #[test]
+    fn an_answered_probe_frees_every_key_sent_before_it() {
+        let (session, queue) = ssh_at_prompt();
+        for _ in 0..PROBE_KEYS {
+            session.send_probe().expect("probe");
+            session.lock().handshake = Handshake::Idle;
+        }
+        // The newest reply proves the older probes were lost, so they can't be answered later.
+        feed(&session, &reply(PROBE_KEYS - 1));
+        assert!(session.lock().outstanding_probes.is_empty());
+        let _ = queue.try_iter().count();
+        session.send_probe().expect("a key is free again");
+        assert_eq!(queue.try_recv().expect("probe"), b"\x1b[57900~");
+        assert_eq!(feed_handshake(&session, REPLY_0), Handshake::Confirmed);
+    }
+
+    #[test]
+    fn a_reply_to_a_key_never_sent_is_ignored() {
+        let (session, _queue) = ssh_at_prompt();
+        session.send_probe().expect("probe");
+        assert_eq!(feed_handshake(&session, &reply(9)), Handshake::Pending);
+        assert_eq!(session.lock().outstanding_probes.len(), 1);
     }
 
     #[test]
