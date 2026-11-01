@@ -1,6 +1,5 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useReducer, useRef, useState } from "react";
 import { Broom, Check, CircleNotch, Cpu, Crosshair, GearSix, HardDrives, Keyboard, Pause, PaperPlaneTilt, Play, Robot, ShieldCheck, SidebarSimple, Stack, Stop, TerminalWindow, WarningCircle, X } from "@phosphor-icons/react";
-import { MonitorView } from "./MonitorView.jsx";
 import { ProviderDialog } from "./ProviderDialog.jsx";
 import { INTERACTION_LABELS, OPEN_OPERATIONS, OPERATION_LABELS, WIRE_LABELS, citationParts, conversationReducer, operationReason, emptyConversation, executable, mentionMatches, mentionQuery, pruneSelection, refsFor, scopeSummary, terminalName } from "./agent-logic.js";
 
@@ -203,7 +202,6 @@ export const AgentPanel = forwardRef(function AgentPanel({ className = "", style
   };
   const stageIntegration = (terminal) => api.stageShellIntegration(terminal.ref.sessionId).then(() => { onActivate(terminal.ref.sessionId); notify("脚本已输入到该终端，确认后按回车启用。", "success"); }).catch((error) => notify(error.message));
 
-  const [view, setView] = useState("chat");
   const empty = !conversation.entries.length;
   const available = info.agent?.available;
   const targetName = useMemo(() => targets.size ? scopeSummary(terminals, targets) : "只读", [terminals, targets]);
@@ -214,9 +212,7 @@ export const AgentPanel = forwardRef(function AgentPanel({ className = "", style
       <button type="button" className="icon-button" title="新建对话（清除此前共享的内容）" aria-label="新建对话" onClick={newConversation}><Broom size={15} /></button>
       <button type="button" className="icon-button" title="隐藏 Agent 面板" aria-label="隐藏 Agent 面板" onClick={onHide}><SidebarSimple size={17} /></button>
     </div></div>
-    <div className="agent-views" role="tablist" aria-label="Agent 视图"><button role="tab" aria-selected={view === "chat"} className={view === "chat" ? "active" : ""} onClick={() => setView("chat")}>对话</button><button role="tab" aria-selected={view === "monitors"} className={view === "monitors" ? "active" : ""} onClick={() => setView("monitors")}>监控</button></div>
-    {view === "monitors" && <MonitorView api={api} terminals={terminals} platform={info.platform} notify={notify} />}
-    <div className="agent-chat" hidden={view !== "chat"}>
+    <div className="agent-chat">
     <div className="agent-scope">
       <button className="scope-chip" aria-expanded={pickerOpen} onClick={() => setPickerOpen(!pickerOpen)} title="选择共享给模型的终端"><Stack size={13} /><span><small>上下文</small>{contextName}</span></button>
       <button className={`scope-chip ${targets.size ? "armed" : ""}`} aria-expanded={pickerOpen} onClick={() => setPickerOpen(!pickerOpen)} title="选择允许提议命令的终端；切换焦点不会改变它"><Crosshair size={13} /><span><small>执行目标</small>{targetName}</span></button>

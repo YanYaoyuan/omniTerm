@@ -1,5 +1,7 @@
 # omniTerm Agent follow-ups
 
+`integration/agent-workspace` combines everything below for acceptance. Nothing is merged to `main`.
+
 Scoped follow-ups to [#4](https://github.com/YanYaoyuan/omniTerm/issues/4), from manual GUI testing of PR #5. **None of this is implemented or part of PR #5.** Each section can become its own issue.
 
 ## 1. Proposal: reliable approved execution over SSH
@@ -128,8 +130,9 @@ Maintainer scope: terminal panes, the Agent panel, workspace and file panels, an
 | Save and restore arrangement and sizes | Implemented |
 | Live state survives moves | Implemented by construction: panels and terminals are never remounted. `npm run test:gui` verifies it |
 | Reset the layout | Implemented, in the command palette |
-| A single terminal pane docked directly beside the Agent or workspace panel | **Outstanding.** Docking has two levels: panels at the top, and terminal panes inside the terminal area |
-| Monitoring panels | **Outstanding** until they exist; they join `DOCK_PANELS` |
+| A single terminal pane docked directly beside the Agent, workspace or monitoring panel, and back into a tab | Implemented on `integration/agent-workspace` |
+| The monitoring panel in the dock | Implemented on `integration/agent-workspace`. It opens by itself when the Agent proposes a monitor |
+| Dropping a pane onto the terminal area's own edge | **Outstanding.** Panes drop on other panes, panels, tabs or **+** |
 | Separate windows or floating panels | Not requested, not implemented |
 
-Terminal views and panels are rendered flat and positioned from their layout trees, so a move only changes layout state. A stored layout is used only if it holds every panel exactly once, so a layout saved by a build with different panels falls back to the default.
+A docked pane comes back as a tab after a restart, because its session doesn't survive one. Terminal views and panels are rendered flat and positioned from their layout trees, so a move only changes layout state. A stored layout is used only if it holds every panel exactly once, so a layout saved by a build with different panels falls back to the default.

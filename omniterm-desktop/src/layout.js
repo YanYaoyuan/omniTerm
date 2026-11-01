@@ -46,10 +46,18 @@ export function dropSide(x, y) {
 // Moves a pane within or between tabs. Only layout changes: sessions and their terminal views
 // are keyed by session ID, so a moved pane keeps its live session. A source tab left with no
 // panes goes away. `tabId` omitted means a new tab, from `createTab`.
-export function movePaneInTabs(tabs, sessionId, { tabId, target = null, side = "right" } = {}, createTab = null) {
+// A pane docked outside any tab says so with `detached`, and arrives in its destination.
+export function movePaneInTabs(tabs, sessionId, { tabId, target = null, side = "right", detached = false } = {}, createTab = null) {
   const source = tabs.find((tab) => paneIds(tab.root).includes(sessionId));
   const destination = tabId ? tabs.find((tab) => tab.id === tabId) : createTab?.(sessionId);
-  if (!source || !destination || target === sessionId) return tabs;
+  if (!destination || target === sessionId) return tabs;
+  if (!source) {
+    if (!detached) return tabs;
+    if (!destination.root) return [...tabs, { ...destination, root: pane(sessionId), focus: sessionId, zoomed: null }];
+    const anchor = target ?? (paneIds(destination.root).includes(destination.focus) ? destination.focus : paneIds(destination.root).at(-1));
+    if (!paneIds(destination.root).includes(anchor)) return tabs;
+    return tabs.map((tab) => tab.id === destination.id ? { ...tab, root: insertPane(tab.root, anchor, sessionId, side), focus: sessionId, zoomed: null } : tab);
+  }
   const sameTab = destination.id === source.id;
   const remaining = removePane(source.root, sessionId);
   const base = sameTab ? remaining : destination.root;
@@ -70,13 +78,30 @@ export function movePaneInTabs(tabs, sessionId, { tabId, target = null, side = "
 }
 
 // Panels share the pane tree, with the panel ID in place of a session ID. New panels join here.
-export const DOCK_PANELS = Object.freeze(["sidebar", "terminals", "agent"]);
+export const DOCK_PANELS = Object.freeze(["sidebar", "terminals", "agent", "monitor"]);
+const REQUIRED_PANELS = Object.freeze(["sidebar", "terminals", "agent"]);
+// A terminal pane docked outside the terminal area is a dock leaf of its own.
+const TERMINAL_PREFIX = "term:";
+export const dockedTerminal = (sessionId) => `${TERMINAL_PREFIX}${sessionId}`;
+export const dockedTerminals = (root) => paneIds(root).filter((id) => id.startsWith(TERMINAL_PREFIX)).map((id) => id.slice(TERMINAL_PREFIX.length));
 export const DOCK_KEY = "omniterm-dock-layout";
 
 export const defaultDock = () => ({
   type: "split", direction: "row", ratio: 0.18,
-  children: [pane("sidebar"), { type: "split", direction: "row", ratio: 0.72, children: [pane("terminals"), pane("agent")] }],
+  children: [pane("sidebar"), { type: "split", direction: "row", ratio: 0.72, children: [pane("terminals"), { type: "split", direction: "column", ratio: 0.6, children: [pane("agent"), pane("monitor")] }] }],
 });
+
+// Terminal leaves aren't saved: their sessions don't outlive the app.
+export function storableDock(root) {
+  return dockedTerminals(root).reduce((node, sessionId) => removePane(node, dockedTerminal(sessionId)), root);
+}
+
+// Drops terminal leaves whose session has gone.
+export function pruneDock(root, sessionIds) {
+  const live = new Set(sessionIds);
+  const stale = dockedTerminals(root).filter((id) => !live.has(id));
+  return stale.length ? stale.reduce((node, id) => removePane(node, dockedTerminal(id)), root) : root;
+}
 
 export function moveDockPanel(root, id, target, side) {
   if (id === target) return root;
@@ -109,7 +134,20 @@ export function parseDock(raw, panels = DOCK_PANELS) {
   const root = clean(data, 0);
   if (!root) return null;
   const ids = paneIds(root);
-  return ids.length === panels.length && panels.every((panel) => ids.includes(panel)) ? root : null;
+  if (ids.length !== new Set(ids).size || !REQUIRED_PANELS.every((panel) => ids.includes(panel))) return null;
+  // A layout saved before a panel existed keeps its arrangement and gains the new panel.
+  return panels.filter((panel) => !ids.includes(panel)).reduce((node, panel) => insertPane(node, "agent", panel, "bottom"), root);
+}
+
+// Takes a pane out of the tabs so it can dock elsewhere. An emptied tab goes away.
+export function takePaneFromTabs(tabs, sessionId) {
+  return tabs.flatMap((tab) => {
+    if (!paneIds(tab.root).includes(sessionId)) return [tab];
+    const root = removePane(tab.root, sessionId);
+    if (!root) return [];
+    const ids = paneIds(root);
+    return [{ ...tab, root, focus: ids.includes(tab.focus) ? tab.focus : ids[0], zoomed: tab.zoomed === sessionId ? null : tab.zoomed }];
+  });
 }
 
 export function removePane(node, target) {

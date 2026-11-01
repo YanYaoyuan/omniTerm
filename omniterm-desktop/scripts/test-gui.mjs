@@ -31,11 +31,21 @@ async function launch() {
   const child = spawn(electron, [root, `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, "--no-sandbox", "--disable-gpu"], { env, stdio: ["ignore", "ignore", "pipe"] });
   let stderr = "";
   child.stderr.on("data", (chunk) => { stderr = (stderr + chunk).slice(-2000); });
+  const session = await attach(port, "index.html", () => { if (child.exitCode !== null) throw Object.assign(new Error(`Electron exited with ${child.exitCode}: ${stderr}`), { fatal: true }); });
+  const close = async () => {
+    session.socket.close();
+    child.kill();
+    await new Promise((resolve) => { child.once("exit", resolve); setTimeout(resolve, 5000); });
+  };
+  return { ...session, close };
+}
+
+async function attach(port, page, check = () => {}) {
   const target = await until(async () => {
-    if (child.exitCode !== null) throw Object.assign(new Error(`Electron exited with ${child.exitCode}: ${stderr}`), { fatal: true });
+    check();
     const pages = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-    return pages.find(({ type, url }) => type === "page" && url.includes("index.html"));
-  }, "the window");
+    return pages.find(({ type, url }) => type === "page" && url.includes(page));
+  }, `the ${page} window`);
   const socket = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });
   const pending = new Map();
@@ -57,12 +67,7 @@ async function launch() {
     if (exceptionDetails) throw new Error(exceptionDetails.exception?.description ?? exceptionDetails.text);
     return result.value;
   };
-  const close = async () => {
-    socket.close();
-    child.kill();
-    await new Promise((resolve) => { child.once("exit", resolve); setTimeout(resolve, 5000); });
-  };
-  return { send, run, close };
+  return { send, run, socket, port, close: async () => socket.close() };
 }
 
 const client = (app) => {
@@ -99,7 +104,7 @@ const client = (app) => {
 };
 
 const step = (name) => console.log(`PASS  ${name}`);
-const panels = async (app) => Object.fromEntries(await Promise.all(Object.entries({ agent: ".agent-pane", sidebar: ".sidebar", terminals: ".main-workspace" }).map(async ([name, selector]) => [name, await app.rect(selector)])));
+const panels = async (app) => Object.fromEntries(await Promise.all(Object.entries({ agent: ".agent-pane", sidebar: ".sidebar", terminals: ".main-workspace", monitor: ".monitor-panel" }).map(async ([name, selector]) => [name, await app.rect(selector)])));
 
 let app = client(await launch());
 try {
@@ -144,6 +149,32 @@ try {
   assert.notDeepEqual(panesAfter, panesBefore, "the panes must stack instead of sitting side by side");
   step("a terminal pane moves");
 
+  // The monitoring panel docks like any other.
+  await app.run(`[...document.querySelectorAll(".titlebar-button")].find((button) => button.textContent.includes("监控")).click()`);
+  await until(async () => (await app.rect(".monitor-panel")).width > 0, "the monitoring panel");
+  await app.drag(".monitor-panel .panel-grip", ".pane-drop-target[data-panel=sidebar]", 0.95, 0.5);
+  const monitorMoved = await app.rect(".monitor-panel");
+  const sidebarNow = await app.rect(".sidebar");
+  assert.ok(monitorMoved.left >= sidebarNow.right - 8, "the monitoring panel docks right of the sidebar");
+  step("the monitoring panel moves");
+
+  // A single terminal pane docks beside the Agent panel and comes back, as the same process.
+  await app.drag(".terminal-view.is-visible .pane-grip", ".pane-drop-target[data-panel=agent]", 0.5, 0.95);
+  const dockedView = await app.run(`[...document.querySelectorAll(".terminal-view.is-visible")].map((view) => { const box = view.getBoundingClientRect(); return { left: box.left, top: box.top, right: box.right }; })`);
+  const agentNow = await app.rect(".agent-pane");
+  assert.ok(dockedView.some(({ top, left }) => top >= agentNow.bottom - 8 && left < agentNow.right), "a terminal pane docks below the Agent panel");
+  await until(async () => (await app.terminals()).filter(({ tab }) => tab?.id === "docked").length === 1, "the host must see the docked pane");
+  step("a terminal pane docks beside the Agent panel");
+  await app.screenshot("3-terminal-docked");
+  assert.equal(await app.shellPid(id, "DOCKED"), pid, "the first terminal is the same process");
+  assert.equal(await app.shellPid(second, "DOCKEDTWO"), secondPid, "the second terminal is the same process");
+
+  const undocked = await app.run(`(() => { const views = [...document.querySelectorAll(".terminal-view.is-visible")]; const agent = document.querySelector(".agent-pane").getBoundingClientRect(); const view = views.find((item) => item.getBoundingClientRect().top >= agent.bottom - 8); view.querySelector(".pane-grip").setAttribute("data-docked", "1"); return views.length; })()`);
+  assert.equal(undocked, 2);
+  await app.drag("[data-docked='1']", ".tab", 0.5, 0.5);
+  await until(async () => (await app.terminals()).every(({ tab }) => tab?.id !== "docked"), "the pane must return to its tab");
+  step("a docked terminal pane returns to a tab");
+
   const divider = await app.rect(".dock-divider.row");
   // Away from the middle, where this divider meets the horizontal one.
   const [x, y] = [divider.left + divider.width / 2, divider.top + divider.height / 4];
@@ -174,9 +205,23 @@ try {
   await until(() => app.run(`Boolean(document.querySelector(".agent-pane.is-visible"))`), "the Agent panel");
   await delay(600);
   const restored = await panels(app);
-  for (const name of ["agent", "sidebar", "terminals"]) for (const edge of ["left", "top", "width", "height"]) assert.ok(Math.abs(restored[name][edge] - resized[name][edge]) < 3, `${name} ${edge}: ${restored[name][edge]} vs ${resized[name][edge]}`);
+  for (const name of ["agent", "sidebar", "terminals", "monitor"]) for (const edge of ["left", "top", "width", "height"]) assert.ok(Math.abs(restored[name][edge] - resized[name][edge]) < 3, `${name} ${edge}: ${restored[name][edge]} vs ${resized[name][edge]}`);
   step("the arrangement and sizes are restored after reopening");
-  await app.screenshot("4-reopened");
+  await app.screenshot("5-reopened");
+
+  // The process window lists real processes, and can't reach a terminal.
+  await app.run(`window.omniterm.openProcessWindow("local")`);
+  const processPage = client(await attach(app.port, "process.html"));
+  await until(() => processPage.run(`document.querySelectorAll(".process-table tbody tr").length > 3`), "the process list");
+  await processPage.run(`document.querySelector(".process-table tbody tr").click()`);
+  await until(() => processPage.run(`Boolean(document.querySelector(".process-detail button"))`), "the selected process");
+  await processPage.screenshot("6-process-window");
+  const refused = await processPage.run(`Promise.allSettled([window.omniterm.writeSession({ id: "x", data: "y" }), window.omniterm.approveOperation({}), window.omniterm.monitorApprove("x"), window.omniterm.providerState()]).then((results) => results.map(({ status, reason }) => status + ":" + (reason?.message ?? "")))`);
+  for (const result of refused) assert.match(result, /^rejected:This window cannot make that request/);
+  await processPage.run(`document.querySelector(".process-detail button").click()`);
+  await until(() => processPage.run(`document.querySelector(".process-summary:last-child")?.textContent.includes("监控") ?? false`), "the monitor must start");
+  await until(async () => (await app.run("window.omniterm.monitorList()")).some(({ status, action }) => status === "running" && !action), "a read-only monitor in the main window");
+  step("the process window shows processes, starts a read-only monitor and reaches nothing else");
   console.log(`\nPASS: dockable workspace. Screenshots in ${artifacts}`);
 } finally {
   await app.close().catch(() => {});

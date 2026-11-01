@@ -515,11 +515,7 @@ kbd { font-family: var(--mono); font-size: 10px; background: rgb(var(--ink) / 0.
 .agent-error details, .inline-error details { margin-top: 4px; font-size: 10px; color: var(--muted); }
 .agent-error pre, .inline-error pre { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 .operation-card.program-input { border-style: dashed; }
-.agent-views { display: flex; gap: 2px; padding: 4px 12px 0; flex-shrink: 0; }
-.agent-views button { padding: 3px 10px; font-size: 11px; color: var(--muted); background: none; border: 0; border-bottom: 2px solid transparent; }
-.agent-views button.active { color: var(--text-soft); border-bottom-color: var(--accent); }
 .agent-chat { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.agent-chat[hidden] { display: none; }
 .monitor-view { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 9px; font-size: 11px; }
 .monitor-card { border: 1px solid var(--border-strong); border-radius: 6px; padding: 8px 10px; display: flex; flex-direction: column; gap: 5px; }
 .monitor-card.status-pending { border-color: rgb(var(--accent-rgb) / 0.5); }
@@ -561,3 +557,5 @@ kbd { font-family: var(--mono); font-size: 10px; background: rgb(var(--ink) / 0.
 .panel-grip:hover { color: var(--text-soft); background: var(--surface-hover); }
 .sidebar-grip { display: flex; justify-content: flex-end; height: 16px; margin: -10px -6px 0 0; }
 .dock-divider { z-index: 5; }
+.monitor-panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--panel-soft); border-left: 1px solid var(--border-strong); }
+.workspace-layout > .terminal-view { z-index: 1; }
