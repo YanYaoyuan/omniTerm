@@ -146,9 +146,11 @@ try {
   const divider = await app.rect(".dock-divider.row");
   const [x, y] = [divider.left + divider.width / 2, divider.top + divider.height / 2];
   const widthBefore = (await panels(app)).agent.width;
-  await app.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
-  await app.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: x + 90, y, button: "left" });
-  await app.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: x + 90, y, button: "left", clickCount: 1 });
+  await app.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+  await app.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1 });
+  await app.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: x + 45, y, button: "left", buttons: 1 });
+  await app.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: x + 90, y, button: "left", buttons: 1 });
+  await app.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: x + 90, y, button: "left", buttons: 0, clickCount: 1 });
   await delay(300);
   const resized = await panels(app);
   assert.ok(Math.abs(resized.agent.width - widthBefore) > 40, "the docked region resizes");
