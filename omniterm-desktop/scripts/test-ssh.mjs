@@ -271,7 +271,7 @@ try {
   const shells = [["bash", ["/bin/bash", "--noprofile", "--norc", "-i"]]];
   const bashVersion = execFileSync("/bin/bash", ["-c", "echo ${BASH_VERSINFO[0]}${BASH_VERSINFO[1]}"], { encoding: "utf8" }).trim();
   if (Number(bashVersion) < 44) shells.length = 0;
-  const zsh = ["/bin/zsh", "/usr/bin/zsh"].find(existsSync);
+  const zsh = [process.env.OMNITERM_TEST_ZSH, "/bin/zsh", "/usr/bin/zsh"].filter(Boolean).find(existsSync);
   if (zsh) shells.push(["zsh", [zsh, "-f", "-i"]]);
   for (const [name, args] of shells) {
     for (const latency of [0, 250]) await scenarios(name, args, proxy, port, latency);
