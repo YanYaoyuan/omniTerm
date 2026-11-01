@@ -144,10 +144,9 @@ try {
   step("a terminal pane moves");
 
   const divider = await app.rect(".dock-divider.row");
-  const [x, y] = [divider.left + divider.width / 2, divider.top + divider.height / 2];
+  // Away from the middle, where this divider meets the horizontal one.
+  const [x, y] = [divider.left + divider.width / 2, divider.top + divider.height / 4];
   const widthBefore = (await panels(app)).agent.width;
-  await app.run(`window.__pointer = []; for (const type of ["pointerdown", "pointermove", "pointerup", "pointercancel"]) window.addEventListener(type, (event) => window.__pointer.push(type + "@" + Math.round(event.clientX) + ":" + event.buttons + ":" + String(event.target.className).slice(0, 30)), true)`);
-  const under = await app.run(`document.elementFromPoint(${x}, ${y})?.className`);
   await app.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
   await app.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1 });
   await app.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: x + 45, y, button: "left", buttons: 1 });
@@ -155,8 +154,7 @@ try {
   await app.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: x + 90, y, button: "left", buttons: 0, clickCount: 1 });
   await delay(300);
   const resized = await panels(app);
-  const pointer = await app.run("window.__pointer");
-  assert.ok(Math.abs(resized.agent.width - widthBefore) > 40, `the docked region resizes: ${widthBefore} to ${resized.agent.width}, divider ${JSON.stringify(divider)}, under ${under}, events ${pointer.join(" ")}`);
+  assert.ok(Math.abs(resized.agent.width - widthBefore) > 40, "the docked region resizes");
   step("docked regions resize");
   await app.screenshot("3-resized");
 
