@@ -117,6 +117,10 @@ API Key 配置使用独立的 `CODEX_HOME`，不读取用户的引擎配置；�
 | Windows 本地构建（维护者，`b3b9cf2`） | ConPTY、离线 V8、app-server 初始化与动态工具注册、打包验证 | 通过；未包含真实模型回合 |
 
 | 真实模型回合（维护者，`fc9467ce0` + 测试脚本修正） | Windows x64，GPT-6-Astra，现有 ChatGPT 登录，独立的引擎状态目录 | 4/4 通过：流式与连续两轮工具调用；拒绝后不执行；批准的命令只到达选定终端；取消结束回合并取消待批准命令。Windows 下走“输入后手动回车”，不证明本地自动提交。该结果来自修正后的测试副本，已提交的脚本需在包含修正的提交上重新运行 |
+| 完整验证（维护者，`372d88e7f`，未修改的脚本） | Windows x64：Rust 81 项；JS 120 项通过、8 项跳过；ConPTY 与打包验证 | 通过 |
+| 真实模型回合（维护者，`372d88e7f`，未修改的 `test:live`） | GPT-6-Astra，Responses，现有 ChatGPT 登录；未设置 `CODEX_SQLITE_HOME`，认证目录未替换或复制 | 4/4 通过。Windows 下批准的命令仍走“输入后回车” |
+
+维护者已确认 GUI 中的模型配置和调用可用，但这不代表全部 GUI 验收项完成。
 
 **未执行：** 新面板的完整手动验收（窗口启动和渲染已检查）；Qwen、Claude、Kimi、OpenRouter 与 OpenAI API Key
 认证（没有可用的密钥）；跨网络的真实 SSH 主机（经维护者决定跳过）；Windows 上的本地自动提交；macOS 与 Linux
@@ -128,7 +132,6 @@ Issue 的 A 批次（真包 app-server 回环）和 E 批次必须在这些环�
 
 合并前：
 
-- 在包含修正的提交上重新运行未修改的 `npm run test:live`，并记录提交、模型、认证方式和结果。
 - 完成面板手动验收（上下文与目标选择、发送、拒绝、批准与输入、手动提交、取消、撤回目标）。本轮手动测试的反馈已处理保存与错误提示，其余项目不视为已通过。
 
 #4 完成前：Qwen、Claude、Kimi、OpenRouter 与 OpenAI API Key；跨网络 SSH；macOS 与 Linux 的真实模型回合。
