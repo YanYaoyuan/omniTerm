@@ -43,8 +43,7 @@ export function ProcessWindow() {
   const chosen = processes.find(({ pid }) => pid === selected);
   async function attach() {
     try {
-      const { id } = await api.monitorCreate(monitorRequest(chosen, host));
-      await api.monitorApprove(id);
+      await api.startProcessMonitor(monitorRequest(chosen, host));
       setMessage(`已开始监控 ${chosen.command}，可在 omniTerm Agent 面板的“监控”中查看。`);
     } catch (failure) { setError(failure.message); }
   }

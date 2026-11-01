@@ -221,6 +221,15 @@ test("repeated sampling failures stop the task and alert", async () => {
   assert.ok(events.some(({ type, message }) => type === "monitor-alert" && message.includes("失败")));
 });
 
+test("a request with no action reaches no broker task, however it was asked for", async () => {
+  const { service, calls } = fixture(["exists=1\ncpu=90\n"]);
+  const { id, action: dropped } = service.propose({ ...request, action: null, proposedBy: "user" });
+  assert.equal(dropped, null);
+  await service.approve(id);
+  await settle();
+  assert.deepEqual(calls, []);
+});
+
 test("requests that cannot be honoured are refused up front", () => {
   const { service } = fixture();
   assert.throws(() => service.propose({ ...request, host: null }), /主机/);

@@ -84,9 +84,9 @@ function send(channel, payload) {
   if (window && !window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send(channel, payload);
 }
 
-// The process window sees host data and starts monitors. It has no path to a terminal, an
-// approval or a credential, whatever its renderer tries.
-const PROCESS_WINDOW_CHANNELS = new Set(["process-snapshot", "workspace-list", "monitor-list", "monitor-create", "monitor-approve", "monitor-stop"]);
+// The process window sees host data and starts read-only monitors. It has no path to a
+// terminal, an approval or a credential, whatever its renderer tries.
+const PROCESS_WINDOW_CHANNELS = new Set(["process-snapshot", "workspace-list", "process-monitor-start"]);
 
 function trustedSender(event, channel) {
   if (processWindow && !processWindow.isDestroyed() && event.sender === processWindow.webContents) {
@@ -153,6 +153,11 @@ let monitors;
     },
     "open-process-window": (host) => openProcessWindow(host),
     "process-snapshot": async (host) => parseProcessList(host === "local" ? await runLocalProbe(PROCESS_LIST_SCRIPT) : await remote.exec(host, PROCESS_LIST_SCRIPT)),
+    // Clicking the button is the approval, so this path can never carry an action.
+    "process-monitor-start": async (request) => {
+      const { id } = monitors.propose({ ...request, action: null, proposedBy: "user" });
+      return monitors.approve(id);
+    },
     "monitor-list": () => monitors.list(),
     "monitor-create": (request) => monitors.propose({ ...request, proposedBy: "user" }),
     "monitor-approve": (id) => monitors.approve(id),

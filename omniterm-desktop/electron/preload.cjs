@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld("omniterm", Object.freeze({
   allowAutoSubmit: (request) => invoke("omniterm:allow-auto-submit", request),
   openProcessWindow: (host) => invoke("omniterm:open-process-window", host),
   processSnapshot: (host) => invoke("omniterm:process-snapshot", host),
+  startProcessMonitor: (request) => invoke("omniterm:process-monitor-start", request),
   monitorList: () => invoke("omniterm:monitor-list"),
   monitorCreate: (request) => invoke("omniterm:monitor-create", request),
   monitorApprove: (id) => invoke("omniterm:monitor-approve", id),
