@@ -14,8 +14,13 @@ const DELTA_SCROLLBACK_LINES: usize = 20_000;
 /// observations about the terminal, never a source of permissions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShellEvent {
-    /// `input_clear` is the shell's own report that no input was queued when it drew the prompt.
-    PromptStart { trusted: bool, input_clear: bool },
+    /// `input_clear` is the shell's own report that no input was queued when it drew the prompt;
+    /// `handshake` says its line editor can answer a dispatch probe.
+    PromptStart { trusted: bool, input_clear: bool, handshake: bool },
+    /// A secondary prompt was drawn: the shell is inside an unfinished command.
+    ContinuationPrompt { trusted: bool },
+    /// The line editor's answer to a dispatch probe.
+    ProbeReply { trusted: bool, index: u8, empty: bool, primary: bool },
     CommandExecuted { trusted: bool },
     CommandFinished { trusted: bool, exit_code: Option<i32> },
     WorkingDirectory(String),
@@ -43,7 +48,25 @@ impl Observer {
             b'A' => ShellEvent::PromptStart {
                 trusted,
                 input_clear: params[2..].contains(&b"q=0".as_slice()),
+                handshake: params[2..].contains(&b"h=1".as_slice()),
             },
+            b'P' => ShellEvent::ContinuationPrompt { trusted },
+            b'R' => {
+                let Some(index) = params[2..]
+                    .iter()
+                    .find_map(|param| param.strip_prefix(b"i="))
+                    .and_then(|index| std::str::from_utf8(index).ok())
+                    .and_then(|index| index.parse().ok())
+                else {
+                    return;
+                };
+                ShellEvent::ProbeReply {
+                    trusted,
+                    index,
+                    empty: params[2..].contains(&b"e=1".as_slice()),
+                    primary: params[2..].contains(&b"p=1".as_slice()),
+                }
+            }
             b'C' => ShellEvent::CommandExecuted { trusted },
             b'D' => ShellEvent::CommandFinished {
                 trusted,
@@ -286,11 +309,27 @@ mod tests {
         assert_eq!(
             screen.take_events(),
             [
-                ShellEvent::PromptStart { trusted: true, input_clear: true },
-                ShellEvent::PromptStart { trusted: true, input_clear: false },
-                ShellEvent::PromptStart { trusted: false, input_clear: false },
+                ShellEvent::PromptStart { trusted: true, input_clear: true, handshake: false },
+                ShellEvent::PromptStart { trusted: true, input_clear: false, handshake: false },
+                ShellEvent::PromptStart { trusted: false, input_clear: false, handshake: false },
                 ShellEvent::CommandExecuted { trusted: false },
                 ShellEvent::CommandFinished { trusted: true, exit_code: Some(3) },
+            ]
+        );
+    }
+
+    #[test]
+    fn handshake_marks_decode_their_fields() {
+        let mut screen = ScreenModel::new(5, 40, "n");
+        screen.process(b"\x1b]133;A;k=n;q=0;h=1\x07\x1b]133;P;k=n\x07");
+        screen.process(b"\x1b]133;R;k=n;i=7;e=1;p=1\x07\x1b]133;R;i=7;e=1;p=1\x07\x1b]133;R;k=n;e=1\x07");
+        assert_eq!(
+            screen.take_events(),
+            [
+                ShellEvent::PromptStart { trusted: true, input_clear: true, handshake: true },
+                ShellEvent::ContinuationPrompt { trusted: true },
+                ShellEvent::ProbeReply { trusted: true, index: 7, empty: true, primary: true },
+                ShellEvent::ProbeReply { trusted: false, index: 7, empty: true, primary: true },
             ]
         );
     }

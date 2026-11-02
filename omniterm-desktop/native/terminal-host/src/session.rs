@@ -1,9 +1,11 @@
 //! One PTY session: process lifecycle, replay buffer, screen model and output delivery.
 
+use crate::broker::Handshake;
 use crate::broker::TargetView;
 use crate::interaction::Facts;
 use crate::interaction::Foreground;
 use crate::interaction::Interaction;
+use crate::interaction::InteractionState;
 use crate::interaction::ShellPhase;
 use crate::interaction::classify;
 use crate::protocol::Frame;
@@ -48,6 +50,9 @@ const MAX_UNPARSED: usize = 1024 * 1024;
 const SKIM_AT: usize = MAX_UNPARSED + 512 * 1024;
 const BRACKETED_PASTE: &str = "\x1b[200~";
 const IN_FLIGHT_WINDOW: Duration = Duration::from_millis(1500);
+/// The integration snippet binds this many probe keys, and the key is all that identifies a
+/// probe to a line editor. So a key stays out of use while a reply to it could still arrive.
+const PROBE_KEYS: u8 = 16;
 const MAX_CSI_LENGTH: usize = 32;
 const MAX_OSC_LENGTH: usize = 4096;
 
@@ -107,6 +112,14 @@ pub struct State {
     /// When Enter was last sent to a running command. Input can still be in flight when the
     /// shell checks for it, so a prompt arriving soon after cannot vouch for that input.
     answered_at: Option<Instant>,
+    /// The user allowed Agent commands to be submitted here once a handshake succeeds.
+    pub allow_auto_submit: bool,
+    /// The latest prompt said its line editor can answer a probe.
+    handshake_capable: bool,
+    handshake: Handshake,
+    /// Probes whose replies could still arrive, oldest first. The newest is the one in force.
+    outstanding_probes: VecDeque<u8>,
+    next_probe: u8,
     pub observed_cwd: Option<String>,
     pub commands_finished: u64,
     pub commands: VecDeque<CommandRecord>,
@@ -154,6 +167,11 @@ impl Session {
                 screen,
                 phase: ShellPhase::Unobserved,
                 answered_at: None,
+                allow_auto_submit: false,
+                handshake_capable: false,
+                handshake: Handshake::Idle,
+                outstanding_probes: VecDeque::new(),
+                next_probe: 0,
                 observed_cwd: None,
                 commands_finished: 0,
                 commands: VecDeque::new(),
@@ -184,9 +202,18 @@ impl Session {
     }
 
     /// A remote shell's state is only ever a report from across the link, and input can cross
-    /// it unseen, so SSH commands always wait for a person.
-    pub fn auto_submit(&self) -> bool {
-        self.plan.kind == "shell"
+    /// it unseen. SSH commands wait for a person unless they opted this terminal in and its
+    /// line editor can confirm each dispatch.
+    pub fn auto_submit(&self, state: &State) -> bool {
+        !self.requires_handshake() || (state.allow_auto_submit && state.handshake_capable)
+    }
+
+    pub fn requires_handshake(&self) -> bool {
+        self.plan.kind != "shell"
+    }
+
+    pub fn handshake_capable(&self, state: &State) -> bool {
+        state.handshake_capable
     }
 
     pub fn descriptor(&self) -> serde_json::Value {
@@ -345,6 +372,9 @@ impl Session {
         // Terminal-generated replies (cursor reports, focus events) are not user intent.
         if !reply {
             state.revision += 1;
+            // Anything typed after a probe is behind it in the queue, so its answer no longer
+            // describes the line the command would land on.
+            state.handshake = Handshake::Idle;
             // Pasted newlines stay in the input line until the user submits it.
             let pasted = data.starts_with(BRACKETED_PASTE);
             let submitted = !pasted && data.contains(['\r', '\n', '\u{3}']);
@@ -372,6 +402,41 @@ impl Session {
             // Staged text sits on the input line until a person submits or clears it.
             state.pending_input = true;
         }
+        send_input(&state, bytes)
+    }
+
+    /// Asks the line editor whether it is idle at an empty primary prompt. Terminal input is
+    /// first-in, first-out, so an answer proves everything sent earlier has been consumed.
+    pub fn send_probe(&self) -> Result<(), String> {
+        let mut state = self.lock();
+        let interaction = self.interaction(&mut state);
+        if interaction.state != InteractionState::Ready || !state.handshake_capable {
+            return Err("The terminal cannot answer a readiness check right now.".to_string());
+        }
+        let Some(index) = (0..PROBE_KEYS)
+            .map(|step| (state.next_probe + step) % PROBE_KEYS)
+            .find(|index| !state.outstanding_probes.contains(index))
+        else {
+            return Err("Too many readiness checks went unanswered on this terminal.".to_string());
+        };
+        state.next_probe = (index + 1) % PROBE_KEYS;
+        state.outstanding_probes.push_back(index);
+        state.handshake = Handshake::Pending;
+        send_input(&state, format!("\x1b[579{index:02}~").as_bytes())
+    }
+
+    /// Writes a command only if the handshake still holds, in one step with that check, so no
+    /// keystroke can land between them.
+    pub fn dispatch(&self, bytes: &[u8]) -> Result<(), String> {
+        let mut state = self.lock();
+        catch_up(&mut state);
+        if state.status != Status::Running || state.handshake != Handshake::Confirmed {
+            state.handshake = Handshake::Idle;
+            return Err("The readiness check no longer holds.".to_string());
+        }
+        state.handshake = Handshake::Idle;
+        note_submission(&mut state);
+        state.pending_input = false;
         send_input(&state, bytes)
     }
 
@@ -430,7 +495,9 @@ impl Session {
             commands_finished: state.commands_finished,
             last_exit_code: state.last_exit_code,
             bracketed_paste: state.screen.bracketed_paste(),
-            auto_submit: self.auto_submit(),
+            auto_submit: self.auto_submit(&state),
+            requires_handshake: self.requires_handshake(),
+            handshake: state.handshake,
         }
     }
 
@@ -621,7 +688,9 @@ fn apply_shell_event(state: &mut State, event: ShellEvent) {
         ShellEvent::WorkingDirectory(path) => state.observed_cwd = Some(path),
         // Unsigned marks may come from `cat` of a file; they never decide readiness. Only the
         // shell can see queued input, so readiness needs its explicit report that none is left.
-        ShellEvent::PromptStart { trusted: true, input_clear } => {
+        ShellEvent::PromptStart { trusted: true, input_clear, handshake } => {
+            state.handshake_capable = handshake;
+            state.handshake = Handshake::Idle;
             let in_flight = state.answered_at.take().is_some_and(|at| at.elapsed() < IN_FLIGHT_WINDOW);
             state.phase = if input_clear && !in_flight {
                 ShellPhase::AtPrompt
@@ -629,7 +698,29 @@ fn apply_shell_event(state: &mut State, event: ShellEvent) {
                 ShellPhase::Submitted
             };
         }
+        ShellEvent::ContinuationPrompt { trusted: true } => {
+            state.phase = ShellPhase::Submitted;
+            state.handshake = Handshake::Idle;
+        }
+        // Accepted only for the probe in flight, and only if nothing has moved the shell since.
+        ShellEvent::ProbeReply { trusted: true, index, empty, primary } => {
+            let Some(position) = state.outstanding_probes.iter().position(|probe| *probe == index) else {
+                return;
+            };
+            // Input and output are both in order, so no probe sent earlier can be answered after
+            // this one. Their keys are free again, and only the newest probe can confirm.
+            let current = position + 1 == state.outstanding_probes.len();
+            state.outstanding_probes.drain(..=position);
+            if current && state.handshake == Handshake::Pending {
+                state.handshake = if empty && primary && state.phase == ShellPhase::AtPrompt {
+                    Handshake::Confirmed
+                } else {
+                    Handshake::Idle
+                };
+            }
+        }
         ShellEvent::CommandExecuted { trusted: true } => {
+            state.handshake = Handshake::Idle;
             state.phase = ShellPhase::Running;
             state.command_started_at = Some(seq);
         }
@@ -1015,11 +1106,209 @@ mod tests {
     }
 
     #[test]
-    fn only_local_shells_may_auto_submit() {
+    fn ssh_needs_both_the_opt_in_and_a_capable_line_editor() {
         let plan = |kind: &str| Plan { kind: kind.to_string(), ..Plan::default() };
-        let auto = |kind| Session::new("s".to_string(), plan(kind), "n".to_string()).view().auto_submit;
-        assert!(auto("shell"));
-        assert!(!auto("ssh"));
+        let session = |kind| Session::new("s".to_string(), plan(kind), "n".to_string());
+        assert!(session("shell").view().auto_submit);
+        let ssh = session("ssh");
+        assert!(!ssh.view().auto_submit);
+        ssh.lock().allow_auto_submit = true;
+        assert!(!ssh.view().auto_submit, "the opt-in alone is not enough");
+        let mut state = ssh.lock();
+        ingest(&mut state, PROMPT_WITH_HANDSHAKE);
+        drop(state);
+        assert!(ssh.view().auto_submit);
+        let mut state = ssh.lock();
+        ingest(&mut state, PROMPT);
+        drop(state);
+        assert!(!ssh.view().auto_submit, "a later prompt without the capability revokes it");
+    }
+
+    /// A running SSH session at a prompt whose editor can answer probes.
+    fn ssh_at_prompt() -> (Session, mpsc::Receiver<Vec<u8>>) {
+        let session = Session::new("s".to_string(), Plan { kind: "ssh".to_string(), ..Plan::default() }, "n".to_string());
+        let (input, queue) = mpsc::channel();
+        {
+            let mut state = session.lock();
+            state.status = Status::Running;
+            state.writer = Some(input);
+            state.allow_auto_submit = true;
+            ingest(&mut state, PROMPT_WITH_HANDSHAKE);
+            catch_up(&mut state);
+        }
+        (session, queue)
+    }
+
+    const PROMPT_WITH_HANDSHAKE: &[u8] = b"\x1b]133;D;0;k=n\x07\x1b]133;A;k=n;q=0;h=1\x07$ ";
+    const REPLY_0: &[u8] = b"\x1b]133;R;k=n;i=0;e=1;p=1\x07";
+
+    fn feed_handshake(session: &Session, bytes: &[u8]) -> Handshake {
+        feed(session, bytes);
+        session.lock().handshake
+    }
+
+    #[test]
+    fn a_matching_reply_confirms_and_dispatch_consumes_it() {
+        let (session, queue) = ssh_at_prompt();
+        session.send_probe().expect("probe");
+        assert_eq!(queue.try_recv().expect("bytes"), b"\x1b[57900~");
+        assert_eq!(feed_handshake(&session, REPLY_0), Handshake::Confirmed);
+        session.dispatch(b"ls\r").expect("dispatched");
+        assert_eq!(queue.try_recv().expect("bytes"), b"ls\r");
+        assert_eq!(session.lock().phase, ShellPhase::Submitted);
+        assert!(session.dispatch(b"again\r").is_err(), "one reply authorizes one write");
+        assert!(queue.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_late_reply_to_an_earlier_probe_is_not_accepted() {
+        let (session, _queue) = ssh_at_prompt();
+        session.send_probe().expect("first probe");
+        session.send_probe().expect("second probe");
+        assert_eq!(feed_handshake(&session, REPLY_0), Handshake::Pending);
+    }
+
+    fn reply(index: u8) -> Vec<u8> {
+        format!("\x1b]133;R;k=n;i={index};e=1;p=1\x07").into_bytes()
+    }
+
+    #[test]
+    fn a_key_is_never_reused_while_its_reply_could_still_arrive() {
+        let (session, queue) = ssh_at_prompt();
+        for _ in 0..PROBE_KEYS {
+            session.send_probe().expect("probe");
+            session.lock().handshake = Handshake::Idle;
+        }
+        let sent: Vec<Vec<u8>> = queue.try_iter().collect();
+        let unique: std::collections::HashSet<_> = sent.iter().collect();
+        assert_eq!(unique.len(), usize::from(PROBE_KEYS));
+        assert!(session.send_probe().is_err(), "the 17th check must refuse rather than reuse a key");
+        assert_eq!(session.lock().handshake, Handshake::Idle);
+        assert!(queue.try_recv().is_err());
+        assert_eq!(feed_handshake(&session, REPLY_0), Handshake::Idle, "an old reply confirms nothing");
+        assert!(session.dispatch(b"echo __STALE_REPLY__\r").is_err());
+        assert!(queue.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_reply_from_an_earlier_check_cannot_authorize_a_later_one() {
+        let (session, queue) = ssh_at_prompt();
+        session.send_probe().expect("first");
+        session.lock().handshake = Handshake::Idle;
+        session.send_probe().expect("second");
+        assert_eq!(feed_handshake(&session, &reply(0)), Handshake::Pending);
+        assert_eq!(feed_handshake(&session, &reply(1)), Handshake::Confirmed);
+        drop(queue);
+        let (session, _queue) = ssh_at_prompt();
+        session.send_probe().expect("first");
+        session.lock().handshake = Handshake::Idle;
+        session.send_probe().expect("second");
+        feed(&session, &reply(0));
+        assert!(session.dispatch(b"ls\r").is_err(), "the earlier reply must not allow a write");
+    }
+
+    #[test]
+    fn a_reply_after_a_key_is_freed_authorizes_nothing() {
+        let (session, _queue) = ssh_at_prompt();
+        session.send_probe().expect("probe");
+        feed(&session, &reply(0));
+        // The same key answered twice: only the first can match anything.
+        session.lock().handshake = Handshake::Idle;
+        session.send_probe().expect("next probe uses key 1");
+        assert_eq!(feed_handshake(&session, &reply(0)), Handshake::Pending);
+    }
+
+    #[test]
+    fn an_answered_probe_frees_every_key_sent_before_it() {
+        let (session, queue) = ssh_at_prompt();
+        for _ in 0..PROBE_KEYS {
+            session.send_probe().expect("probe");
+            session.lock().handshake = Handshake::Idle;
+        }
+        // The newest reply proves the older probes were lost, so they can't be answered later.
+        feed(&session, &reply(PROBE_KEYS - 1));
+        assert!(session.lock().outstanding_probes.is_empty());
+        let _ = queue.try_iter().count();
+        session.send_probe().expect("a key is free again");
+        assert_eq!(queue.try_recv().expect("probe"), b"\x1b[57900~");
+        assert_eq!(feed_handshake(&session, REPLY_0), Handshake::Confirmed);
+    }
+
+    #[test]
+    fn a_reply_to_a_key_never_sent_is_ignored() {
+        let (session, _queue) = ssh_at_prompt();
+        session.send_probe().expect("probe");
+        assert_eq!(feed_handshake(&session, &reply(9)), Handshake::Pending);
+        assert_eq!(session.lock().outstanding_probes.len(), 1);
+    }
+
+    #[test]
+    fn a_reply_about_unfinished_input_or_a_secondary_prompt_is_refused() {
+        for reply in [&b"\x1b]133;R;k=n;i=0;e=0;p=1\x07"[..], b"\x1b]133;R;k=n;i=0;e=1;p=0\x07"] {
+            let (session, _queue) = ssh_at_prompt();
+            session.send_probe().expect("probe");
+            assert_eq!(feed_handshake(&session, reply), Handshake::Idle);
+        }
+    }
+
+    #[test]
+    fn a_continuation_mark_beats_a_reply_that_claims_otherwise() {
+        let (session, _queue) = ssh_at_prompt();
+        session.send_probe().expect("probe");
+        // Bash reports `p=1` everywhere; the mark before the reply is what proves otherwise.
+        feed(&session, b"\x1b]133;P;k=n\x07> ");
+        assert_eq!(session.lock().phase, ShellPhase::Submitted);
+        assert_eq!(feed_handshake(&session, REPLY_0), Handshake::Idle);
+    }
+
+    #[test]
+    fn typing_after_the_probe_voids_it_even_after_it_was_confirmed() {
+        let (session, queue) = ssh_at_prompt();
+        session.send_probe().expect("probe");
+        session.write_user("x", false).expect("written");
+        assert_eq!(feed_handshake(&session, REPLY_0), Handshake::Idle);
+        let (session, _keep) = ssh_at_prompt();
+        session.send_probe().expect("probe");
+        feed(&session, REPLY_0);
+        session.write_user("x", false).expect("written");
+        assert!(session.dispatch(b"ls\r").is_err());
+        drop(queue);
+    }
+
+    #[test]
+    fn a_reply_without_the_session_nonce_changes_nothing() {
+        let (session, _queue) = ssh_at_prompt();
+        session.send_probe().expect("probe");
+        assert_eq!(feed_handshake(&session, b"\x1b]133;R;i=0;e=1;p=1\x07"), Handshake::Pending);
+        assert_eq!(feed_handshake(&session, b"\x1b]133;R;k=x;i=0;e=1;p=1\x07"), Handshake::Pending);
+    }
+
+    #[test]
+    fn probes_are_never_sent_unless_the_prompt_is_confirmed() {
+        let unconfirmed: [&[u8]; 3] = [b"\x1b[?1049h", STARTED, b"\x1b]133;P;k=n\x07"];
+        for bytes in unconfirmed {
+            let (session, queue) = ssh_at_prompt();
+            feed(&session, bytes);
+            assert!(session.send_probe().is_err());
+            assert!(queue.try_recv().is_err());
+        }
+        let (session, queue) = ssh_at_prompt();
+        session.write_user("x", false).expect("written");
+        let _ = queue.try_recv();
+        assert!(session.send_probe().is_err(), "unsent text on the line");
+        let (session, queue) = ssh_at_prompt();
+        feed(&session, PROMPT);
+        assert!(session.send_probe().is_err(), "editor cannot answer");
+        assert!(queue.try_recv().is_err());
+    }
+
+    #[test]
+    fn dispatch_needs_a_live_session() {
+        let (session, _queue) = ssh_at_prompt();
+        session.send_probe().expect("probe");
+        feed(&session, REPLY_0);
+        session.lock().status = Status::Exited;
+        assert!(session.dispatch(b"ls\r").is_err());
     }
 
     #[test]
