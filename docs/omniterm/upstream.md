@@ -18,6 +18,8 @@ their individual licenses and notices.
   a native interaction test plan, and separate desktop code CI.
 - Renamed root workspace metadata, added launcher commands, and registered the
   dependency-free package in the workspace and lockfile.
+- Added `chat` and `anthropic_messages` wire APIs in `codex-api`, and the
+  `dynamic_tools_only` feature that limits a thread to client-supplied tools.
 - Added architecture and roadmap documents.
 - Adapted contribution, installation, security, ownership, and issue reporting
   documentation for omniTerm.

@@ -1,5 +1,5 @@
 import { packager } from "@electron/packager";
-import { open, readFile, writeFile } from "node:fs/promises";
+import { access, open, readFile, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
@@ -14,6 +14,8 @@ async function sha256(filename) {
 const root = fileURLToPath(new URL("../", import.meta.url));
 const repository = path.resolve(root, "..");
 const agent = path.join(repository, "dist/omniterm-agent");
+const terminalHost = path.join(repository, "dist/terminal-host");
+await access(path.join(terminalHost, process.platform === "win32" ? "omniterm-terminal-host.exe" : "omniterm-terminal-host")).catch(() => { throw new Error("The terminal host is not built. Run npm run build:native."); });
 const agentManifest = JSON.parse(await readFile(path.join(agent, "codex-package.json"), "utf8"));
 const agentTargets = {
   "darwin-arm64": ["aarch64-apple-darwin"], "darwin-x64": ["x86_64-apple-darwin"],
@@ -42,8 +44,8 @@ const appPaths = await packager({
   asar: false,
   prune: true,
   ...(process.env.OMNITERM_ELECTRON_ZIP_DIR ? { electronZipDir: process.env.OMNITERM_ELECTRON_ZIP_DIR } : {}),
-  extraResource: [agent],
-  ignore: [/^\/src($|\/)/, /^\/electron($|\/)/, /^\/scripts($|\/)/, /^\/test($|\/)/, /^\/dist($|\/)/],
+  extraResource: [agent, terminalHost],
+  ignore: [/^\/src($|\/)/, /^\/electron($|\/)/, /^\/native($|\/)/, /^\/scripts($|\/)/, /^\/test($|\/)/, /^\/dist($|\/)/],
   darwinDarkModeSupport: true,
 });
 for (const directory of appPaths) {
@@ -52,6 +54,7 @@ for (const directory of appPaths) {
   if (process.platform === "darwin") {
     const app = path.join(directory, "omniTerm.app");
     const packagedAgent = path.join(app, "Contents/Resources/omniterm-agent");
+    execFileSync("/usr/bin/codesign", ["--force", "--sign", "-", path.join(app, "Contents/Resources/terminal-host/omniterm-terminal-host")], { stdio: "inherit" });
     if (agentSource) {
       for (const [relative, expected] of Object.entries(agentSource.binarySha256)) {
         if (path.isAbsolute(relative) || relative.split(/[\\/]/).includes("..")) throw new Error("Invalid Agent provenance path");

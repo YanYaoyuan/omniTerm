@@ -11,7 +11,7 @@ scope, and cross-platform behavior.
 
 The desktop app is the main product and lives in `omniterm-desktop/`.
 Follow the [desktop guide](../omniterm-desktop/README.md) to install dependencies
-and rebuild node-pty for Electron before starting the app. It uses its own npm
+and build the Rust terminal host before starting the app. It uses its own npm
 lockfile, separately from the inherited Codex pnpm workspace.
 
 The optional launcher lives in `omniterm-cli/` and has no npm runtime

@@ -8,7 +8,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { CircleNotch, WarningCircle } from "@phosphor-icons/react";
 import { isAppShortcut } from "./shortcuts.js";
 import { terminalTheme, themeFor } from "./themes.js";
-import { cwdFromOsc7, quotePath } from "./terminal-utils.js";
+import { cwdFromOsc7, isTerminalReply, quotePath } from "./terminal-utils.js";
 
 export const FONT_STACKS = {
   system: '"SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace',
@@ -97,7 +97,7 @@ export function TerminalView({ session, visible, selected = false, focused = fal
     const write = term.onData((data) => {
       if (exited) return;
       if (callbacks.current.onInput) callbacks.current.onInput(session.id, data);
-      else Promise.resolve(api.writeSession({ id: session.id, data })).catch(report);
+      else Promise.resolve(api.writeSession({ id: session.id, data, reply: isTerminalReply(data) })).catch(report);
     });
     const resized = term.onResize(({ cols, rows }) => {
       Promise.resolve(api.resizeSession({ id: session.id, cols, rows })).catch(report);

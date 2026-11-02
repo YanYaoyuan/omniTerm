@@ -14,6 +14,7 @@ on:
       - 'codex-rs/**'
       - 'third_party/v8/**'
       - 'omniterm-desktop/package*.json'
+      - 'omniterm-desktop/native/**'
       - 'omniterm-desktop/scripts/package*.mjs'
   workflow_dispatch:
     inputs:
@@ -113,17 +114,17 @@ jobs:
       - name: Release Cargo object storage before desktop packaging
         shell: pwsh
         run: if (Test-Path -LiteralPath $env:CARGO_TARGET_DIR) { Remove-Item -LiteralPath $env:CARGO_TARGET_DIR -Recurse -Force }
-      - name: Build the desktop and native PTY
+      - name: Build the desktop and terminal host
         shell: bash
         env:
           OMNITERM_REQUIRE_AGENT_PROVENANCE: '1'
         working-directory: omniterm-desktop
         run: |
           npm ci
-          npm run rebuild
+          npm run build:native
           npm test
           npm run package
-      - name: Verify packaged Electron, native PTY and Agent
+      - name: Verify packaged Electron, terminal host and Agent
         run: node scripts/release/verify-desktop.mjs
       - name: Create unsigned portable ZIP and checksums
         run: node omniterm-desktop/scripts/package-release.mjs

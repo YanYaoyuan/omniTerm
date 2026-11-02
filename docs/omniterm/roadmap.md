@@ -5,7 +5,8 @@ omniTerm 面向 macOS、Linux 和 Windows，将终端、远程连接与 Agent �
 
 **下一阶段最高优先级：让 omniTerm Agent 感知工作区、获取指定终端上下文并明确操作目标。**
 同时统一产品名称，并接入用户自己的 Qwen、Claude、Kimi、OpenRouter 等 API。
-具体交互、架构、开发顺序与验收门槛见 [Agent 工作区开发方案](agent-workspace-plan.md)。
+具体交互、架构、开发顺序与验收门槛见 [Agent 工作区开发方案](agent-workspace-plan.md)，
+实现进度见 [实现状态](agent-workspace-status.md)。
 
 ## 0.0.1 基线
 

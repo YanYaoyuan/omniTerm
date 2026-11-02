@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
-  ArrowDown, ArrowRight, ArrowUp, ArrowsLeftRight, ArrowsOut, ArrowsIn, Broadcast, CaretRight, Check, Circle,
-  CircleNotch, Code, Command, Copy, Cpu, DotsThree, FolderOpen, FolderSimple,
-  GearSix, HardDrives, Info, MagnifyingGlass, Monitor, PaperPlaneTilt, Palette, PencilSimple,
+  ArrowDown, ArrowUp, ArrowsLeftRight, ArrowsOut, ArrowsIn, Broadcast, CaretRight, Check, Circle,
+  CircleNotch, Command, Copy, DotsThree, FolderOpen, FolderSimple,
+  GearSix, HardDrives, MagnifyingGlass, Monitor, PaperPlaneTilt, Palette, PencilSimple,
   PlugsConnected, Plus, Robot, SidebarSimple, SquareSplitHorizontal, SquareSplitVertical, TerminalWindow, Trash, X,
   ClipboardText, WarningCircle, SlidersHorizontal, ArrowClockwise, TextAa,
 } from "@phosphor-icons/react";
 import { TerminalView } from "./TerminalView.jsx";
+import { AgentPanel } from "./agent/AgentPanel.jsx";
 import { ConnectionDialog, SshImportDialog, connectionLabels, markSshHostsSeen, seenSshHosts } from "./ConnectionDialog.jsx";
 import { CommandPalette } from "./CommandPalette.jsx";
 import { MetricsBar, SftpPanel } from "./RemotePanels.jsx";
@@ -175,9 +176,7 @@ export function App() {
   const [tabs, setTabs] = useState([]);
   const [activeTabId, setActiveTabId] = useState(null);
   const [focusedId, setFocusedId] = useState(null);
-  const [agentSession, setAgentSession] = useState(null);
   const [agentVisible, setAgentVisible] = useState(true);
-  const [agentStarting, setAgentStarting] = useState(false);
   const [profiles, setProfiles] = useState([]);
   const [profileMenu, setProfileMenu] = useState(null);
   const [dialog, setDialog] = useState(null);
@@ -199,6 +198,7 @@ export function App() {
   const toastTimer = useRef(null);
   const searchInput = useRef(null);
   const stackRef = useRef(null);
+  const agentPanel = useRef(null);
   const started = useRef(false);
   const ready = useRef(false);
   const nextTerminal = useRef(1);
@@ -217,7 +217,6 @@ export function App() {
   }, []);
   const patchSession = useCallback((id, patch) => {
     setSessions((previous) => previous.map((session) => session.id === id ? { ...session, ...patch } : session));
-    setAgentSession((previous) => previous?.id === id ? { ...previous, ...patch } : previous);
   }, []);
   const onState = useCallback((id, status, exitCode) => patchSession(id, { status, exitCode }), [patchSession]);
   const onCwd = useCallback((id, liveCwd) => patchSession(id, { liveCwd }), [patchSession]);
@@ -297,12 +296,6 @@ export function App() {
   const closePane = useCallback(async (id) => {
     try {
       await api.closeSession(id);
-      if (agentSession?.id === id) {
-        setAgentSession(null);
-        const fallback = tabsRef.current.find((tab) => tab.id === activeTabId)?.focus;
-        if (fallback) activatePane(fallback);
-        return;
-      }
       const tab = tabOf(id);
       setSessions((previous) => previous.filter((session) => session.id !== id));
       if (!tab) return;
@@ -316,7 +309,7 @@ export function App() {
       }));
       if (focusedId === id) { setFocusedId(focus); focusLater(focus); }
     } catch (error) { notify(error.message); }
-  }, [agentSession, activeTabId, focusedId, tabOf, activatePane, dropTab, focusLater, notify]);
+  }, [focusedId, tabOf, dropTab, focusLater, notify]);
 
   const closeTab = useCallback(async (tabId) => {
     const tab = tabsRef.current.find((item) => item.id === tabId);
@@ -333,8 +326,9 @@ export function App() {
     const tab = tabOf(id);
     // Replies the terminal generates (cursor reports, focus events, mouse
     // reports) describe this pane alone and would corrupt the others.
-    const targets = tab?.broadcast && !isTerminalReply(data) ? paneIds(tab.root).filter((target) => target === id || !controls.current.get(target)?.isExited?.()) : [id];
-    for (const target of targets) Promise.resolve(api.writeSession({ id: target, data })).catch((error) => notify(error.message));
+    const reply = isTerminalReply(data);
+    const targets = tab?.broadcast && !reply ? paneIds(tab.root).filter((target) => target === id || !controls.current.get(target)?.isExited?.()) : [id];
+    for (const target of targets) Promise.resolve(api.writeSession({ id: target, data, reply })).catch((error) => notify(error.message));
   }, [tabOf, notify]);
 
   useEffect(() => {
@@ -406,6 +400,14 @@ export function App() {
     } catch { /* Restoring is best effort; the current session is unaffected. */ }
   }, [tabs, sessions, activeTabId, settings.restoreWorkspace]);
 
+  // The host keeps the live sessions; this tells it where they sit and which one has focus.
+  useEffect(() => {
+    if (!ready.current) return;
+    const title = (id) => { const session = sessions.find((item) => item.id === id); return session?.title ?? ""; };
+    const layout = { windowId: "main", focusedSessionId: focusedId, activeTabId, tabs: tabs.map((tab) => ({ id: tab.id, title: tab.title, panes: paneIds(tab.root).map((sessionId) => ({ sessionId, title: title(sessionId) })) })) };
+    Promise.resolve(api.updateWorkspace(layout)).catch(() => { /* Refreshed on the next layout change. */ });
+  }, [tabs, sessions, focusedId, activeTabId]);
+
   useEffect(() => {
     try { localStorage.setItem("omniterm-terminal-settings", JSON.stringify(settings)); }
     catch { notify("无法保存终端外观设置，本次会话中仍然生效。"); }
@@ -428,8 +430,7 @@ export function App() {
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
   const activeSession = sessions.find((session) => session.id === activeTab?.focus);
-  const agentFocused = Boolean(agentSession && agentVisible && focusedId === agentSession.id);
-  const selectedSession = agentFocused ? agentSession : activeSession;
+  const selectedSession = activeSession;
   const searchId = selectedSession?.id;
   const remoteSession = settings.remotePanels && activeSession?.remote ? activeSession : null;
   const remote = useSyncExternalStore(remoteSession ? remoteStore.subscribe : ignoreRemote, remoteSession ? () => remoteStore.state(remoteSession.id) : noRemote);
@@ -455,31 +456,15 @@ export function App() {
       if (directory) { setCwd(directory); await addTab("shell", undefined, directory); }
     } catch (error) { notify(error.message); }
   }
-  async function startAgent() {
-    if (agentStarting) return;
-    setAgentStarting(true);
-    try {
-      if (agentSession) { await api.closeSession(agentSession.id); setAgentSession(null); }
-      // Start where the user is working: the focused shell's live directory.
-      const directory = activeSession?.kind === "shell" ? activeSession.liveCwd || activeSession.cwd : cwd;
-      const session = await api.createSession({ kind: "agent", cwd: directory });
-      setAgentSession({ ...session, title: "Codex Agent" }); setAgentVisible(true); setFocusedId(session.id);
-    } catch (error) { notify(error.message); }
-    finally { setAgentStarting(false); }
-  }
+  // Attaches the selection to the next message. Nothing is sent until the user submits it.
   const sendSelectionToAgent = useCallback(() => {
     const sourceId = activeTab?.focus;
     const selection = controls.current.get(sourceId)?.getSelection()?.trim();
-    if (!selection) { notify("请先在终端中选择要发送给 Agent 的内容。"); return; }
-    if (!agentSession || finished(agentSession.status)) { notify("请先启动 Agent，再发送选中内容。"); setAgentVisible(true); return; }
-    const source = sessionsRef.current.find((session) => session.id === sourceId);
-    try {
-      // Only the explicitly selected text is shared, never the whole buffer.
-      controls.current.get(agentSession.id)?.pasteText(`以下内容来自终端「${source?.termTitle || source?.title || "终端"}」：\n\`\`\`\n${selection}\n\`\`\`\n`);
-      setAgentVisible(true); setFocusedId(agentSession.id); focusLater(agentSession.id);
-      notify("已将选中内容发送到 Agent 输入框，补充问题后按回车提交。", "success");
-    } catch (error) { notify(error.message); }
-  }, [activeTab, agentSession, notify, focusLater]);
+    if (!selection) { notify("请先在终端中选择要附加给 Agent 的内容。"); return; }
+    setAgentVisible(true);
+    agentPanel.current?.attachSelection(sourceId, selection);
+    notify("已附加选中内容，随下一条消息发送给 omniTerm Agent。", "success");
+  }, [activeTab, notify]);
   const openSshImport = useCallback(async () => {
     try {
       const config = await api.sshConfigHosts();
@@ -514,13 +499,12 @@ export function App() {
   }, [activeTab, activatePane]);
   const movePane = useCallback((direction) => {
     if (!activeTab) return;
-    if (agentFocused) { if (direction === "left") activatePane(activeTab.focus); return; }
     const next = neighborPane(activeTab.root, activeTab.focus, direction);
     if (next) {
       if (activeTab.zoomed) setTabs((previous) => previous.map((tab) => tab.id === activeTab.id ? { ...tab, zoomed: next } : tab));
       activatePane(next);
-    } else if (direction === "right" && agentSession && agentVisible) { setFocusedId(agentSession.id); focusLater(agentSession.id); }
-  }, [activeTab, agentFocused, agentSession, agentVisible, activatePane, focusLater]);
+    }
+  }, [activeTab, activatePane]);
   const selectTab = useCallback((tabId) => {
     const tab = tabsRef.current.find((item) => item.id === tabId);
     if (!tab) return;
@@ -599,9 +583,8 @@ export function App() {
       { id: "clear", group: "终端", label: "清空屏幕", icon: Trash, shortcut: key("clear"), run: actions.clear, disabled: !selectedSession },
       { id: "select-all", group: "终端", label: "全选输出", icon: Copy, run: () => runControl("selectAll"), disabled: !selectedSession },
       { id: "open-folder", group: "工作区", label: "在文件夹中打开终端…", icon: FolderOpen, run: chooseDirectory },
-      { id: "agent-start", group: "Agent", label: agentSession ? "重新启动 Agent" : "启动 Agent", icon: Robot, run: startAgent, disabled: !info.agent?.available },
-      { id: "agent-send", group: "Agent", label: "发送选中内容到 Agent", icon: PaperPlaneTilt, shortcut: key("sendToAgent"), run: actions.sendToAgent },
-      { id: "agent-toggle", group: "Agent", label: agentVisible ? "隐藏 Agent 面板" : "显示 Agent 面板", icon: SidebarSimple, shortcut: key("toggleAgent"), run: actions.toggleAgent },
+      { id: "agent-send", group: "omniTerm Agent", label: "附加选中内容到 omniTerm Agent", icon: PaperPlaneTilt, shortcut: key("sendToAgent"), run: actions.sendToAgent },
+      { id: "agent-toggle", group: "omniTerm Agent", label: agentVisible ? "隐藏 omniTerm Agent 面板" : "显示 omniTerm Agent 面板", icon: SidebarSimple, shortcut: key("toggleAgent"), run: actions.toggleAgent },
       { id: "font-bigger", group: "外观", label: "放大字体", icon: TextAa, shortcut: key("fontBigger"), run: actions.fontBigger },
       { id: "font-smaller", group: "外观", label: "缩小字体", icon: TextAa, shortcut: key("fontSmaller"), run: actions.fontSmaller },
       { id: "font-reset", group: "外观", label: "重置字体大小", icon: TextAa, shortcut: key("fontReset"), run: actions.fontReset },
@@ -616,7 +599,8 @@ export function App() {
       }),
   ];
 
-  const runningCount = sessions.filter((session) => !finished(session.status)).length + (agentSession && !finished(agentSession.status) ? 1 : 0);
+  const runningCount = sessions.filter((session) => !finished(session.status)).length;
+  const getSelection = useCallback((id) => controls.current.get(id)?.getSelection() ?? "", []);
   const paneCount = activeTab ? paneIds(activeTab.root).length : 0;
 
   const layouts = useMemo(() => new Map(tabs.map((tab) => [tab.id, computeLayout(tab.root)])), [tabs]);
@@ -667,7 +651,7 @@ export function App() {
       <div className="titlebar-actions">
         <ThemeMenu current={settings.theme} onSelect={(id) => setSettings((previous) => ({ ...previous, theme: id }))} />
         <button className="titlebar-button" title={`命令面板（${key("palette")}）`} onClick={() => setPaletteOpen(true)}><Command size={15} /><span>命令</span><kbd>{key("palette")}</kbd></button>
-        <button className={`titlebar-button ${agentVisible ? "active" : ""}`} title={`${agentVisible ? "隐藏 Agent 面板（会话继续运行）" : "显示 Agent 面板"}（${key("toggleAgent")}）`} onClick={() => setAgentVisible((visible) => !visible)}><Robot size={16} /><span>Agent</span><SidebarSimple size={15} /></button>
+        <button className={`titlebar-button ${agentVisible ? "active" : ""}`} title={`${agentVisible ? "隐藏 omniTerm Agent 面板（对话继续运行）" : "显示 omniTerm Agent 面板"}（${key("toggleAgent")}）`} onClick={() => setAgentVisible((visible) => !visible)}><Robot size={16} /><span>omniTerm Agent</span><SidebarSimple size={15} /></button>
       </div>
     </header>
 
@@ -678,8 +662,8 @@ export function App() {
         <div className="sidebar-section-heading"><span>工作区</span><IconButton label="打开工作文件夹" onClick={chooseDirectory}><FolderOpen size={16} /></IconButton></div>
         <button className="workspace-switcher" onClick={chooseDirectory} title={cwd}><span className="workspace-avatar"><FolderSimple size={20} /></span><span><strong>{basename(cwd)}</strong><small>{pathLabel(cwd, info.home)}</small></span><CaretRight size={13} /></button>
         <nav className="workspace-nav" aria-label="工作区导航">
-          <button className={`nav-item ${!agentFocused && selectedSession?.kind === "shell" ? "active" : ""}`} onClick={() => { const tab = tabs.find((item) => paneIds(item.root).some((id) => sessions.find((session) => session.id === id)?.kind === "shell")); if (tab) selectTab(tab.id); else safely(() => addTab()); }}><TerminalWindow size={18} /><span>本地终端</span><span className="nav-count">{sessions.filter((session) => session.kind === "shell").length}</span></button>
-          <button className={`nav-item ${agentFocused ? "active" : ""}`} onClick={() => { setAgentVisible(true); if (agentSession) { setFocusedId(agentSession.id); focusLater(agentSession.id); } }}><Robot size={18} /><span>Agent</span>{agentSession?.status === "running" ? <span className="status-dot" /> : <span className="nav-meta">Codex</span>}</button>
+          <button className={`nav-item ${selectedSession?.kind === "shell" ? "active" : ""}`} onClick={() => { const tab = tabs.find((item) => paneIds(item.root).some((id) => sessions.find((session) => session.id === id)?.kind === "shell")); if (tab) selectTab(tab.id); else safely(() => addTab()); }}><TerminalWindow size={18} /><span>本地终端</span><span className="nav-count">{sessions.filter((session) => session.kind === "shell").length}</span></button>
+          <button className="nav-item" onClick={() => setAgentVisible(true)}><Robot size={18} /><span>omniTerm Agent</span></button>
         </nav>
         <div className="sidebar-section-heading saved-heading"><span>已保存的连接</span><IconButton label="添加连接" onClick={() => { setProfileMenu(null); setDialog({ kind: "ssh" }); }}><Plus size={15} /></IconButton></div>
         <div className="saved-connections">
@@ -723,11 +707,11 @@ export function App() {
                 <IconButton label={`搜索终端（${key("find")}）`} onClick={showSearch} disabled={!selectedSession}><MagnifyingGlass size={15} /></IconButton>
                 <IconButton label="复制选中文本" onClick={() => runControl("copy")} disabled={!selectedSession}><Copy size={15} /></IconButton>
                 <IconButton label="粘贴到终端" onClick={() => runControl("paste")} disabled={!selectedSession}><ClipboardText size={15} /></IconButton>
-                <IconButton label={`发送选中内容到 Agent（${key("sendToAgent")}）`} onClick={sendSelectionToAgent} disabled={!activeSession}><PaperPlaneTilt size={15} /></IconButton>
+                <IconButton label={`附加选中内容到 omniTerm Agent（${key("sendToAgent")}）`} onClick={sendSelectionToAgent} disabled={!activeSession}><PaperPlaneTilt size={15} /></IconButton>
                 <IconButton label={`清空终端屏幕（${key("clear")}）`} onClick={() => runControl("clear")} disabled={!selectedSession}><Trash size={15} /></IconButton>
               </div>
             </div>
-            {searchOpen && <div className="search-bar"><MagnifyingGlass size={15} /><input ref={searchInput} value={searchValue} placeholder={`搜索${selectedSession?.kind === "agent" ? " Agent" : "终端"}输出`} onChange={(event) => { setSearchValue(event.target.value); find(event.target.value); }} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); find(searchValue, event.shiftKey); } if (event.key === "Escape") hideSearch(); }} /><span className="search-feedback">{searchValue && !searchFound ? "未找到" : ""}</span>
+            {searchOpen && <div className="search-bar"><MagnifyingGlass size={15} /><input ref={searchInput} value={searchValue} placeholder="搜索终端输出" onChange={(event) => { setSearchValue(event.target.value); find(event.target.value); }} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); find(searchValue, event.shiftKey); } if (event.key === "Escape") hideSearch(); }} /><span className="search-feedback">{searchValue && !searchFound ? "未找到" : ""}</span>
               <button type="button" className={`search-option ${searchOptions.caseSensitive ? "on" : ""}`} title="区分大小写" aria-pressed={searchOptions.caseSensitive} onClick={() => { const next = { ...searchOptions, caseSensitive: !searchOptions.caseSensitive }; setSearchOptions(next); find(searchValue, false, next); }}>Aa</button>
               <button type="button" className={`search-option ${searchOptions.regex ? "on" : ""}`} title="正则表达式" aria-pressed={searchOptions.regex} onClick={() => { const next = { ...searchOptions, regex: !searchOptions.regex }; setSearchOptions(next); find(searchValue, false, next); }}>.*</button>
               <IconButton label="上一个结果" onClick={() => find(searchValue, true)}><ArrowUp size={14} /></IconButton><IconButton label="下一个结果" onClick={() => find()}><ArrowDown size={14} /></IconButton><IconButton label="关闭搜索" onClick={hideSearch}><X size={14} /></IconButton></div>}
@@ -737,8 +721,8 @@ export function App() {
                 if (!place) return null;
                 const visible = place.tab.id === activeTabId && !place.hidden;
                 const multiple = paneIds(place.tab.root).length > 1 && !place.tab.zoomed;
-                const isFocused = multiple && place.tab.focus === session.id && !agentFocused;
-                return <TerminalView key={session.id} session={session} visible={visible} selected={visible && place.tab.focus === session.id && !agentFocused} focused={isFocused} dimmed={multiple && settings.dimInactive && place.tab.focus !== session.id} style={place.style} onFocus={focusPane} {...viewProps} />;
+                const isFocused = multiple && place.tab.focus === session.id;
+                return <TerminalView key={session.id} session={session} visible={visible} selected={visible && place.tab.focus === session.id} focused={isFocused} dimmed={multiple && settings.dimInactive && place.tab.focus !== session.id} style={place.style} onFocus={focusPane} {...viewProps} />;
               })}
               {activeTab && !activeTab.zoomed && layouts.get(activeTab.id)?.dividers.map((divider) => {
                 const row = divider.direction === "row";
@@ -753,16 +737,11 @@ export function App() {
             <div className="terminal-footnote"><span>{pathLabel(shownCwd, info.home)}</span><span>{theme.name} · {settings.gpu ? "GPU" : "DOM"} · UTF-8</span></div>
           </section>
 
-          <aside className={`agent-pane ${agentVisible ? "is-visible" : ""} ${agentFocused ? "is-focused" : ""}`} aria-label="Agent 面板">
-            <div className="agent-heading"><Robot size={18} /><strong>Agent</strong><span className="agent-model-label">Codex</span><div className="agent-heading-actions">{agentSession && <IconButton label={`发送终端选中内容（${key("sendToAgent")}）`} onClick={sendSelectionToAgent}><PaperPlaneTilt size={15} /></IconButton>}{agentSession && <IconButton label="结束 Agent 会话" onClick={() => closePane(agentSession.id)}><Trash size={15} /></IconButton>}<IconButton label="隐藏 Agent 面板" onClick={() => setAgentVisible(false)}><SidebarSimple size={17} /></IconButton></div></div>
-            <div className="agent-context"><FolderSimple size={14} /><span title={agentSession?.cwd || cwd}>{basename(agentSession?.cwd || cwd)}</span><span className="context-local">本地工作区</span></div>
-            {agentSession ? <div className="agent-terminal-stack"><TerminalView session={agentSession} visible={agentVisible} selected={agentFocused} onFocus={setFocusedId} {...viewProps} />{finished(agentSession.status) && <div className="agent-restart"><button className="button secondary" onClick={startAgent} disabled={agentStarting}><ArrowClockwise size={15} />重新启动 Agent</button></div>}</div> : <div className="agent-invitation"><div className="agent-symbol"><Robot size={32} weight="light" /><span className={`agent-availability ${info.agent?.available ? "available" : ""}`} /></div><span className="agent-eyebrow">你的终端搭档</span><h2>从一个想法开始。</h2><p>让 Agent 理解代码、处理任务。<br />你掌握每一步的决定权。</p><button className="button primary launch-agent" onClick={startAgent} disabled={!info.agent?.available || agentStarting}>{agentStarting ? <CircleNotch className="spin" size={17} /> : <Robot size={17} />}启动 Agent<ArrowRight size={15} /></button><div className="agent-local-note"><Cpu size={13} /><span>{info.agent?.available ? "Codex 运行于本机，在当前终端目录启动" : "本地 Agent 暂不可用"}</span></div>{!info.agent?.available && <div className="agent-unavailable"><Info size={15} /><span>{info.agent?.error || "未找到 Agent 程序，请完成本地 Agent 安装。"}</span></div>}<div className="agent-explanation"><div><Code size={17} /><span>理解当前项目与终端环境</span></div><div><PaperPlaneTilt size={17} /><span>选中终端输出，按 {key("sendToAgent")} 发给 Agent</span></div><div><TerminalWindow size={17} /><span>编写代码，执行经你批准的操作</span></div></div></div>}
-            <div className="agent-footer"><span className={`status-dot ${info.agent?.available ? "" : "muted"}`} /><span>{agentSession?.status === "running" ? "Agent 会话运行中" : "由本地 Codex 提供支持"}</span><span className="agent-footer-label">Agent 模式</span></div>
-          </aside>
+          <AgentPanel ref={agentPanel} api={api} info={info} visible={agentVisible} sessionsVersion={sessions.length} focusedId={activeTab?.focus ?? null} getSelection={getSelection} onActivate={activatePane} onHide={() => setAgentVisible(false)} notify={notify} />
         </div>
       </main>
     </div>
-    <footer className="statusbar"><div><Monitor size={13} /><span>{platformNames[info.platform] || info.platform}</span><span className="statusbar-separator" /><span className="status-dot" /><span>{runningCount} 个活动会话</span>{activeTab?.broadcast && <><span className="statusbar-separator" /><Broadcast size={12} /><span>广播输入中</span></>}</div><div><span className={`status-dot ${info.agent?.available ? "" : "muted"}`} /><span>本地 Agent {info.agent?.available ? "已就绪" : "未就绪"}</span><span className="statusbar-separator" /><button onClick={() => setPaletteOpen(true)} title="命令面板"><Command size={12} /><span>{key("palette")}</span></button></div></footer>
+    <footer className="statusbar"><div><Monitor size={13} /><span>{platformNames[info.platform] || info.platform}</span><span className="statusbar-separator" /><span className="status-dot" /><span>{runningCount} 个活动会话</span>{activeTab?.broadcast && <><span className="statusbar-separator" /><Broadcast size={12} /><span>广播输入中</span></>}</div><div><span className={`status-dot ${info.agent?.available ? "" : "muted"}`} /><span>omniTerm Agent {info.agent?.available ? "已就绪" : "未就绪"}</span><span className="statusbar-separator" /><button onClick={() => setPaletteOpen(true)} title="命令面板"><Command size={12} /><span>{key("palette")}</span></button></div></footer>
     {dialog && <ConnectionDialog initial={dialog} onClose={() => setDialog(null)} onSave={async (profile) => setProfiles(await api.saveProfile(profile))} onConnect={addTab} />}
     {settingsOpen && <SettingsDialog settings={settings} setSettings={setSettings} info={info} notify={notify} onImportSsh={openSshImport} onClose={() => setSettingsOpen(false)} />}
     {paletteOpen && <CommandPalette commands={commands} onClose={() => { setPaletteOpen(false); if (selectedSession) focusLater(selectedSession.id); }} />}
