@@ -4,11 +4,11 @@
 
 **An open-source terminal workspace with a Codex Agent beside your local and remote sessions.**
 
-[Download 0.0.1](https://github.com/YanYaoyuan/omniTerm/releases) · [Desktop guide](omniterm-desktop/README.md) · [Build the Agent](docs/omniterm/local-build.md) · [Report an issue](https://github.com/YanYaoyuan/omniTerm/issues) · [Contribute](CONTRIBUTING.md)
+[Download 0.1.0](https://github.com/YanYaoyuan/omniTerm/releases) · [Desktop guide](omniterm-desktop/README.md) · [Build the Agent](docs/omniterm/local-build.md) · [Report an issue](https://github.com/YanYaoyuan/omniTerm/issues) · [Contribute](CONTRIBUTING.md)
 
 omniTerm brings shell tabs, split panes, SSH, a graphical SFTP browser, serial connections and port forwarding into one desktop app for **macOS, Linux and Windows**. A locally running, source-built Codex Agent shares the workspace. Select terminal output, send it to the Agent's input, and decide what to submit.
 
-The project is **Apache-2.0 licensed** and at **version 0.0.1**. It combines familiar terminal and remote-operation workflows with an inspectable Agent implementation. This is an early release: platform packages and individual runtime checks should not be read as complete three-platform manual acceptance.
+The project is **Apache-2.0 licensed** and at **version 0.1.0**. It combines familiar terminal and remote-operation workflows with an inspectable Agent implementation. This is an early release: platform packages and individual runtime checks should not be read as complete three-platform manual acceptance.
 
 ## Download
 
@@ -22,14 +22,14 @@ Get the available artifacts and their checksums from [GitHub Releases](https://g
 
 Check each release's asset list and validation notes before downloading. The initial macOS and Windows packages do not have developer signing; use the operating system's normal per-app approval flow if prompted. An Intel Mac package is not part of this initial set.
 
-Ubuntu users of the earlier `0.1.0~preview` trial package should install the downloaded `0.0.1` `.deb` explicitly: Debian version ordering considers this a downgrade. Settings and feature coverage are described in the [desktop guide](omniterm-desktop/README.md).
 
 ## What you can do today
 
 | Workflow | Implemented in omniTerm |
 | --- | --- |
 | Local terminal workspace | Real PTY shells, tabs, nested horizontal/vertical splits, pane zoom, broadcast input, search, rename/reorder and a command palette |
-| Agent collaboration | Dedicated Codex pane; starts in the selected local working directory; send selected terminal text into its draft without automatically submitting it |
+| Agent collaboration | Terminal-aware Agent with selected context and execution targets, command approval, staging, cancellation and configurable model services |
+| Docking and monitoring | Move workspace, Agent, terminal and monitor panels; process overview and supported process/thread/log monitoring |
 | SSH connections | Saved profiles, import from `~/.ssh/config` including `Include`, aliases, and single/multiple `ProxyJump` jump hosts |
 | Remote files | Graphical SFTP browser beside SSH/SFTP sessions; upload/download files and folders, rename, delete, create directories and staged drag-out downloads |
 | Remote host metrics | CPU, memory, disk, network, load and uptime, plus GPU data when the remote host exposes supported tools/interfaces |
@@ -53,7 +53,7 @@ The useful combination is **an open-source Agent and remote operations in the sa
 
 | Product | Desktop platforms | Licensing | Workflow focus / Agent integration |
 | --- | --- | --- | --- |
-| **omniTerm 0.0.1** | **macOS, Linux, Windows** | **[Apache-2.0](LICENSE)** | **Local source-built Codex pane + SSH/SFTP browser, jump hosts, forwarding and serial in one workspace; early release** |
+| **omniTerm 0.1.0** | **macOS, Linux, Windows** | **[Apache-2.0](LICENSE)** | **Local source-built Codex pane + SSH/SFTP browser, jump hosts, forwarding and serial in one workspace; early release** |
 | [iTerm2](https://iterm2.com/index.html) | macOS | GPL v2 | Extensive [terminal, split-pane and shell integration](https://iterm2.com/features.html); [AI Chat](https://github.com/gnachman/iTerm2#key-features) with an [optional AI plugin](https://iterm2.com/ai-plugin.html) |
 | [Xshell](https://www.netsarang.com/en/xshell-all-features/) | Windows | [Commercial license](https://www.netsarang.com/en/xshell/); [Home/School free license](https://netsarang.atlassian.net/wiki/spaces/ENSUP/pages/2027552778/Free+User+Registration) | SSH/SFTP/serial, session management, jump hosts, scripting and remote file management |
 | [MobaXterm](https://mobaxterm.mobatek.net/features.html) | Windows | [Home/Professional editions](https://mobaxterm.mobatek.net/download.html), [product EULA](https://mobaxterm.mobatek.net/license.html) | Integrated SFTP, SSH gateways, serial, X11 server and RDP/VNC remote-desktop tools |
