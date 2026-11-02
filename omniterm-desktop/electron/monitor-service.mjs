@@ -206,7 +206,7 @@ export class MonitorService {
       }
     }
     this.publish(monitor);
-    monitor.timer = this.schedule(() => { if (live()) this.sample(monitor); }, monitor.intervalSeconds * 1000);
+    monitor.timer = this.schedule(() => (live() ? this.sample(monitor) : undefined), monitor.intervalSeconds * 1000);
   }
   // Fires on the transition into a condition, not on every sample while it holds.
   async evaluate(monitor, sample, generation) {
