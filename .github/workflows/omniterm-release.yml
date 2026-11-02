@@ -1,290 +1,63 @@
-# omniTerm's native release builds; no OpenAI self-hosted runners or signing secrets.
-name: omniTerm release builds
-
+name: Stage verified v0.1.0 draft assets
 on:
-  push:
-    branches: [feat/desktop-splits-palette, main]
-    tags: ['v*']
-    paths:
-      - '.github/workflows/omniterm-release.yml'
-      - '.github/actions/setup-msvc-env/**'
-      - 'scripts/release/**'
-      - 'scripts/codex_package/**'
-      - 'scripts/build_codex_package.py'
-      - 'codex-rs/**'
-      - 'third_party/v8/**'
-      - 'omniterm-desktop/package*.json'
-      - 'omniterm-desktop/native/**'
-      - 'omniterm-desktop/scripts/package*.mjs'
   workflow_dispatch:
-    inputs:
-      reuse_agent_run_id:
-        description: 'Optional prior workflow run ID whose Windows Agent artifact has identical Rust source'
-        required: false
-        type: string
-        default: ''
-      reuse_macos_agent_run_id:
-        description: 'Optional identical-source macOS Agent artifact run ID'
-        required: false
-        type: string
-        default: ''
-      reuse_linux_agent_run_id:
-        description: 'Optional identical-source Linux Agent artifact run ID'
-        required: false
-        type: string
-        default: ''
-
 permissions:
-  contents: read
   actions: read
-
-concurrency:
-  group: omniterm-release-${{ github.ref }}
-  cancel-in-progress: false
-
+  contents: write
 jobs:
-  windows:
-    name: Windows x64 source-built Agent and portable desktop
-    runs-on: windows-2022
-    timeout-minutes: 180
-    env:
-      CARGO_INCREMENTAL: '0'
-      CARGO_BUILD_JOBS: '2'
-      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
-      CARGO_NET_RETRY: '5'
-      # Repository-variable fallback also works before dispatch reaches main.
-      OMNITERM_REUSE_AGENT_RUN_ID: ${{ inputs.reuse_agent_run_id || vars.OMNITERM_WINDOWS_AGENT_RUN_ID || '' }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Prepare ephemeral runner storage
-        shell: pwsh
-        run: |
-          git config --global core.longpaths true
-          # Remove only unused preinstalled Android/CodeQL tool caches on this fresh VM.
-          foreach ($candidate in @($env:ANDROID_HOME, $env:ANDROID_SDK_ROOT, 'C:\hostedtoolcache\windows\CodeQL')) {
-            if ($candidate -and (Test-Path -LiteralPath $candidate)) {
-              Remove-Item -LiteralPath $candidate -Recurse -Force -ErrorAction Continue
-            }
-          }
-          $target = Join-Path $env:RUNNER_TEMP 'omniterm-cargo'
-          "CARGO_TARGET_DIR=$target" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Get-PSDrive -PSProvider FileSystem | Format-Table Name, Used, Free
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: omniterm-desktop/package-lock.json
-      - name: Install the repository Rust toolchain
-        shell: pwsh
-        run: |
-          rustup toolchain install 1.95.0 --profile minimal --component rust-src
-          rustup default 1.95.0
-      - uses: ./.github/actions/setup-msvc-env
-        with:
-          target: x86_64-pc-windows-msvc
-      - name: Cache locked Cargo downloads
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: omniterm-cargo-windows-${{ hashFiles('codex-rs/Cargo.lock') }}
-      - name: Download an existing source-built Windows Agent
-        if: env.OMNITERM_REUSE_AGENT_RUN_ID != ''
-        uses: actions/download-artifact@v4
-        with:
-          github-token: ${{ github.token }}
-          run-id: ${{ env.OMNITERM_REUSE_AGENT_RUN_ID }}
-          pattern: omniterm-agent-windows-x64-*
-          merge-multiple: true
-          path: dist/omniterm-agent
-      - name: Verify the downloaded Agent target, source and all binary hashes
-        if: env.OMNITERM_REUSE_AGENT_RUN_ID != ''
-        run: python scripts/release/build-agent.py --target x86_64-pc-windows-msvc --verify-existing
-      - name: Build the complete Agent from repository Rust
-        if: env.OMNITERM_REUSE_AGENT_RUN_ID == ''
-        run: python scripts/release/build-agent.py --target x86_64-pc-windows-msvc
-      - name: Preserve the source-built Agent before desktop packaging
-        uses: actions/upload-artifact@v4
-        with:
-          name: omniterm-agent-windows-x64-${{ github.sha }}
-          path: dist/omniterm-agent/
-          compression-level: 1
-          retention-days: 14
-          if-no-files-found: error
-      - name: Verify offline code-mode host protocol and V8
-        run: python scripts/release/verify-agent-offline.py dist/omniterm-agent
-      - name: Collect Agent license notices
-        run: python scripts/release/stage-agent-notices.py dist/omniterm-agent --target x86_64-pc-windows-msvc --cargo-profile dev-small
-      - name: Release Cargo object storage before desktop packaging
-        shell: pwsh
-        run: if (Test-Path -LiteralPath $env:CARGO_TARGET_DIR) { Remove-Item -LiteralPath $env:CARGO_TARGET_DIR -Recurse -Force }
-      - name: Build the desktop and terminal host
-        shell: bash
-        env:
-          OMNITERM_REQUIRE_AGENT_PROVENANCE: '1'
-        working-directory: omniterm-desktop
-        run: |
-          npm ci
-          npm run build:native
-          npm test
-          npm run package
-      - name: Verify packaged Electron, terminal host and Agent
-        run: node scripts/release/verify-desktop.mjs
-      - name: Create unsigned portable ZIP and checksums
-        run: node omniterm-desktop/scripts/package-release.mjs
-      - name: Upload desktop release artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: omniterm-release-windows-x64-${{ github.sha }}
-          path: dist/release/*
-          compression-level: 0
-          retention-days: 14
-          if-no-files-found: error
-
-  unix:
-    name: ${{ matrix.name }} source-built Agent and desktop
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: macOS arm64
-            os: macos-14
-            target: aarch64-apple-darwin
-            slug: macos-arm64
-            reuse_input: reuse_macos_agent_run_id
-          - name: Ubuntu 22.04 amd64
-            os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            slug: linux-x64
-            reuse_input: reuse_linux_agent_run_id
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 180
-    env:
-      CARGO_INCREMENTAL: '0'
-      CARGO_BUILD_JOBS: '2'
-      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
-      CARGO_NET_RETRY: '5'
-      OMNITERM_REUSE_AGENT_RUN_ID: ${{ inputs[matrix.reuse_input] || '' }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: omniterm-desktop/package-lock.json
-      - name: Install Ubuntu native and Electron dependencies
-        if: runner.os == 'Linux'
-        run: |
-          # Unused preinstalled SDKs on this ephemeral hosted runner only.
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
-          sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libssl-dev libcap-dev cmake clang libclang-dev libgtk-3-0 libnss3 libasound2 libgbm1 libxss1 libnotify4 libxtst6 libsecret-1-0 zsh
-      - name: Install macOS native dependencies
-        if: runner.os == 'macOS'
-        run: |
-          command -v cmake >/dev/null || brew install cmake
-          brew list --versions openssl@3 >/dev/null || brew install openssl@3
-          echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
-      - name: Install the repository Rust toolchain
-        run: |
-          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/omniterm-cargo" >> "$GITHUB_ENV"
-          rustup toolchain install 1.95.0 --profile minimal --component rust-src
-          rustup default 1.95.0
-          uname -m
-          df -h
-      - name: Cache locked Cargo downloads
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: omniterm-cargo-${{ matrix.slug }}-${{ hashFiles('codex-rs/Cargo.lock') }}
-      - name: Download an existing source-built Agent
-        if: env.OMNITERM_REUSE_AGENT_RUN_ID != ''
-        uses: actions/download-artifact@v4
-        with:
-          github-token: ${{ github.token }}
-          run-id: ${{ env.OMNITERM_REUSE_AGENT_RUN_ID }}
-          pattern: omniterm-agent-${{ matrix.slug }}-*
-          merge-multiple: true
-          path: dist/omniterm-agent
-      - name: Verify downloaded Agent provenance
-        if: env.OMNITERM_REUSE_AGENT_RUN_ID != ''
-        run: python scripts/release/build-agent.py --target ${{ matrix.target }} --verify-existing
-      - name: Build the complete Agent from repository Rust
-        if: env.OMNITERM_REUSE_AGENT_RUN_ID == ''
-        run: python scripts/release/build-agent.py --target ${{ matrix.target }}
-      - name: Preserve the source-built Agent
-        uses: actions/upload-artifact@v4
-        with:
-          name: omniterm-agent-${{ matrix.slug }}-${{ github.sha }}
-          path: dist/omniterm-agent/
-          compression-level: 1
-          retention-days: 14
-          if-no-files-found: error
-      - name: Verify offline V8 and collect notices
-        run: |
-          python scripts/release/verify-agent-offline.py dist/omniterm-agent
-          python scripts/release/stage-agent-notices.py dist/omniterm-agent --target ${{ matrix.target }} --cargo-profile dev-small
-      - name: Release compiler object storage
-        run: |
-          python -c 'import os,pathlib,shutil; target=pathlib.Path(os.environ["CARGO_TARGET_DIR"]).resolve(); temporary=pathlib.Path(os.environ["RUNNER_TEMP"]).resolve(); assert target != temporary and target.is_relative_to(temporary); shutil.rmtree(target,ignore_errors=True)'
-      - name: Build and verify the desktop
-        env:
-          OMNITERM_REQUIRE_AGENT_PROVENANCE: '1'
-        run: |
-          cd omniterm-desktop
-          npm ci
-          npm run build:native
-          npm test
-          npm run package
-          cd ..
-          node scripts/release/verify-desktop.mjs
-          node omniterm-desktop/scripts/package-release.mjs
-      - name: Upload desktop release artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: omniterm-release-${{ matrix.slug }}-${{ github.sha }}
-          path: dist/release/*
-          compression-level: 0
-          retention-days: 14
-          if-no-files-found: error
-
-  release-assets:
-    name: Validate three-platform release assets
-    needs: [windows, unix]
+  stage-draft:
     runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: c4a4eae04a9c6337e0221b3932ee13ad11d302ef
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Require the successful exact-source build and an unpublished draft
+        run: |
+          gh api repos/$GH_REPO/actions/runs/41403634867 > "$RUNNER_TEMP/source-run.json"
+          gh release view v0.1.0 --repo "$GH_REPO" --json isDraft,targetCommitish,tagName > "$RUNNER_TEMP/draft.json"
+          python - <<'PY'
+          import json,os,pathlib
+          temporary=pathlib.Path(os.environ['RUNNER_TEMP'])
+          run=json.loads((temporary/'source-run.json').read_text())
+          draft=json.loads((temporary/'draft.json').read_text())
+          sha='c4a4eae04a9c6337e0221b3932ee13ad11d302ef'
+          assert run['conclusion']=='success' and run['head_sha']==sha
+          assert run['repository']['full_name']==os.environ['GH_REPO']
+          assert draft['isDraft'] is True and draft['targetCommitish']==sha and draft['tagName']=='v0.1.0'
+          PY
       - uses: actions/download-artifact@v4
         with:
-          pattern: omniterm-release-*-${{ github.sha }}
-          merge-multiple: true
+          github-token: ${{ github.token }}
+          run-id: '41403634867'
+          name: omniterm-complete-release-c4a4eae04a9c6337e0221b3932ee13ad11d302ef
           path: dist/release
-      - name: Verify versions, provenance, hashes and platform completeness
+      - name: Verify the complete artifact set against its exact source
+        run: python scripts/release/validate-release.py dist/release
+      - name: Attach assets without publishing or replacing existing assets
+        run: gh release upload v0.1.0 dist/release/* --repo "$GH_REPO"
+      - name: Verify every uploaded asset digest and retain draft state
         run: |
-          python -m unittest discover -s scripts/release -p 'test_validate_release.py'
-          python scripts/release/validate-release.py dist/release
-      - uses: actions/upload-artifact@v4
-        with:
-          name: omniterm-complete-release-${{ github.sha }}
-          path: dist/release/*
-          compression-level: 0
-          retention-days: 14
-          if-no-files-found: error
+          gh api "repos/$GH_REPO/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
+          python - <<'PY'
+          import hashlib,json,os,pathlib
+          releases=json.loads((pathlib.Path(os.environ['RUNNER_TEMP'])/'releases.json').read_text())
+          release=next(x for x in releases if x['tag_name']=='v0.1.0')
+          assert release['draft'] is True
+          assert release['target_commitish']=='c4a4eae04a9c6337e0221b3932ee13ad11d302ef'
+          assets={x['name']:x for x in release['assets']}
+          files=list(pathlib.Path('dist/release').iterdir())
+          assert set(assets)=={x.name for x in files}
+          for file in files:
+              with file.open('rb') as stream: checksum=hashlib.file_digest(stream,'sha256').hexdigest()
+              assert assets[file.name]['size']==file.stat().st_size
+              assert assets[file.name]['digest']=='sha256:'+checksum
+          print(f'All {len(files)} draft assets verified; release remains unpublished.')
+          PY
