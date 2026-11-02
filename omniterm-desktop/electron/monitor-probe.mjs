@@ -67,10 +67,10 @@ ps -L -p ${pid} -o tid=,pcpu= | while read -r id cpu; do if [ "$id" = "${tid}" ]
 const savedMark = (mark) => (typeof mark === "string" && /^[\w-]{1,128}$/.test(mark) ? mark : null);
 
 // An offset only means something in the file it was taken from. The mark names that file: its
-// inode, which a rename changes, and a checksum of the bytes before the offset, which also catches
-// a reused inode and a file rewritten in place. A mismatch means a new file, read from its start.
-// The inode is read first, so a rotation during this sample shows up in the next one: text may
-// then be read twice, but none is skipped.
+// inode, which a rename changes, and a checksum of the bytes at its start and before the offset,
+// which also catch a reused inode and a file rewritten in place. A mismatch means a new file, read
+// from its start. The inode is read first, so a rotation during this sample shows up in the next
+// one: text may then be read twice, but none is skipped.
 function logScript({ path }, { offset, mark }) {
   const saved = savedMark(mark);
   return `export LC_ALL=C
@@ -81,7 +81,7 @@ inode=$(ls -idL "$file" | { read -r id rest; echo "$id"; })
 mark() {
   length=$1
   if [ "$length" -gt ${LOG_MARK_BYTES} ]; then length=${LOG_MARK_BYTES}; fi
-  if [ "$length" -gt 0 ]; then tail -c +$(($1 - length + 1)) "$file" | head -c "$length"; fi | cksum | { read -r crc rest; echo "$inode-$crc"; }
+  if [ "$length" -gt 0 ]; then head -c "$length" "$file"; tail -c +$(($1 - length + 1)) "$file" | head -c "$length"; fi | cksum | { read -r crc rest; echo "$inode-$crc"; }
 }
 size=$(wc -c < "$file" | tr -d " ")
 echo size=$size
