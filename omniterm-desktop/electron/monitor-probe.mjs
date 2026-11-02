@@ -9,6 +9,7 @@ const NAME = /^[\w.+@-]{1,128}$/;
 const PATH = /^\/[\p{L}\p{N}_ ./+@~#,-]{0,4095}$/u;
 const WINDOWS_PATH = /^[A-Za-z]:\\[\p{L}\p{N}_ .\\+@()~#,-]{0,4000}$/u;
 const MAX_LOG_BYTES = 64 * 1024;
+const LOG_MARK_BYTES = 256;
 const MAX_REGION_BYTES = 4096;
 export const TARGET_KINDS = Object.freeze(["process", "thread", "log", "sharedMemory"]);
 const FIELD_TYPES = { u8: 1, i8: 1, u16: 2, i16: 2, u32: 4, i32: 4, f32: 4, u64: 8, i64: 8, f64: 8 };
@@ -74,17 +75,38 @@ ps -L -p ${pid} -o tid=,pcpu= | while read -r id cpu; do if [ "$id" = "${tid}" ]
 `;
 }
 
-function logScript({ path }, { offset }) {
+// A saved mark comes back from a remote host and goes into a script, so it is checked first.
+const savedMark = (mark) => (typeof mark === "string" && /^[\w-]{1,128}$/.test(mark) ? mark : null);
+
+// An offset only means something in the file it was taken from. The mark names that file: its
+// inode, which a rename changes, and a checksum of the bytes before the offset, which also catches
+// a reused inode and a file rewritten in place. A mismatch means a new file, read from its start.
+// The inode is read first, so a rotation during this sample shows up in the next one: text may
+// then be read twice, but none is skipped.
+function logScript({ path }, { offset, mark }) {
+  const saved = savedMark(mark);
   return `export LC_ALL=C
-if [ ! -r "${path}" ]; then echo exists=0; exit 0; fi
+file="${path}"
+if [ ! -r "$file" ]; then echo exists=0; exit 0; fi
 echo exists=1
-size=$(wc -c < "${path}" | tr -d " ")
+inode=$(ls -idL "$file" | { read -r id rest; echo "$id"; })
+mark() {
+  length=$1
+  if [ "$length" -gt ${LOG_MARK_BYTES} ]; then length=${LOG_MARK_BYTES}; fi
+  if [ "$length" -gt 0 ]; then tail -c +$(($1 - length + 1)) "$file" | head -c "$length"; fi | cksum | { read -r crc rest; echo "$inode-$crc"; }
+}
+size=$(wc -c < "$file" | tr -d " ")
 echo size=$size
 start=${offset ?? "$size"}
-if [ "$start" -gt "$size" ]; then start=0; fi
+if [ "$start" -gt "$size" ]${saved ? ` || [ "$(mark "$start")" != "${saved}" ]` : ""}; then start=0; fi
+count=$((size - start))
+if [ "$count" -gt ${MAX_LOG_BYTES} ]; then count=${MAX_LOG_BYTES}; fi
+next=$((start + count))
 echo offset=$start
+echo next=$next
+echo mark=$(mark "$next")
 echo @@text
-tail -c +$((start + 1)) "${path}" | head -c ${MAX_LOG_BYTES}
+if [ "$count" -gt 0 ]; then tail -c +$((start + 1)) "$file" | head -c "$count"; fi
 `;
 }
 
@@ -121,21 +143,35 @@ if (-not $t) { 'exists=0'; exit 0 }
 `;
 }
 
-function windowsLogScript({ path }, { offset }) {
+// Windows has no inode to read cheaply, and a file created where another was just renamed from
+// inherits its creation time. So the mark is the hash of the bytes before the offset: a replacement
+// only passes for the same file if those bytes match, and then reading on loses nothing unseen.
+function windowsLogScript({ path }, { offset, mark }) {
+  const saved = savedMark(mark);
   return `${UTF8_OUTPUT}$path = '${path}'
 if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { 'exists=0'; exit 0 }
 'exists=1'
 $file = [IO.File]::Open($path, 'Open', 'Read', 'ReadWrite,Delete')
+function Get-Mark($end) {
+  $length = [Math]::Min(${LOG_MARK_BYTES}, $end)
+  $window = New-Object byte[] $length
+  [void]$file.Seek($end - $length, 'Begin')
+  $got = $file.Read($window, 0, $length)
+  [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($window, 0, $got))
+}
 $size = $file.Length
 "size=$size"
 $start = ${offset ?? "$size"}
-if ($start -gt $size) { $start = 0 }
-"offset=$start"
+if ($start -gt $size${saved ? ` -or (Get-Mark $start) -ne '${saved}'` : ""}) { $start = 0 }
 [void]$file.Seek($start, 'Begin')
 $bytes = New-Object byte[] ([Math]::Min(${MAX_LOG_BYTES}, $size - $start))
 $read = $file.Read($bytes, 0, $bytes.Length)
+$next = $start + $read
+$mark = Get-Mark $next
 $file.Close()
-"read=$read"
+"offset=$start"
+"next=$next"
+"mark=$mark"
 '@@text'
 [Console]::Out.Write([Text.Encoding]::UTF8.GetString($bytes, 0, $read))
 `;
@@ -180,7 +216,8 @@ export function parseProbe(target, output) {
     const body = output.slice(output.indexOf("\n", separator) + 1);
     if (target.kind === "log") {
       sample.text = body;
-      sample.nextOffset = (sample.offset ?? 0) + (sample.read ?? Buffer.byteLength(body));
+      // Counted by the probe in raw bytes: the text here may have been decoded lossily.
+      sample.nextOffset = sample.next ?? (sample.offset ?? 0) + Buffer.byteLength(body);
     } else {
       const bytes = Buffer.from(body.replace(/[^0-9a-f]/g, ""), "hex");
       for (const field of target.layout) sample[field.field] = readField(bytes, field);
