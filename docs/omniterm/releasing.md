@@ -85,31 +85,33 @@ commit and records all required binary hashes. Reuse is not a claim of binary
 reproducibility across different compilers or operating systems. Collect notices
 and run the normal desktop packaging/validation steps afterward.
 
-## Windows GitHub Actions
+## Native GitHub Actions
 
-[omniterm-release.yml](../../.github/workflows/omniterm-release.yml) builds on a
-standard GitHub-hosted Windows runner. It does not use OpenAI runners or signing
-secrets. Limited push paths start it before the release workflow reaches the
-default branch. macOS and Ubuntu can use the native procedure above.
+[omniterm-release.yml](../../.github/workflows/omniterm-release.yml) builds
+Windows x64, macOS arm64 and Ubuntu 22.04 amd64 on native GitHub-hosted runners.
+It does not publish a release or use signing secrets. Dispatch it on the release
+preparation branch after committing version and release notes.
 
-The workflow uploads the complete source-built Agent before later packaging
-steps, so a packaging failure does not discard a successful long Rust build.
-Once workflow_dispatch is available on the default branch, a later run can set
-`reuse_agent_run_id` to the earlier run ID. The downloaded artifact must match
-the target, exact Agent source fingerprint, and every required binary hash.
-Before dispatch is available, maintainers may temporarily set the repository
-variable `OMNITERM_WINDOWS_AGENT_RUN_ID` to the completed run ID, then push the
-release-tool change. The same source/hash verification applies; an explicit
-dispatch input takes precedence. Clear the variable after the release so future
-unrelated Agent source changes build normally. No remote arbitrary download URL
-or stock Codex fallback is accepted.
+Each job uploads the complete source-built Agent before desktop packaging so
+later packaging failures do not discard a successful Rust build. Optional
+`reuse_agent_run_id`, `reuse_macos_agent_run_id` and `reuse_linux_agent_run_id`
+inputs select previous Windows, macOS and Linux Agent artifacts respectively.
+The target, exact Agent source fingerprint and every required binary hash must
+match. Windows also retains the `OMNITERM_WINDOWS_AGENT_RUN_ID` repository-variable
+fallback; clear it after use. No stock Codex fallback is accepted.
 
-Cargo compilation uses two workers with incremental output disabled. Only
-unused Android/CodeQL caches are removed on the ephemeral Windows runner; Cargo
-objects are discarded after notices are collected and before Electron packaging.
-Only dependency downloads, not large target directories, are cached. The workflow
-uploads artifacts and checksums; repository maintainers review the results and
-publish the release separately.
+Cargo uses two workers without incremental output. Only dependency downloads
+are cached; compiler objects are removed from ephemeral runner storage after
+license notices are collected. Every platform builds the terminal host, runs
+desktop tests, verifies its packaged runtime, and produces the native artifact.
+
+The final job downloads all three desktop artifacts and validates completeness,
+version, source commit, Agent provenance, sizes and SHA-256 hashes. It adds
+`SHA256SUMS` and uploads `omniterm-complete-release-COMMIT`. Download that complete
+set, rerun `python scripts/release/validate-release.py dist/release` from the exact
+release checkout, and attach it to a draft GitHub release. Review the assets and
+validation record before publishing. Do not label an incomplete platform set as
+a complete release.
 
 ## Signatures and verification scope
 

@@ -155,7 +155,8 @@ async function main() {
   const agentRoot = path.join(appDirectory, "resources/omniterm-agent");
   const manifest = JSON.parse(await readFile(path.join(agentRoot, "codex-package.json"), "utf8"));
   if (manifest.target !== "x86_64-unknown-linux-gnu" || manifest.variant !== "codex" || manifest.entrypoint !== "bin/codex" || manifest.layoutVersion !== 1) throw new Error("The bundle must include the complete GNU x86-64 Codex package (layout version 1).");
-  const binaries = ["omniTerm", "chrome-sandbox", "resources/omniterm-agent/bin/codex", "resources/omniterm-agent/bin/codex-code-mode-host", "resources/omniterm-agent/codex-path/rg", "resources/omniterm-agent/codex-resources/bwrap", "resources/terminal-host/omniterm-terminal-host"];
+  const nativeTerminalHost = "resources/terminal-host/omniterm-terminal-host";
+  const binaries = ["omniTerm", "chrome-sandbox", "resources/omniterm-agent/bin/codex", "resources/omniterm-agent/bin/codex-code-mode-host", "resources/omniterm-agent/codex-path/rg", "resources/omniterm-agent/codex-resources/bwrap", nativeTerminalHost];
   for (const relative of binaries) await executable(path.join(appDirectory, relative));
   for (const relative of ["resources/app/package.json", "resources/app/build/main.mjs", "resources/app/build/preload.cjs", "resources/app/build-renderer/index.html", "LICENSE", "LICENSES.chromium.html"]) await stat(path.join(appDirectory, relative));
   const packagedMetadata = JSON.parse(await readFile(path.join(appDirectory, "resources/app/package.json"), "utf8"));
@@ -217,8 +218,8 @@ async function main() {
     if (unexpectedSetId.length) throw new Error("Unexpected set-id files in package contents.");
     const result = path.join(outputDirectory, `${packageName}.deb`);
     const hashes = {};
-    for (const relative of [...binaries, nativePty]) hashes[relative] = await digest(path.join(installRoot, relative));
-    const report = { package: "omniterm", version, architecture: "amd64", target: "Ubuntu 22.04", sourceCommit, sourceDirty, allowDirty: Boolean(options["allow-dirty"]), sourceDateEpoch: Number(epoch), compression: supportsThreadLimit ? { threadsMax: 4 } : { cpuAffinity: compressionCpus }, electronVersion: metadata.devDependencies.electron, agentTarget: manifest.target, dependencies, nativePty, elfFiles, sha256: hashes, debSha256: await digest(temporaryDeb) };
+    for (const relative of binaries) hashes[relative] = await digest(path.join(installRoot, relative));
+    const report = { package: "omniterm", version, architecture: "amd64", target: "Ubuntu 22.04", sourceCommit, sourceDirty, allowDirty: Boolean(options["allow-dirty"]), sourceDateEpoch: Number(epoch), compression: supportsThreadLimit ? { threadsMax: 4 } : { cpuAffinity: compressionCpus }, electronVersion: metadata.devDependencies.electron, agentTarget: manifest.target, dependencies, nativeTerminalHost, elfFiles, sha256: hashes, debSha256: await digest(temporaryDeb) };
     await rename(temporaryDeb, result);
     await writeFile(path.join(outputDirectory, `${packageName}.sha256`), `${report.debSha256}  ${path.basename(result)}\n`);
     await writeFile(path.join(outputDirectory, `${packageName}.build.json`), `${JSON.stringify(report, null, 2)}\n`);

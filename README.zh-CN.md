@@ -4,11 +4,11 @@
 
 **让本地终端、远程连接和 Codex Agent 在同一个开源桌面工作台中协作。**
 
-[下载 0.0.1](https://github.com/YanYaoyuan/omniTerm/releases) · [桌面指南](omniterm-desktop/README.md) · [构建 Agent](docs/omniterm/local-build.md) · [反馈问题](https://github.com/YanYaoyuan/omniTerm/issues) · [参与贡献](CONTRIBUTING.md)
+[下载 0.1.0](https://github.com/YanYaoyuan/omniTerm/releases) · [桌面指南](omniterm-desktop/README.md) · [构建 Agent](docs/omniterm/local-build.md) · [反馈问题](https://github.com/YanYaoyuan/omniTerm/issues) · [参与贡献](CONTRIBUTING.md)
 
 omniTerm 面向 **macOS、Linux 和 Windows**，把 Shell 多标签、分屏、SSH、图形 SFTP 文件面板、串口和端口转发放在同一个桌面应用中。旁边是从本仓库源码构建、在本机运行的 Codex Agent：选中终端输出，发送到 Agent 输入框，由你决定何时提交。
 
-项目采用 **Apache-2.0**，当前版本为 **0.0.1**。核心价值是把日常终端操作、远程运维和可审阅的 Agent 实现组合起来。这是早期版本：提供平台包、通过某项运行检查，不代表三平台的全部功能都已完成人工验收。
+项目采用 **Apache-2.0**，当前版本为 **0.1.0**。核心价值是把日常终端操作、远程运维和可审阅的 Agent 实现组合起来。这是早期版本：提供平台包、通过某项运行检查，不代表三平台的全部功能都已完成人工验收。
 
 ## 下载
 
@@ -22,14 +22,14 @@ omniTerm 面向 **macOS、Linux 和 Windows**，把 Shell 多标签、分屏、S
 
 下载前请查看对应 Release 的附件清单与验证记录。首发 macOS、Windows 包尚无开发者签名；遇到系统提示时，按操作系统针对单个应用的正常确认流程打开。首发范围不包含 Intel Mac 安装包。
 
-如果安装过此前的 `0.1.0~preview` Ubuntu 试用包，请明确选择下载的 `0.0.1` `.deb` 安装：Debian 的版本排序会将这次安装识别为降级。操作方式与平台差异见 [桌面指南](omniterm-desktop/README.md)。
 
 ## 现在可以做什么
 
 | 工作流 | 当前已经实现 |
 | --- | --- |
 | 本地终端工作区 | 真实 PTY Shell、多标签、任意嵌套左右/上下分屏、窗格最大化、广播输入、搜索、标签命名/排序、命令面板 |
-| Agent 协作 | 独立 Codex 分栏；在选中的本地工作目录启动；将终端选中文字放入 Agent 草稿，不自动提交 |
+| Agent 协作 | 选择上下文与执行目标，支持命令批准、暂存、取消，以及配置模型服务 |
+| 面板与进程监控 | 拖动停靠工作区、Agent、终端和监控面板；进程总览及支持的进程、线程、日志监控 |
 | SSH 连接 | 保存连接配置；导入含 `Include` 的 `~/.ssh/config`；使用 SSH 别名及单级/多级 `ProxyJump` 跳板机 |
 | 远程文件 | SSH/SFTP 会话旁的图形文件面板；文件与文件夹上传/下载、重命名、删除、新建目录，以及先下载再拖出的文件交互 |
 | 远程主机监控 | CPU、内存、磁盘、网络、负载、运行时间；远端提供受支持工具或接口时显示 GPU 数据 |
@@ -53,7 +53,7 @@ omniTerm 的实用优势在于 **开源 Agent 与远程工具处于同一个工�
 
 | 产品 | 桌面平台 | 许可证 | 工作流侧重 / Agent 集成 |
 | --- | --- | --- | --- |
-| **omniTerm 0.0.1** | **macOS、Linux、Windows** | **[Apache-2.0](LICENSE)** | **本地源码构建的 Codex 分栏，结合 SSH/SFTP 文件面板、跳板机、转发和串口；处于早期阶段** |
+| **omniTerm 0.1.0** | **macOS、Linux、Windows** | **[Apache-2.0](LICENSE)** | **本地源码构建的 Codex 分栏，结合 SSH/SFTP 文件面板、跳板机、转发和串口；处于早期阶段** |
 | [iTerm2](https://iterm2.com/index.html) | macOS | GPL v2 | 丰富的[终端、分屏与 Shell 集成](https://iterm2.com/features.html)；提供 [AI Chat](https://github.com/gnachman/iTerm2#key-features) 与[可选 AI 插件](https://iterm2.com/ai-plugin.html) |
 | [Xshell](https://www.netsarang.com/en/xshell-all-features/) | Windows | [商业许可证](https://www.netsarang.com/en/xshell/)；[家庭/学校免费许可证](https://netsarang.atlassian.net/wiki/spaces/ENSUP/pages/2027552778/Free+User+Registration) | SSH/SFTP/串口、会话管理、跳板机、脚本与远程文件管理 |
 | [MobaXterm](https://mobaxterm.mobatek.net/features.html) | Windows | [Home/Professional 版本](https://mobaxterm.mobatek.net/download.html)，遵循[产品 EULA](https://mobaxterm.mobatek.net/license.html) | 集成 SFTP、SSH 网关、串口、X11 服务器及 RDP/VNC 远程桌面工具 |
