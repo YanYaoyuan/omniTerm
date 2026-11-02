@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   ArrowDown, ArrowUp, ArrowsLeftRight, ArrowsOut, ArrowsIn, Broadcast, CaretRight, Check, Circle,
-  CircleNotch, Command, Copy, DotsThree, FolderOpen, FolderSimple,
+  CircleNotch, Command, Copy, Cpu, DotsThree, FolderOpen, FolderSimple,
   GearSix, HardDrives, MagnifyingGlass, Monitor, PaperPlaneTilt, Palette, PencilSimple,
   PlugsConnected, Plus, Robot, SidebarSimple, SquareSplitHorizontal, SquareSplitVertical, TerminalWindow, Trash, X,
   ClipboardText, WarningCircle, SlidersHorizontal, ArrowClockwise, TextAa,
@@ -585,6 +585,7 @@ export function App() {
       { id: "open-folder", group: "工作区", label: "在文件夹中打开终端…", icon: FolderOpen, run: chooseDirectory },
       { id: "agent-send", group: "omniTerm Agent", label: "附加选中内容到 omniTerm Agent", icon: PaperPlaneTilt, shortcut: key("sendToAgent"), run: actions.sendToAgent },
       { id: "agent-toggle", group: "omniTerm Agent", label: agentVisible ? "隐藏 omniTerm Agent 面板" : "显示 omniTerm Agent 面板", icon: SidebarSimple, shortcut: key("toggleAgent"), run: actions.toggleAgent },
+      { id: "process-window", group: "工作区", label: "打开进程监视窗口", keywords: "process monitor top ps 进程", icon: Cpu, run: () => safely(() => api.openProcessWindow(activeSession?.kind === "ssh" && activeSession.remote ? activeSession.id : "local")) },
       { id: "font-bigger", group: "外观", label: "放大字体", icon: TextAa, shortcut: key("fontBigger"), run: actions.fontBigger },
       { id: "font-smaller", group: "外观", label: "缩小字体", icon: TextAa, shortcut: key("fontSmaller"), run: actions.fontSmaller },
       { id: "font-reset", group: "外观", label: "重置字体大小", icon: TextAa, shortcut: key("fontReset"), run: actions.fontReset },
@@ -650,7 +651,7 @@ export function App() {
       <div className="window-title"><FolderSimple size={13} /><span>{basename(shownCwd)}</span><span className="title-divider">/</span><span>{activeTab ? tabLabel(activeTab) : "工作区"}</span></div>
       <div className="titlebar-actions">
         <ThemeMenu current={settings.theme} onSelect={(id) => setSettings((previous) => ({ ...previous, theme: id }))} />
-        <button className="titlebar-button" title={`命令面板（${key("palette")}）`} onClick={() => setPaletteOpen(true)}><Command size={15} /><span>命令</span><kbd>{key("palette")}</kbd></button>
+        <button className="titlebar-button" title="打开进程监视窗口" onClick={() => safely(() => api.openProcessWindow(activeSession?.kind === "ssh" && activeSession.remote ? activeSession.id : "local"))}><Cpu size={15} /><span>进程</span></button><button className="titlebar-button" title={`命令面板（${key("palette")}）`} onClick={() => setPaletteOpen(true)}><Command size={15} /><span>命令</span><kbd>{key("palette")}</kbd></button>
         <button className={`titlebar-button ${agentVisible ? "active" : ""}`} title={`${agentVisible ? "隐藏 omniTerm Agent 面板（对话继续运行）" : "显示 omniTerm Agent 面板"}（${key("toggleAgent")}）`} onClick={() => setAgentVisible((visible) => !visible)}><Robot size={16} /><span>omniTerm Agent</span><SidebarSimple size={15} /></button>
       </div>
     </header>

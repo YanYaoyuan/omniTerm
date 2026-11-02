@@ -165,3 +165,20 @@ export function conditionHolds(condition, sample) {
   if (condition.op === "contains") return typeof value === "string" && value.includes(condition.value);
   return typeof value === "number" && OPERATORS[condition.op](value, condition.value);
 }
+
+const MAX_PROCESSES = 5000;
+
+export const PROCESS_LIST_SCRIPT = `export LC_ALL=C
+ps -A -o pid=,ppid=,pcpu=,rss=,comm=
+`;
+
+export function parseProcessList(output) {
+  const processes = [];
+  for (const line of output.split("\n")) {
+    const match = /^\s*(\d+)\s+(\d+)\s+([\d.]+)\s+(\d+)\s+(.+?)\s*$/.exec(line);
+    if (!match) continue;
+    processes.push({ pid: Number(match[1]), ppid: Number(match[2]), cpu: Number(match[3]), memoryKb: Number(match[4]), command: match[5].slice(0, 200) });
+    if (processes.length >= MAX_PROCESSES) break;
+  }
+  return processes;
+}

@@ -1,5 +1,6 @@
 // Copyright 2026 omniTerm contributors. SPDX-License-Identifier: Apache-2.0
 import test from "node:test";
+import { monitorRequest, processRows, pushTrends, summarize } from "./process/process-logic.js";
 import { buildMonitorRequest, emptyMonitorForm, monitorMetrics, monitorReducer, sparkline, targetSummary } from "./agent/monitor-logic.js";
 import { citationParts, conversationReducer, emptyConversation, executable, mentionMatches, mentionQuery, operationReason, pruneSelection, refsFor, scopeSummary } from "./agent/agent-logic.js";
 import assert from "node:assert/strict";
@@ -352,4 +353,44 @@ test("monitor values and trends read cleanly", () => {
   assert.equal(sparkline([{ cpu: 1 }], "cpu"), "");
   assert.equal(sparkline([{ cpu: 0 }, { cpu: 10 }], "cpu"), "0.0,25.0 100.0,1.0");
   assert.equal(targetSummary({ kind: "thread", pid: 1, tid: 2 }), "线程 1/2");
+});
+
+const processList = [
+  { pid: 1, ppid: 0, cpu: 0, memoryKb: 100, command: "init" },
+  { pid: 10, ppid: 1, cpu: 5, memoryKb: 200, command: "server" },
+  { pid: 11, ppid: 10, cpu: 50, memoryKb: 300, command: "worker" },
+  { pid: 12, ppid: 10, cpu: 1, memoryKb: 400, command: "logger" },
+  { pid: 99, ppid: 77, cpu: 2, memoryKb: 500, command: "orphan" },
+];
+
+test("processes form a tree, with orphans at the top level", () => {
+  const rows = processRows(processList);
+  assert.deepEqual(rows.map(({ pid, depth }) => [pid, depth]), [[1, 0], [10, 1], [12, 2], [11, 2], [99, 0]]);
+});
+
+test("a cycle in reported parents cannot hang the window", () => {
+  const rows = processRows([{ pid: 1, ppid: 2, cpu: 0, memoryKb: 0, command: "a" }, { pid: 2, ppid: 1, cpu: 0, memoryKb: 0, command: "b" }]);
+  assert.deepEqual(rows.map(({ pid }) => pid).sort(), [1, 2]);
+});
+
+test("searching keeps a match's ancestors for context, or lists flat when sorted", () => {
+  assert.deepEqual(processRows(processList, { query: "worker" }).map(({ pid }) => pid), [1, 10, 11]);
+  assert.deepEqual(processRows(processList, { query: "12" }).map(({ pid }) => pid), [1, 10, 12]);
+  assert.deepEqual(processRows(processList, { sort: "cpu" }).map(({ pid }) => pid).slice(0, 2), [11, 10]);
+  assert.deepEqual(processRows(processList, { sort: "memoryKb", query: "o" }).map(({ pid }) => pid), [99, 12, 11]);
+});
+
+test("trends follow each process, and end with it", () => {
+  let trends = pushTrends(new Map(), processList.slice(0, 2), 3);
+  trends = pushTrends(trends, [{ ...processList[1], cpu: 9 }], 3);
+  assert.deepEqual(trends.get(10).map(({ cpu }) => cpu), [5, 9]);
+  assert.equal(trends.has(1), false);
+  for (let index = 0; index < 5; index++) trends = pushTrends(trends, [processList[1]], 3);
+  assert.equal(trends.get(10).length, 3);
+});
+
+test("attaching a monitor pins the selected process and host", () => {
+  assert.deepEqual(monitorRequest(processList[2], "local"), { host: "local", label: "worker (11)", target: { kind: "process", pid: 11 }, conditions: [{ op: "gone" }], intervalSeconds: 5, durationMinutes: 60 });
+  assert.deepEqual(monitorRequest(processList[2], "s1").host, { sessionId: "s1" });
+  assert.deepEqual(summarize(processList), { count: 5, cpu: 58, memoryKb: 1500 });
 });

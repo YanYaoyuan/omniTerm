@@ -10,6 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { buildCommandPlan, externalUrl, resolveDesktopAgent, validateProfile } from "./command-plan.mjs";
 import { describeFailure } from "./agent-runtime.mjs";
 import { AgentService } from "./agent-service.mjs";
+import { PROCESS_LIST_SCRIPT, parseProcessList } from "./monitor-probe.mjs";
 import { MonitorService } from "./monitor-service.mjs";
 import { ProfileStore } from "./profile-store.mjs";
 import { CredentialVault, PROVIDER_PRESETS, ProviderStore } from "./provider-store.mjs";
@@ -30,6 +31,8 @@ let vault;
 let profiles;
 let planOptions;
 let rendererUrl;
+let processWindow = null;
+let processUrl;
 let downloadDirectory;
 let windowTransparent = false;
 
@@ -81,13 +84,22 @@ function send(channel, payload) {
   if (window && !window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send(channel, payload);
 }
 
-function trustedSender(event) {
+// The process window sees host data and starts read-only monitors. It has no path to a
+// terminal, an approval or a credential, whatever its renderer tries.
+const PROCESS_WINDOW_CHANNELS = new Set(["process-snapshot", "workspace-list", "process-monitor-start"]);
+
+function trustedSender(event, channel) {
+  if (processWindow && !processWindow.isDestroyed() && event.sender === processWindow.webContents) {
+    if (event.senderFrame !== processWindow.webContents.mainFrame || event.senderFrame.url.split("?")[0] !== processUrl || !PROCESS_WINDOW_CHANNELS.has(channel)) throw new Error("This window cannot make that request.");
+    return;
+  }
   if (!window || window.isDestroyed() || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== rendererUrl) throw new Error("IPC requests are only accepted from the omniTerm main window.");
 }
 
 // Remote first: it stops each SSH master synchronously through its control
 // socket, which must still exist when the terminals behind them go away.
 function disposeSessions() {
+  if (processWindow && !processWindow.isDestroyed()) processWindow.close();
   monitors?.dispose();
   agent?.dispose();
   remote?.dispose();
@@ -138,6 +150,13 @@ let monitors;
     "provider-test": async (id) => {
       try { await agent.testProvider(id); return { state: providerState() }; }
       catch (error) { return { state: providerState(), failure: describeFailure(error.message) }; }
+    },
+    "open-process-window": (host) => openProcessWindow(host),
+    "process-snapshot": async (host) => parseProcessList(host === "local" ? await runLocalProbe(PROCESS_LIST_SCRIPT) : await remote.exec(host, PROCESS_LIST_SCRIPT)),
+    // Clicking the button is the approval, so this path can never carry an action.
+    "process-monitor-start": async (request) => {
+      const { id } = monitors.propose({ ...request, action: null, proposedBy: "user" });
+      return monitors.approve(id);
     },
     "monitor-list": () => monitors.list(),
     "monitor-create": (request) => monitors.propose({ ...request, proposedBy: "user" }),
@@ -194,7 +213,7 @@ let monitors;
       return downloadDirectory;
     },
   };
-  for (const [name, handler] of Object.entries(handlers)) ipcMain.handle(`omniterm:${name}`, (event, payload) => { trustedSender(event); return handler(payload); });
+  for (const [name, handler] of Object.entries(handlers)) ipcMain.handle(`omniterm:${name}`, (event, payload) => { trustedSender(event, name); return handler(payload); });
   // startDrag must run while the renderer is still inside its dragstart event.
   ipcMain.on("omniterm:remote-start-drag", (event, request) => {
     try {
@@ -203,6 +222,26 @@ let monitors;
       event.sender.startDrag({ file: remote.dragFile(request), icon });
     } catch (error) { send("omniterm:remote-drag-error", { message: error.message }); }
   });
+}
+
+function openProcessWindow(host) {
+  const query = typeof host === "string" && host !== "local" ? { host } : {};
+  if (processWindow && !processWindow.isDestroyed()) {
+    processWindow.loadFile(path.join(app.getAppPath(), "build-renderer", "process.html"), { query });
+    processWindow.focus();
+    return true;
+  }
+  const page = path.join(app.getAppPath(), "build-renderer", "process.html");
+  processUrl = pathToFileURL(page).href;
+  processWindow = new BrowserWindow({ width: 980, height: 680, minWidth: 640, minHeight: 420, title: "omniTerm 进程监视", backgroundColor: "#14181f", webPreferences: { preload: path.join(path.dirname(fileURLToPath(import.meta.url)), "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
+  processWindow.setMenuBarVisibility(false);
+  processWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  processWindow.webContents.on("will-navigate", (event) => event.preventDefault());
+  processWindow.webContents.on("will-redirect", (event) => event.preventDefault());
+  processWindow.webContents.on("will-attach-webview", (event) => event.preventDefault());
+  processWindow.on("closed", () => { processWindow = null; });
+  processWindow.loadFile(page, { query });
+  return true;
 }
 
 function createWindow() {

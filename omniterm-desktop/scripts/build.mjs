@@ -21,5 +21,5 @@ await buildRenderer({
   root,
   base: "./",
   configFile: false,
-  build: { outDir: "build-renderer", emptyOutDir: true, sourcemap: true },
+  build: { outDir: "build-renderer", emptyOutDir: true, sourcemap: true, rolldownOptions: { input: { main: path.join(root, "index.html"), process: path.join(root, "process.html") } } },
 });

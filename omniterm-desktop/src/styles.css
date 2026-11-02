@@ -535,3 +535,19 @@ kbd { font-family: var(--mono); font-size: 10px; background: rgb(var(--ink) / 0.
 .monitor-form label { display: flex; flex-direction: column; gap: 2px; color: var(--muted); font-size: 10px; }
 .monitor-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .monitor-history { margin: 0; padding-left: 14px; color: var(--muted); font-size: 10px; }
+.process-app { height: 100dvh; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; background: var(--bg); color: var(--text-soft); font-size: 12px; }
+.process-bar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+.process-bar input, .process-bar select { font: inherit; color: inherit; background: rgb(var(--ink) / 0.03); border: 1px solid var(--border); border-radius: 5px; padding: 4px 8px; }
+.process-bar input { flex: 1; min-width: 0; }
+.process-summary { flex-shrink: 0; color: var(--muted); font-size: 11px; }
+.process-table { overflow: auto; min-height: 0; }
+.process-table table { width: 100%; border-collapse: collapse; }
+.process-table th { position: sticky; top: 0; padding: 6px 10px; text-align: left; font-weight: 500; font-size: 11px; color: var(--muted); background: var(--bg); cursor: pointer; }
+.process-table td { padding: 3px 10px; white-space: nowrap; }
+.process-table tr.selected td { background: rgb(var(--accent-rgb) / 0.12); }
+.process-table td.number, .process-table th.number { text-align: right; font-variant-numeric: tabular-nums; }
+.process-detail { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--border); }
+.process-trend { font-size: 10px; color: var(--muted); }
+.process-trend svg { display: block; width: 100%; height: 34px; color: var(--accent); }
+.process-actions { display: flex; flex-direction: column; gap: 5px; }
+.process-error { padding: 12px 14px; color: var(--danger, #e06c75); }
