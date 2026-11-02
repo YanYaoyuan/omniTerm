@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PROCESS_LIST_SCRIPT, conditionHolds, parseProbe, parseProcessList, probeScript, validateCondition, validateTarget } from "./monitor-probe.mjs";
@@ -49,6 +49,77 @@ test("a real log is followed from its end, across appends and rotation", { skip:
     assert.equal(parseProbe(target, sh(probeScript(target, { offset: second.nextOffset }))).text, "x\n");
     assert.equal(parseProbe(target, sh(probeScript(validateTarget({ kind: "log", path: `${file}.missing` })))).exists, false);
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+// Each replacement is a new file at the same path, however it got there.
+async function followsReplacedLogs(read, file) {
+  const next = async (state) => { const sample = await read(state); return [sample, { offset: sample.nextOffset, mark: sample.mark }]; };
+  writeFileSync(file, "old\n");
+  let [sample, state] = await next({});
+  assert.equal(sample.text, "");
+
+  renameSync(file, `${file}.1`);
+  writeFileSync(file, "ERROR new log\n");
+  [sample, state] = await next(state);
+  assert.equal(sample.text, "ERROR new log\n", "larger replacement");
+
+  appendFileSync(file, "日志 again\n");
+  [sample, state] = await next(state);
+  assert.equal(sample.text, "日志 again\n", "an append stays an append");
+  [sample, state] = await next(state);
+  assert.equal(sample.text, "", "nothing new");
+
+  const size = Buffer.byteLength("ERROR new log\n日志 again\n");
+  renameSync(file, `${file}.2`);
+  writeFileSync(file, "E".repeat(size - 1) + "\n");
+  [sample, state] = await next(state);
+  assert.equal(sample.text, "E".repeat(size - 1) + "\n", "equal-sized replacement");
+
+  rmSync(file);
+  writeFileSync(file, "ERROR after a delete, in a longer file than before it was\n".repeat(3));
+  [sample, state] = await next(state);
+  assert.match(sample.text, /^ERROR after/, "deleted and recreated, perhaps on the same inode");
+
+  writeFileSync(file, "ERROR rewritten in place, keeping the inode\n".repeat(4));
+  [sample, state] = await next(state);
+  assert.match(sample.text, /^ERROR rewritten/, "rewritten in place and larger");
+
+  writeFileSync(file, "x\n");
+  [sample, state] = await next(state);
+  assert.equal(sample.text, "x\n", "truncated");
+  appendFileSync(file, "y\n");
+  [sample] = await next(state);
+  assert.equal(sample.text, "y\n");
+}
+
+test("a real log is read from its start whenever the file behind the path changes", { skip: !unix }, async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "omniterm-log-"));
+  try {
+    const file = path.join(directory, "app.log");
+    const target = validateTarget({ kind: "log", path: file });
+    await followsReplacedLogs(async (state) => parseProbe(target, sh(probeScript(target, state))), file);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("a long read keeps raw byte offsets, even when a character is split", { skip: !unix }, () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "omniterm-log-"));
+  try {
+    const file = path.join(directory, "app.log");
+    const target = validateTarget({ kind: "log", path: file });
+    writeFileSync(file, "");
+    const start = parseProbe(target, sh(probeScript(target, {})));
+    const body = "日".repeat(30_000);
+    appendFileSync(file, body);
+    const first = parseProbe(target, sh(probeScript(target, { offset: start.nextOffset, mark: start.mark })));
+    assert.equal(first.nextOffset, 64 * 1024);
+    const second = parseProbe(target, sh(probeScript(target, { offset: first.nextOffset, mark: first.mark })));
+    assert.equal(second.nextOffset, Buffer.byteLength(body));
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("a mark that is not one of ours never reaches a script", () => {
+  const target = validateTarget({ kind: "log", path: "/tmp/app.log" });
+  assert.doesNotMatch(probeScript(target, { offset: 4, mark: "x\"; rm -rf /; \"" }), /rm -rf/);
 });
 
 test("a real shared-memory region is read through its declared layout", { skip: !existsSync("/dev/shm") }, () => {
@@ -228,6 +299,206 @@ test("a request with no action reaches no broker task, however it was asked for"
   await service.approve(id);
   await settle();
   assert.deepEqual(calls, []);
+});
+
+// The host answers each named method only when the test releases it.
+function heldHost(...held) {
+  const calls = [];
+  const release = {};
+  const started = {};
+  for (const method of held) started[method] = new Promise((resolve) => { release[`${method}:started`] = resolve; });
+  const host = { request: async (method) => {
+    calls.push(method);
+    if (held.includes(method)) {
+      release[`${method}:started`]();
+      return new Promise((resolve) => { release[method] = resolve; });
+    }
+    return method === "operation.propose" ? { operationId: "op", status: "approved" } : true;
+  } };
+  return { host, calls, release, started };
+}
+
+function heldService(host, run = async () => "exists=1\ncpu=80\n") {
+  const timers = [];
+  const service = new MonitorService({ host, now: () => 1000, run, schedule: (callback) => { timers.push(callback); return timers.length; }, unschedule: () => {} });
+  return { service, timers };
+}
+
+test("a pause while a proposal is in flight sends nothing", async () => {
+  const { host, calls, release, started } = heldHost("operation.propose");
+  const { service, timers } = heldService(host);
+  const { id } = service.propose({ ...request, action });
+  await service.approve(id);
+  await started["operation.propose"];
+  await service.pause(id);
+  release["operation.propose"]({ operationId: "op", status: "approved" });
+  await settle();
+  assert.equal(calls.filter((method) => method === "operation.execute").length, 0);
+  assert.equal(service.get(id).status, "paused");
+  assert.equal(timers.length, 0);
+  assert.match(service.get(id).history.at(-1).message, /未执行/);
+});
+
+test("a revocation while a proposal is in flight sends nothing, and sampling goes on", async () => {
+  const { host, calls, release, started } = heldHost("operation.propose");
+  const { service, timers } = heldService(host);
+  const { id } = service.propose({ ...request, action });
+  await service.approve(id);
+  await started["operation.propose"];
+  await service.revokeAction(id);
+  release["operation.propose"]({ operationId: "op", status: "approved" });
+  await settle();
+  assert.equal(calls.filter((method) => method === "operation.execute").length, 0);
+  assert.equal(service.get(id).status, "running");
+  assert.equal(timers.length, 1);
+});
+
+test("a paused task holds no authority in the broker, and resuming restores exactly its own", async () => {
+  const { service, calls, host } = fixture();
+  const { id } = service.propose({ ...request, action });
+  await service.approve(id);
+  await settle();
+  calls.length = 0;
+  await service.pause(id);
+  // task.end would interrupt a running command; removing the target voids only what is unwritten.
+  assert.deepEqual(calls, [["task.update", { taskId: id, context: [], targets: [], paused: true }]]);
+  calls.length = 0;
+  host.proposalStatus = "pending";
+  await service.resume(id);
+  assert.deepEqual(calls.slice(0, 2), [
+    ["task.update", { taskId: id, context: [], targets: [action.terminal], paused: false }],
+    ["task.grant", { taskId: id, target: action.terminal, expiresAt: service.get(id).expiresAt }],
+  ]);
+});
+
+test("a stop during approval wins, and the broker never sees a grant after it", async () => {
+  const { host, calls, release, started } = heldHost("task.begin");
+  const { service, timers } = heldService(host);
+  const { id } = service.propose({ ...request, action });
+  const approving = service.approve(id);
+  await started["task.begin"];
+  await service.stop(id);
+  release["task.begin"](true);
+  await approving;
+  await settle();
+  assert.deepEqual(calls, ["task.begin", "task.end"]);
+  assert.equal(service.get(id).status, "stopped");
+  assert.equal(timers.length, 0);
+});
+
+test("a denial during approval leaves no task and no grant", async () => {
+  const { host, calls, release, started } = heldHost("task.begin");
+  const { service } = heldService(host);
+  const { id } = service.propose({ ...request, action });
+  const approving = service.approve(id);
+  await started["task.begin"];
+  await assert.rejects(service.approve(id), /不在等待批准/);
+  service.deny(id);
+  release["task.begin"](true);
+  await approving;
+  assert.deepEqual(calls, ["task.begin", "task.end"]);
+  assert.equal(service.list().length, 0);
+});
+
+test("a revocation during approval leaves a read-only monitor without a grant", async () => {
+  const { host, calls, release, started } = heldHost("task.begin");
+  const { service } = heldService(host);
+  const { id } = service.propose({ ...request, action });
+  const approving = service.approve(id);
+  await started["task.begin"];
+  await service.revokeAction(id);
+  release["task.begin"](true);
+  await approving;
+  assert.deepEqual(calls.slice(0, 2), ["task.begin", "task.end"]);
+  assert.ok(!calls.includes("task.grant"));
+  assert.equal(service.get(id).status, "running");
+});
+
+test("a stop while resuming wins, and no grant or sample follows it", async () => {
+  const { host, calls, release } = heldHost("task.update");
+  let ran = 0;
+  const { service } = heldService(host, async () => { ran++; return "exists=1\ncpu=1\n"; });
+  const { id } = service.propose({ ...request, action });
+  await service.approve(id);
+  await settle();
+  const pausing = service.pause(id);
+  release["task.update"](true);
+  await pausing;
+  const before = ran;
+  calls.length = 0;
+  const resuming = service.resume(id);
+  await settle();
+  await service.stop(id);
+  release["task.update"](true);
+  await resuming;
+  await settle();
+  assert.deepEqual(calls, ["task.update", "task.end"]);
+  assert.equal(service.get(id).status, "stopped");
+  assert.equal(ran, before);
+});
+
+test("resuming with a sample still in flight leaves one sampling loop", async () => {
+  const { host } = heldHost();
+  const pending = [];
+  const { service, timers } = heldService(host, () => new Promise((resolve) => pending.push(resolve)));
+  const { id } = service.propose(request);
+  await service.approve(id);
+  await settle();
+  await service.pause(id);
+  await service.resume(id);
+  await settle();
+  assert.equal(pending.length, 2);
+  pending[1]("exists=1\ncpu=2\n");
+  await settle();
+  pending[0]("exists=1\ncpu=99\n");
+  await settle();
+  assert.equal(timers.length, 1);
+  assert.equal(service.get(id).lastSample.cpu, 2, "the older sample is dropped");
+  assert.equal(service.get(id).series.length, 1);
+});
+
+test("a timer left over from before a pause cannot start a second loop", async () => {
+  const { service, tick } = fixture();
+  let ran = 0;
+  const { id } = service.propose(request);
+  await service.approve(id);
+  await settle();
+  await service.pause(id);
+  service.run = async () => { ran++; return "exists=1\n"; };
+  await service.resume(id);
+  await settle();
+  assert.equal(ran, 1);
+  await tick();
+  await settle();
+  assert.equal(ran, 1);
+});
+
+test("a stopped task stays stopped, and a finished one keeps its outcome", async () => {
+  const { service, calls } = fixture();
+  const { id } = service.propose({ ...request, action });
+  await service.approve(id);
+  await settle();
+  await service.stop(id);
+  const ends = calls.filter(([method]) => method === "task.end").length;
+  await service.stop(id);
+  assert.equal(calls.filter(([method]) => method === "task.end").length, ends);
+});
+
+test("a log absent at the first sample is read from its start once it appears", async () => {
+  const seen = [];
+  const { service } = fixture();
+  const outputs = ["exists=0\n", "exists=1\noffset=0\nnext=6\nmark=1-2\n@@text\nERROR\n"];
+  service.run = async (host, script) => { seen.push(script); return outputs.shift() ?? "exists=0\n"; };
+  const { id } = service.propose({ ...request, target: { kind: "log", path: "/tmp/absent.log" }, conditions: [{ field: "text", op: "contains", value: "ERROR" }] });
+  await service.approve(id);
+  await settle();
+  assert.match(seen[0], /start=\$size/);
+  const monitor = service.monitors.get(id);
+  assert.deepEqual(monitor.probeState, { offset: 0 });
+  await service.sample(monitor);
+  assert.deepEqual(monitor.probeState, { offset: 6, mark: "1-2" });
+  assert.equal(monitor.triggers, 1);
+  assert.equal(service.get(id).lastSample.mark, undefined);
 });
 
 test("requests that cannot be honoured are refused up front", () => {
