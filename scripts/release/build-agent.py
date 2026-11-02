@@ -121,6 +121,11 @@ def main():
     manifest = json.loads((package / 'codex-package.json').read_text())
     if manifest.get('target') != args.target or manifest.get('variant') != 'codex':
         raise RuntimeError('Invalid final Agent manifest')
+    # Actions artifact ZIP downloads reset Unix executable modes to 0644.
+    # Restore only the required binaries, after their source and hashes pass.
+    if args.verify_existing and not spec.is_windows:
+        for name in required:
+            (package / name).chmod(0o755)
     provenance = {'schemaVersion': 1, 'desktopSourceCommit': commit, 'agentBuildSourceCommit': reused_from or commit,
                   'agentSourceFingerprint': source_fingerprint, 'target': args.target, 'cargoProfile': args.profile,
                   'reusedIdenticalSource': reused_from is not None, 'binarySha256': hashes}
