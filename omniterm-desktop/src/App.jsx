@@ -461,6 +461,9 @@ export function App() {
   }, [info, settings.backgroundMode, notify]);
   const scene = backdrop(settings, windowTransparent);
   const tokens = themeTokens(themeFor(settings.theme));
+  useEffect(() => {
+    api.setWindowTheme(settings.theme).catch((error) => notify(error.message));
+  }, [settings.theme, notify]);
   useLayoutEffect(() => {
     const root = document.documentElement;
     for (const [name, value] of Object.entries(tokens)) root.style.setProperty(name, value);
