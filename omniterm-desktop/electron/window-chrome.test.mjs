@@ -1,3 +1,4 @@
+// Copyright 2026 omniTerm contributors. SPDX-License-Identifier: Apache-2.0
 import test from "node:test";
 import assert from "node:assert/strict";
 import { contrast, THEMES } from "../src/themes.js";

@@ -1,3 +1,4 @@
+// Copyright 2026 omniTerm contributors. SPDX-License-Identifier: Apache-2.0
 import { THEMES, themeFor, themeTokens } from "../src/themes.js";
 
 export const TITLEBAR_HEIGHT = 43;

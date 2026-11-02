@@ -234,7 +234,7 @@ try {
     await until(() => processPage.run(`document.documentElement.style.getPropertyValue('color-scheme') === ${JSON.stringify(scheme)}`), `the process window follows ${name}`);
   }
   step("the process window follows light and dark theme changes");
-  const refused = await processPage.run(`Promise.allSettled([window.omniterm.writeSession({ id: "x", data: "y" }), window.omniterm.approveOperation({}), window.omniterm.monitorApprove("x"), window.omniterm.providerState()]).then((results) => results.map(({ status, reason }) => status + ":" + (reason?.message ?? "")))`);
+  const refused = await processPage.run(`Promise.allSettled([window.omniterm.writeSession({ id: "x", data: "y" }), window.omniterm.approveOperation({}), window.omniterm.monitorApprove("x"), window.omniterm.providerState(), window.omniterm.setWindowTheme("github")]).then((results) => results.map(({ status, reason }) => status + ":" + (reason?.message ?? "")))`);
   for (const result of refused) assert.match(result, /^rejected:This window cannot make that request/);
   await processPage.run(`document.querySelector(".process-detail button").click()`);
   await until(async () => (await app.run("window.omniterm.monitorList()")).some(({ status, action }) => status === "running" && !action), "a read-only monitor in the main window");
