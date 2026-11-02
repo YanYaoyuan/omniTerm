@@ -69,16 +69,30 @@ function MonitorCard({ monitor, api, notify }) {
   </div>;
 }
 
-export function MonitorView({ api, terminals, platform, notify }) {
+const REFRESH_MS = 3000;
+
+export function MonitorView({ api, platform, notify, onProposal }) {
   const [monitors, setMonitors] = useState([]);
+  const [terminals, setTerminals] = useState([]);
   const [creating, setCreating] = useState(false);
   useEffect(() => {
     api.monitorList().then(setMonitors).catch((error) => notify(error.message));
     return api.onMonitorEvent((event) => {
       if (event.type === "monitor-alert") notify(`${event.label || "监控"}：${event.message}`, "success");
-      else setMonitors((previous) => monitorReducer(previous, event));
+      else {
+        // A proposal waits on a person, so it must not sit in a hidden panel.
+        if (event.monitor?.status === "pending") onProposal?.();
+        setMonitors((previous) => monitorReducer(previous, event));
+      }
     });
-  }, [api, notify]);
+  }, [api, notify, onProposal]);
+  useEffect(() => {
+    if (!creating) return undefined;
+    const refresh = () => api.listWorkspace().then((list) => setTerminals(list.terminals)).catch(() => {});
+    refresh();
+    const timer = setInterval(refresh, REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [api, creating]);
   return <div className="monitor-view">
     {!creating && <div className="operation-actions"><button className="button secondary" onClick={() => setCreating(true)}><Plus size={14} />新建监控</button></div>}
     {creating && <MonitorForm api={api} terminals={terminals} platform={platform} notify={notify} onDone={() => setCreating(false)} />}

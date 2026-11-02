@@ -1,5 +1,7 @@
 # omniTerm Agent follow-ups
 
+`integration/agent-workspace` combines everything below for acceptance. Nothing is merged to `main`.
+
 Scoped follow-ups to [#4](https://github.com/YanYaoyuan/omniTerm/issues/4), from manual GUI testing of PR #5. **None of this is implemented or part of PR #5.** Each section can become its own issue.
 
 ## 1. Proposal: reliable approved execution over SSH
@@ -116,11 +118,21 @@ A separate window showing processes on the selected local or remote host.
 
 `electron/remote-metrics.mjs` already collects host metrics and may be a starting point for remote hosts.
 
-## 5. Draggable panels
+## 5. Dockable workspace
 
-- Drag a panel to the left, right, top or bottom of another to change the split layout.
-- Move a panel into another tab.
-- Preserve the resulting layout.
-- Moving a panel preserves its live session rather than recreating the terminal.
+Maintainer scope: terminal panes, the Agent panel, workspace and file panels, and future monitoring panels all dock, resize, save and restore, with live state preserved. Moving a panel must not change the Agent's context or execution target.
 
-Terminal views are already rendered flat and positioned from the layout tree, so a move can be a layout change without touching the xterm instance or session; `src/layout.js` needs a move operation. Workspace restore needs to handle the new layouts. Operations pin to session and epoch, so add a regression that a move can't affect execution targets.
+| Requirement | Status |
+| --- | --- |
+| Terminal panes: dock on any side, move between tabs, new tab | Implemented |
+| Agent panel and workspace/file panel: dock on any side of each other or the terminal area | Implemented |
+| Resize docked regions | Implemented |
+| Save and restore arrangement and sizes | Implemented |
+| Live state survives moves | Implemented by construction: panels and terminals are never remounted. `npm run test:gui` verifies it |
+| Reset the layout | Implemented, in the command palette |
+| A single terminal pane docked directly beside the Agent, workspace or monitoring panel, and back into a tab | Implemented on `feat/unified-docking` (#16) |
+| The monitoring panel in the dock | Implemented on `feat/unified-docking` (#16). It opens by itself when the Agent proposes a monitor |
+| Dropping a pane onto the terminal area's own edge | **Outstanding.** Panes drop on other panes, panels, tabs or **+** |
+| Separate windows or floating panels | Not requested, not implemented |
+
+A docked pane comes back as a tab after a restart, because its session doesn't survive one. Terminal views and panels are rendered flat and positioned from their layout trees, so a move only changes layout state. A stored layout is used only if it holds every panel exactly once, so a layout saved by a build with different panels falls back to the default.

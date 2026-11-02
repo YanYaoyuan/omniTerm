@@ -4,7 +4,7 @@ import { monitorRequest, processRows, pushTrends, summarize } from "./process/pr
 import { buildMonitorRequest, emptyMonitorForm, kindNote, monitorMetrics, monitorReducer, sparkline, targetSummary } from "./agent/monitor-logic.js";
 import { citationParts, conversationReducer, emptyConversation, executable, mentionMatches, mentionQuery, operationReason, pruneSelection, refsFor, scopeSummary } from "./agent/agent-logic.js";
 import assert from "node:assert/strict";
-import { computeLayout, equalize, MIN_RATIO, neighborPane, pane, paneIds, removePane, setRatio, splitPane } from "./layout.js";
+import { DOCK_PANELS, computeLayout, defaultDock, dockedTerminal, dockedTerminals, dropSide, equalize, insertPane, MIN_RATIO, moveDockPanel, movePaneInTabs, neighborPane, pane, paneIds, parseDock, pruneDock, removePane, setRatio, splitPane, storableDock, takePaneFromTabs, visibleDock } from "./layout.js";
 import { isAppShortcut, matchShortcut, shortcutLabel, tabCycle, tabNumber } from "./shortcuts.js";
 import { createRemoteStore, formatBytes, formatUptime, joinRemote, nextSelection, parentRemote, percent, sortEntries, validEntryName } from "./remote-utils.js";
 import { cwdFromOsc7, fuzzyScore, isTerminalReply, quotePath } from "./terminal-utils.js";
@@ -402,4 +402,158 @@ test("a target a host can't read is explained up front", () => {
   assert.match(kindNote("thread", "local", "darwin"), /macOS/);
   assert.match(kindNote("sharedMemory", "s1", "win32"), /Linux/);
   assert.equal(kindNote("log", "s1", "win32"), "");
+});
+
+const tab = (id, root, focus = paneIds(root)[0]) => ({ id, root, focus, title: id, broadcast: false, zoomed: null });
+const newTab = () => ({ id: "new", root: null, focus: null, title: "", broadcast: false, zoomed: null });
+
+test("a pane can be inserted on any side of another", () => {
+  const rect = (side) => {
+    const { panes } = computeLayout(insertPane(pane("a"), "a", "b", side));
+    return panes.find(({ sessionId }) => sessionId === "b").rect;
+  };
+  assert.deepEqual(rect("left"), { x: 0, y: 0, w: 0.5, h: 1 });
+  assert.deepEqual(rect("right"), { x: 0.5, y: 0, w: 0.5, h: 1 });
+  assert.deepEqual(rect("top"), { x: 0, y: 0, w: 1, h: 0.5 });
+  assert.deepEqual(rect("bottom"), { x: 0, y: 0.5, w: 1, h: 0.5 });
+});
+
+test("the nearest edge decides where a pane lands", () => {
+  assert.equal(dropSide(0.1, 0.5), "left");
+  assert.equal(dropSide(0.9, 0.5), "right");
+  assert.equal(dropSide(0.5, 0.1), "top");
+  assert.equal(dropSide(0.5, 0.9), "bottom");
+});
+
+test("moving a pane inside a tab rearranges it and keeps every session", () => {
+  const root = splitPane(splitPane(pane("a"), "a", "b", "row"), "b", "c", "column");
+  const [moved] = movePaneInTabs([tab("t", root)], "c", { tabId: "t", target: "a", side: "top" });
+  assert.deepEqual(paneIds(moved.root).sort(), ["a", "b", "c"]);
+  const { panes } = computeLayout(moved.root);
+  assert.deepEqual(panes.find(({ sessionId }) => sessionId === "c").rect, { x: 0, y: 0, w: 0.5, h: 0.5 });
+  assert.equal(moved.focus, "c");
+});
+
+test("moving a pane to another tab keeps the source tab's other panes", () => {
+  const tabs = [tab("one", splitPane(pane("a"), "a", "b", "row")), tab("two", pane("c"))];
+  const next = movePaneInTabs(tabs, "b", { tabId: "two", target: "c", side: "bottom" });
+  assert.deepEqual(next.map(({ root }) => paneIds(root)), [["a"], ["c", "b"]]);
+  assert.equal(next[0].focus, "a");
+  assert.equal(next[1].focus, "b");
+});
+
+test("dropping on a tab without a target lands next to its focused pane", () => {
+  const tabs = [tab("one", pane("a")), tab("two", splitPane(pane("c"), "c", "d", "row"), "c")];
+  const next = movePaneInTabs(tabs, "a", { tabId: "two" });
+  assert.equal(next.length, 1, "the emptied source tab goes away");
+  assert.deepEqual(paneIds(next[0].root), ["c", "a", "d"]);
+});
+
+test("a pane can become its own tab, unless it already is one", () => {
+  const split = [tab("one", splitPane(pane("a"), "a", "b", "row"))];
+  const next = movePaneInTabs(split, "b", {}, newTab);
+  assert.deepEqual(next.map(({ root }) => paneIds(root)), [["a"], ["b"]]);
+  const alone = [tab("one", pane("a"))];
+  assert.equal(movePaneInTabs(alone, "a", {}, newTab), alone);
+});
+
+test("impossible moves leave the layout untouched", () => {
+  const tabs = [tab("one", splitPane(pane("a"), "a", "b", "row")), tab("two", pane("c"))];
+  assert.equal(movePaneInTabs(tabs, "a", { tabId: "one", target: "a", side: "left" }), tabs);
+  assert.equal(movePaneInTabs(tabs, "missing", { tabId: "one" }), tabs);
+  assert.equal(movePaneInTabs(tabs, "a", { tabId: "gone" }), tabs);
+  assert.equal(movePaneInTabs(tabs, "a", { tabId: "two", target: "missing" }), tabs);
+  assert.equal(movePaneInTabs([tab("one", pane("a"))], "a", { tabId: "one" }).length, 1);
+});
+
+test("moving clears zoom, and a moved layout survives a save and restore", async () => {
+  const tabs = [{ ...tab("one", splitPane(pane("a"), "a", "b", "row")), zoomed: "b" }, tab("two", pane("c"))];
+  const next = movePaneInTabs(tabs, "b", { tabId: "two", target: "c", side: "left" });
+  assert.equal(next[0].zoomed, null);
+  const sessions = ["a", "b", "c"].map((id) => ({ id, kind: "shell", cwd: `/${id}` }));
+  const saved = parseWorkspace(JSON.stringify(serializeWorkspace(next, sessions, "two")));
+  assert.deepEqual(saved.tabs[1].root.children.map(({ cwd }) => cwd), ["/b", "/c"]);
+  assert.equal(saved.tabs[1].root.direction, "row");
+});
+
+test("dock panels move to any edge of each other and none is lost", () => {
+  for (const side of ["left", "right", "top", "bottom"]) {
+    const moved = moveDockPanel(defaultDock(), "agent", "sidebar", side);
+    assert.deepEqual(paneIds(moved).sort(), [...DOCK_PANELS].sort());
+    const { panes } = computeLayout(moved);
+    const agent = panes.find(({ sessionId }) => sessionId === "agent").rect;
+    const sidebar = panes.find(({ sessionId }) => sessionId === "sidebar").rect;
+    assert.ok({ left: agent.x < sidebar.x, right: agent.x > sidebar.x, top: agent.y < sidebar.y, bottom: agent.y > sidebar.y }[side], side);
+  }
+});
+
+test("a panel dropped on itself or on nothing stays put", () => {
+  const dock = defaultDock();
+  assert.equal(moveDockPanel(dock, "agent", "agent", "left"), dock);
+  assert.equal(moveDockPanel(dock, "agent", "missing", "left"), dock);
+});
+
+test("a hidden panel frees its space, and resizing still reaches the saved layout", () => {
+  const dock = defaultDock();
+  const shown = computeLayout(visibleDock(dock, ["agent", "monitor"]));
+  assert.deepEqual(shown.panes.map(({ sessionId }) => sessionId), ["sidebar", "terminals"]);
+  assert.equal(shown.dividers.length, 1);
+  assert.deepEqual(shown.dividers[0].path, []);
+  const swapped = moveDockPanel(dock, "sidebar", "agent", "right");
+  const [divider] = computeLayout(visibleDock(swapped, ["agent"])).dividers.length ? computeLayout(visibleDock(swapped, ["agent"])).dividers : [{ path: [] }];
+  assert.deepEqual(paneIds(setRatio(swapped, divider.path, 0.4)).sort(), [...DOCK_PANELS].sort());
+  assert.deepEqual(computeLayout(visibleDock(dock, [])).dividers.map(({ path }) => path), [[], [1], [1, 1]]);
+});
+
+test("a dock layout survives a save, and a damaged one is refused", () => {
+  const moved = setRatio(moveDockPanel(defaultDock(), "agent", "sidebar", "left"), [], 0.3);
+  assert.deepEqual(parseDock(JSON.stringify(moved)), moved);
+  for (const raw of ["not json", null, "{}", JSON.stringify(pane("agent")), JSON.stringify({ type: "split", direction: "row", children: [pane("agent"), pane("agent")] }), JSON.stringify({ type: "split", direction: "up", children: [pane("agent"), pane("sidebar")] })]) assert.equal(parseDock(raw), null, String(raw));
+  assert.equal(parseDock(JSON.stringify({ ...defaultDock(), ratio: 5 })).ratio, 1 - MIN_RATIO);
+});
+
+test("a terminal pane can dock beside any panel and return to a tab", () => {
+  const leaf = dockedTerminal("b");
+  const tabs = [tab("one", splitPane(pane("a"), "a", "b", "row"))];
+  const remaining = takePaneFromTabs(tabs, "b");
+  assert.deepEqual(paneIds(remaining[0].root), ["a"]);
+  assert.equal(remaining[0].focus, "a");
+  const dock = insertPane(defaultDock(), "agent", leaf, "left");
+  assert.deepEqual(dockedTerminals(dock), ["b"]);
+  const { panes } = computeLayout(dock);
+  assert.ok(panes.find(({ sessionId }) => sessionId === leaf).rect.x < panes.find(({ sessionId }) => sessionId === "agent").rect.x);
+  const back = movePaneInTabs(remaining, "b", { tabId: "one", target: "a", side: "bottom", detached: true });
+  assert.deepEqual(paneIds(back[0].root), ["a", "b"]);
+  assert.equal(back[0].focus, "b");
+});
+
+test("a lone pane can leave its tab, and a docked pane can found a new one", () => {
+  assert.deepEqual(takePaneFromTabs([tab("one", pane("a"))], "a"), []);
+  const next = movePaneInTabs([tab("one", pane("a"))], "b", { detached: true }, newTab);
+  assert.deepEqual(next.map(({ root }) => paneIds(root)), [["a"], ["b"]]);
+  assert.deepEqual(paneIds(movePaneInTabs([tab("one", pane("a"))], "b", { tabId: "one", detached: true })[0].root), ["a", "b"]);
+});
+
+test("docked terminals are never saved, and leave when their session does", () => {
+  const dock = insertPane(defaultDock(), "agent", dockedTerminal("b"), "left");
+  assert.deepEqual(dockedTerminals(storableDock(dock)), []);
+  assert.deepEqual(paneIds(parseDock(JSON.stringify(storableDock(dock)))).sort(), [...DOCK_PANELS].sort());
+  assert.deepEqual(dockedTerminals(pruneDock(dock, ["a"])), []);
+  assert.equal(pruneDock(dock, ["b"]), dock);
+});
+
+test("a layout saved before the monitoring panel keeps its arrangement and gains the panel", () => {
+  const old = { type: "split", direction: "row", ratio: 0.3, children: [pane("agent"), { type: "split", direction: "column", ratio: 0.4, children: [pane("sidebar"), pane("terminals")] }] };
+  const restored = parseDock(JSON.stringify(old));
+  assert.deepEqual(paneIds(restored).sort(), [...DOCK_PANELS].sort());
+  assert.equal(restored.ratio, 0.3);
+  assert.equal(restored.children[0].direction, "column");
+  const withoutTerminals = { type: "split", direction: "row", ratio: 0.5, children: [pane("agent"), pane("sidebar")] };
+  assert.equal(parseDock(JSON.stringify(withoutTerminals)), null);
+});
+
+test("hiding the monitoring panel returns its space to the Agent panel", () => {
+  const { panes } = computeLayout(visibleDock(defaultDock(), ["monitor"]));
+  assert.deepEqual(panes.map(({ sessionId }) => sessionId), ["sidebar", "terminals", "agent"]);
+  assert.equal(panes.find(({ sessionId }) => sessionId === "agent").rect.h, 1);
 });

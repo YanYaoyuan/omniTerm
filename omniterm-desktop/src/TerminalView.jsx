@@ -5,7 +5,7 @@ import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
-import { CircleNotch, WarningCircle } from "@phosphor-icons/react";
+import { CircleNotch, DotsSixVertical, WarningCircle } from "@phosphor-icons/react";
 import { isAppShortcut } from "./shortcuts.js";
 import { terminalTheme, themeFor } from "./themes.js";
 import { cwdFromOsc7, isTerminalReply, quotePath } from "./terminal-utils.js";
@@ -36,7 +36,7 @@ function loadWebgl(term) {
   }
 }
 
-export function TerminalView({ session, visible, selected = false, focused = false, dimmed = false, style, settings, clear = false, platform, hostname, api, register, onState, onError, onFocus, onInput, onCwd, onTitle }) {
+export function TerminalView({ session, visible, selected = false, focused = false, dimmed = false, style, settings, clear = false, platform, hostname, api, register, onState, onError, onFocus, onInput, onCwd, onTitle, onPaneDragStart, onPaneDragEnd }) {
   const host = useRef(null);
   const terminal = useRef(null);
   const fitRef = useRef(null);
@@ -282,6 +282,7 @@ export function TerminalView({ session, visible, selected = false, focused = fal
     onDragLeave={() => setDragging(false)}
     onDrop={drop}
   >
+    {onPaneDragStart && <div className="pane-grip" draggable title="拖动以移动窗格：放到其他窗格的边缘、其他标签或“+”" onDragStart={(event) => { event.stopPropagation(); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/omniterm-pane", session.id); onPaneDragStart(session.id); }} onDragEnd={onPaneDragEnd}><DotsSixVertical size={14} weight="bold" /></div>}
     <div className="terminal-canvas" ref={host} aria-label={`${session.title}终端`} />
     {state === "opening" && <div className="terminal-loading"><CircleNotch className="spin" size={16} /> 正在启动会话…</div>}
     {state === "error" && <div className="terminal-error"><WarningCircle size={20} /><div><strong>会话启动失败</strong><p>{failure}</p></div></div>}
