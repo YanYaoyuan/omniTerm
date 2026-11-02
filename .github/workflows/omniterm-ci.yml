@@ -80,7 +80,7 @@ jobs:
           rustup toolchain install 1.95.0 --profile minimal
           rustup default 1.95.0
       - name: Install a virtual display and Electron's libraries
-        run: sudo apt-get update && sudo apt-get install -y xvfb libgtk-3-0t64 libnss3 libgbm1 libasound2t64 libxss1
+        run: sudo apt-get update && sudo apt-get install -y xvfb fonts-noto-cjk libgtk-3-0t64 libnss3 libgbm1 libasound2t64 libxss1
       - name: Install desktop dependencies
         run: npm ci
       - name: Build the desktop and terminal host
