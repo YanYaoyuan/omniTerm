@@ -135,7 +135,10 @@ Issue 的 A 批次（真包 app-server 回环）和 E 批次必须在这些环�
 | `470e3f584`（#10，维护者） | Windows 本地构建 | 原生 81 项通过；JS 132 项通过、8 项跳过、0 失败；渲染构建、ConPTY 与打包验证通过 |
 | `5b091e1a8`（#13，含 #9/#11/#12，维护者） | Windows 本地构建 | 原生 107 项通过；JS 149 项通过、12 项跳过、0 失败；两个渲染页面构建、ConPTY 与打包验证通过。发现探测键复用缺陷 |
 | `21b6ceb47`（#9，握手修复） | Linux 本地；CI | 原生 103 项通过；`test:ssh` 在 bash 与 zsh、0 与 250 ms 延迟下通过 |
-| 本分支 `integration/agent-workspace` | CI：Ubuntu 真实窗口；Windows 真实 PowerShell | 见 PR #15 |
+| #9 `fe66cdc75`（模型说明按操作结果） | CI 全部 13 项 | 通过；含措辞回归测试 |
+| #12 `7d1887d0f`（监控生命周期、日志文件标识） | CI 全部 13 项 | 通过；含延迟响应交错的回归测试 |
+| #14 `db55863ae`（Windows 日志文件标识） | CI；Windows 真实 PowerShell 与真实文件 | JS 173 通过、14 跳过、0 失败 |
+| 合并分支 `4ddd16727`（与 `feat/unified-docking` 同一提交） | CI，含 Ubuntu 真实窗口 | 全部通过；本机 JS 199 通过、5 跳过（Windows 专用），0 失败 |
 
 维护者的上述运行没有覆盖新的 GUI 手势、实时对话与审批的保留、远程监控或 SSH 执行，也没有真实 SSH 连接或新的 OpenAI 实时测试。
 

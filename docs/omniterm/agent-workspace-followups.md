@@ -130,8 +130,8 @@ Maintainer scope: terminal panes, the Agent panel, workspace and file panels, an
 | Save and restore arrangement and sizes | Implemented |
 | Live state survives moves | Implemented by construction: panels and terminals are never remounted. `npm run test:gui` verifies it |
 | Reset the layout | Implemented, in the command palette |
-| A single terminal pane docked directly beside the Agent, workspace or monitoring panel, and back into a tab | Implemented on `integration/agent-workspace` |
-| The monitoring panel in the dock | Implemented on `integration/agent-workspace`. It opens by itself when the Agent proposes a monitor |
+| A single terminal pane docked directly beside the Agent, workspace or monitoring panel, and back into a tab | Implemented on `feat/unified-docking` (#16) |
+| The monitoring panel in the dock | Implemented on `feat/unified-docking` (#16). It opens by itself when the Agent proposes a monitor |
 | Dropping a pane onto the terminal area's own edge | **Outstanding.** Panes drop on other panes, panels, tabs or **+** |
 | Separate windows or floating panels | Not requested, not implemented |
 
