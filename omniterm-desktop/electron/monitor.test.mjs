@@ -491,6 +491,7 @@ test("a stopped task stays stopped, and a finished one keeps its outcome", async
 test("a log absent at the first sample is read from its start once it appears", async () => {
   const seen = [];
   const { service } = fixture();
+  service.platform = "linux";
   const outputs = ["exists=0\n", "exists=1\noffset=0\nnext=6\nmark=1-2\n@@text\nERROR\n"];
   service.run = async (host, script) => { seen.push(script); return outputs.shift() ?? "exists=0\n"; };
   const { id } = service.propose({ ...request, target: { kind: "log", path: "/tmp/absent.log" }, conditions: [{ field: "text", op: "contains", value: "ERROR" }] });
