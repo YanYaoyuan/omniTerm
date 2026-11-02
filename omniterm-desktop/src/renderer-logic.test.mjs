@@ -313,7 +313,7 @@ test("errors keep technical details apart from the message", () => {
 });
 
 test("a blocked command explains the limit in the user's terms", () => {
-  assert.match(operationReason("A full-screen program is active, so the command was not sent. Only shell commands at a prompt are supported."), /不能向编辑器、REPL 或终端内的其他 Agent 发送文本/);
+  assert.match(operationReason("A full-screen program is active, so the command was not sent. Only shell commands at a prompt are supported."), /发送给运行中的程序/);
   assert.match(operationReason("The terminal stayed busy, so the command was not sent."), /按一次回车/);
   assert.equal(operationReason("Cancelled."), "Cancelled.");
   assert.equal(operationReason(null), null);

@@ -1,5 +1,5 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useReducer, useRef, useState } from "react";
-import { Broom, Check, CircleNotch, Cpu, Crosshair, GearSix, HardDrives, Pause, PaperPlaneTilt, Play, Robot, ShieldCheck, SidebarSimple, Stack, Stop, TerminalWindow, WarningCircle, X } from "@phosphor-icons/react";
+import { Broom, Check, CircleNotch, Cpu, Crosshair, GearSix, HardDrives, Keyboard, Pause, PaperPlaneTilt, Play, Robot, ShieldCheck, SidebarSimple, Stack, Stop, TerminalWindow, WarningCircle, X } from "@phosphor-icons/react";
 import { ProviderDialog } from "./ProviderDialog.jsx";
 import { INTERACTION_LABELS, OPEN_OPERATIONS, OPERATION_LABELS, WIRE_LABELS, citationParts, conversationReducer, operationReason, emptyConversation, executable, mentionMatches, mentionQuery, pruneSelection, refsFor, scopeSummary, terminalName } from "./agent-logic.js";
 
@@ -11,6 +11,27 @@ function Citations({ text, terminals, onLocate }) {
   return <>{citationParts(text, terminals).map((part, index) => typeof part === "string" ? <span key={index}>{part}</span> : <button key={index} className="citation" title={terminalName(part.terminal)} onClick={() => onLocate(part.terminal)}>{part.text}</button>)}</>;
 }
 
+function ProgramInputCard({ api, operation, target, name, interaction, act, approve }) {
+  const pending = operation.status === "pendingApproval";
+  const shellPrompt = interaction === "ready";
+  const enterAllowed = ["busy", "fullscreen"].includes(interaction);
+  return <div className={`operation-card program-input status-${operation.status}`}>
+    <div className="operation-target"><Keyboard size={14} /><span>发送给运行中的程序 · <strong>{name}</strong></span><span className="operation-status">{OPERATION_LABELS[operation.status] ?? operation.status}</span></div>
+    {operation.rationale && <p>{operation.rationale}</p>}
+    <pre>{operation.command}</pre>
+    {operation.reason && <p className="operation-reason">{operationReason(operation.reason)}</p>}
+    {pending && <>
+      <div className="operation-state">这不是 shell 命令：文本会输入给 {name} 中正在运行的程序。{operation.appendEnter ? "Agent 建议按回车。" : "Agent 建议不按回车。"}{shellPrompt && " 该终端现在在 shell 提示符，不会发送。"}{!target && " 终端已关闭。"}</div>
+      <div className="operation-actions">
+        <button className="button primary" disabled={shellPrompt} onClick={() => approve("once", "stage")}>只发送文本</button>
+        <button className="button secondary" disabled={!enterAllowed} title={enterAllowed ? "" : "无法确认正在运行程序时不能按回车"} onClick={() => approve("once", "run")}>发送并按回车</button>
+        <button className="button ghost" onClick={() => act(() => api.denyOperation(operation.operationId))}><X size={14} />拒绝</button>
+      </div>
+    </>}
+    {!pending && OPEN_OPERATIONS.has(operation.status) && <div className="operation-actions"><button className="button ghost" onClick={() => act(() => api.cancelOperation(operation.operationId))}><Stop size={14} />取消</button></div>}
+  </div>;
+}
+
 function OperationCard({ entry, terminals, api, notify }) {
   const { operation } = entry;
   const target = terminals.find((terminal) => terminal.ref.sessionId === operation.target.sessionId);
@@ -18,9 +39,10 @@ function OperationCard({ entry, terminals, api, notify }) {
   const pending = operation.status === "pendingApproval";
   const interaction = target?.interaction?.state ?? "unknown";
   const canRun = interaction === "ready" && target?.autoSubmit === true;
-  const manualReason = interaction === "fullscreen" ? "全屏程序不是 shell：omniTerm Agent 目前只能执行 shell 命令，不能向交互程序发送文本。" : target?.autoSubmit === false ? (target.autoSubmitOptIn ? "该终端已允许自动执行，但远端还不能确认就绪（需要启用就绪标记、zsh 或 bash 4.4+ 和 emacs 键位）。批准后只输入到终端，由你按回车。" : "SSH 终端默认不自动提交：批准后命令只输入到终端，由你检查后按回车。可以在终端列表中为这个终端开启“自动执行”。") : canRun ? "" : "无法确认空闲，只能输入后由你手动回车。";
+  const manualReason = interaction === "fullscreen" ? "全屏程序不是 shell，shell 命令无法执行。如需向这个程序输入，请让 Agent 使用“发送给运行中的程序”。" : target?.autoSubmit === false ? (target.autoSubmitOptIn ? "该终端已允许自动执行，但远端还不能确认就绪（需要启用就绪标记、zsh 或 bash 4.4+ 和 emacs 键位）。批准后只输入到终端，由你按回车。" : "SSH 终端默认不自动提交：批准后命令只输入到终端，由你检查后按回车。可以在终端列表中为这个终端开启“自动执行”。") : canRun ? "" : "无法确认空闲，只能输入后由你手动回车。";
   const act = (task) => Promise.resolve().then(task).catch((error) => notify(error.message));
   const approve = (scope, mode) => act(() => api.approveOperation({ operationId: operation.operationId, scope, mode, ...(scope === "taskTarget" ? { ttlMs: GRANT_MS } : {}) }));
+  if (operation.kind === "programInput") return <ProgramInputCard api={api} operation={operation} target={target} name={name} interaction={interaction} act={act} approve={approve} />;
   return <div className={`operation-card status-${operation.status}`}>
     <div className="operation-target"><Crosshair size={14} /><span>执行于 <strong>{name}</strong></span><span className="operation-status">{OPERATION_LABELS[operation.status] ?? operation.status}</span></div>
     {operation.rationale && <p>{operation.rationale}</p>}
