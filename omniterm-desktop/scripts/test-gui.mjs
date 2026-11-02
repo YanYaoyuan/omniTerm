@@ -110,6 +110,18 @@ let app = client(await launch());
 try {
   await until(async () => (await app.terminals()).length > 0, "the first terminal");
   await until(() => app.run(`Boolean(document.querySelector(".terminal-view.is-visible .xterm"))`), "the terminal view");
+  if (process.platform !== "darwin") {
+    const safe = await app.run(`(() => {
+      const area = navigator.windowControlsOverlay.getTitlebarAreaRect();
+      const actions = document.querySelector('.titlebar-actions').getBoundingClientRect();
+      const title = document.querySelector('.window-title').getBoundingClientRect();
+      return { visible: navigator.windowControlsOverlay.visible, safeRight: area.right, actionsRight: actions.right, actionsLeft: actions.left, titleRight: title.right };
+    })()`);
+    assert.ok(safe.visible, "the themed native window controls must be enabled");
+    assert.ok(safe.actionsRight <= safe.safeRight + 1, "toolbar actions must not overlap window controls");
+    assert.ok(safe.titleRight <= safe.actionsLeft + 1, "long terminal titles must not overlap toolbar actions");
+    step("toolbar content leaves room for native window controls");
+  }
   const [first] = await app.terminals();
   const id = first.ref.sessionId;
   const pid = await app.shellPid(id, "START");
@@ -216,6 +228,12 @@ try {
   await processPage.run(`document.querySelector(".process-table tbody tr").click()`);
   await until(() => processPage.run(`Boolean(document.querySelector(".process-detail button"))`), "the selected process");
   await processPage.screenshot("6-process-window");
+  for (const [name, scheme] of [["GitHub Light", "light"], ["Midnight", "dark"]]) {
+    await app.click('.titlebar-button[title="切换主题"]');
+    await app.run(`[...document.querySelectorAll('.theme-menu [role="menuitemradio"]')].find(button => button.textContent === ${JSON.stringify(name)}).click()`);
+    await until(() => processPage.run(`document.documentElement.style.getPropertyValue('color-scheme') === ${JSON.stringify(scheme)}`), `the process window follows ${name}`);
+  }
+  step("the process window follows light and dark theme changes");
   const refused = await processPage.run(`Promise.allSettled([window.omniterm.writeSession({ id: "x", data: "y" }), window.omniterm.approveOperation({}), window.omniterm.monitorApprove("x"), window.omniterm.providerState()]).then((results) => results.map(({ status, reason }) => status + ":" + (reason?.message ?? "")))`);
   for (const result of refused) assert.match(result, /^rejected:This window cannot make that request/);
   await processPage.run(`document.querySelector(".process-detail button").click()`);

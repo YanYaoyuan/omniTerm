@@ -54,14 +54,19 @@ svg { flex-shrink: 0; }
 ::-webkit-scrollbar-thumb:hover { background: rgb(var(--ink) / .35); }
 .app-shell { width: 100vw; height: 100dvh; min-width: 850px; min-height: 550px; display: grid; grid-template-rows: 43px minmax(0, 1fr) 27px; overflow: hidden; position: relative; isolation: isolate; }
 .titlebar { display: flex; align-items: center; border-bottom: 1px solid var(--border); background: var(--panel); -webkit-app-region: drag; position: relative; }
+.platform-win32 .titlebar, .platform-linux .titlebar, .process-titlebar {
+  padding-left: env(titlebar-area-x, 0px);
+  padding-right: calc(100% - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100%));
+}
 .window-brand { width: 230px; flex: 0 0 230px; padding-left: 22px; display: flex; align-items: center; gap: 8px; color: var(--text-soft); }
 .window-brand svg { color: var(--accent); }
 .window-brand strong { font-size: 13px; font-weight: 650; letter-spacing: -.3px; }
 .platform-darwin .window-brand { padding-left: 83px; }
-.window-title { display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: 11px; position: absolute; left: 50%; transform: translateX(-50%); max-width: 42%; white-space: nowrap; }
+.window-title { display: flex; align-items: center; justify-content: center; flex: 1; min-width: 0; gap: 9px; color: var(--muted); font-size: 11px; overflow: hidden; white-space: nowrap; }
 .window-title span:first-of-type { overflow: hidden; text-overflow: ellipsis; }
+.window-title span:last-child { overflow: hidden; text-overflow: ellipsis; }
 .window-title .title-divider { color: var(--subtle); }
-.titlebar-actions { margin-left: auto; padding-right: 17px; }
+.titlebar-actions { margin-left: auto; flex-shrink: 0; padding-right: 17px; }
 .titlebar-button { display: flex; gap: 7px; align-items: center; font-size: 11px; color: var(--muted); border-radius: 5px; padding: 5px 8px; }
 .titlebar-button:hover { background: var(--surface-hover); }
 .titlebar-button.active { color: var(--text-soft); }
@@ -529,7 +534,10 @@ kbd { font-family: var(--mono); font-size: 10px; background: rgb(var(--ink) / 0.
 .monitor-form label { display: flex; flex-direction: column; gap: 2px; color: var(--muted); font-size: 10px; }
 .monitor-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .monitor-history { margin: 0; padding-left: 14px; color: var(--muted); font-size: 10px; }
-.process-app { height: 100dvh; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; background: var(--bg); color: var(--text-soft); font-size: 12px; }
+.process-app { height: 100dvh; display: grid; grid-template-rows: 43px auto minmax(0, 1fr) auto; background: var(--bg); color: var(--text-soft); font-size: 12px; }
+.process-titlebar { display: flex; align-items: center; height: 43px; background: var(--surface); border-bottom: 1px solid var(--border); -webkit-app-region: drag; }
+.process-titlebar strong { padding-left: 16px; }
+.platform-darwin .process-titlebar strong { padding-left: 83px; }
 .process-bar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
 .process-bar input, .process-bar select { font: inherit; color: inherit; background: rgb(var(--ink) / 0.03); border: 1px solid var(--border); border-radius: 5px; padding: 4px 8px; }
 .process-bar input { flex: 1; min-width: 0; }

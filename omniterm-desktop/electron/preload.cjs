@@ -17,6 +17,8 @@ function invoke(channel, payload) {
 
 contextBridge.exposeInMainWorld("omniterm", Object.freeze({
   getAppInfo: () => invoke("omniterm:get-app-info"),
+  setWindowTheme: (id) => invoke("omniterm:set-window-theme", id),
+  onWindowTheme: (callback) => subscribe("omniterm:window-theme", callback),
   chooseDirectory: () => invoke("omniterm:choose-directory"),
   createSession: (request) => invoke("omniterm:create-session", request),
   startSession: (id) => invoke("omniterm:start-session", id),

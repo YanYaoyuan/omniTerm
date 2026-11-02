@@ -49,6 +49,7 @@ export function ProcessWindow() {
   }
   const header = (field, label, numeric = true) => <th className={numeric ? "number" : ""} onClick={() => setSort(sort === field ? null : field)} aria-sort={sort === field ? "descending" : "none"}>{label}{sort === field ? " ↓" : ""}</th>;
   return <div className="process-app">
+    <header className="process-titlebar"><strong>omniTerm · 进程监视</strong></header>
     <div className="process-bar">
       <select aria-label="主机" value={host} onChange={(event) => setHost(event.target.value)}><option value="local">本机</option>{hosts.map((terminal) => <option key={terminal.ref.sessionId} value={terminal.ref.sessionId}>{terminal.label}</option>)}</select>
       <input aria-label="搜索进程" placeholder="按名称或 PID 搜索" value={query} onChange={(event) => setQuery(event.target.value)} />

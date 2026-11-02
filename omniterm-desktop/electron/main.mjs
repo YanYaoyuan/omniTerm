@@ -1,5 +1,5 @@
 // Copyright 2026 omniTerm contributors. SPDX-License-Identifier: Apache-2.0
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, safeStorage, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, safeStorage, shell } from "electron";
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { copyFile, mkdir, readdir, rm, stat } from "node:fs/promises";
@@ -19,6 +19,7 @@ import { SessionManager } from "./session-manager.mjs";
 import { shellIntegrationScript } from "./shell-integration.mjs";
 import { hostSummary, readSshHosts } from "./ssh-config.mjs";
 import { TerminalHost, resolveTerminalHost } from "./terminal-host.mjs";
+import { applyWindowTheme, windowChrome, windowTheme } from "./window-chrome.mjs";
 
 let window;
 let manager;
@@ -35,6 +36,8 @@ let processWindow = null;
 let processUrl;
 let downloadDirectory;
 let windowTransparent = false;
+let chromeTheme = windowTheme("midnight");
+const themeFile = () => path.join(app.getPath("userData"), "window-theme.json");
 
 const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "webp", "gif", "avif", "bmp"];
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
@@ -121,6 +124,15 @@ const providerState = () => ({
 
 function registerHandlers() {
   const handlers = {
+    "set-window-theme": (id) => {
+      chromeTheme = windowTheme(id);
+      nativeTheme.themeSource = chromeTheme.dark ? "dark" : "light";
+      applyWindowTheme(window, process.platform, chromeTheme);
+      applyWindowTheme(processWindow, process.platform, chromeTheme);
+      if (processWindow && !processWindow.isDestroyed() && !processWindow.webContents.isDestroyed()) processWindow.webContents.send("omniterm:window-theme", id);
+      writeFileSync(themeFile(), JSON.stringify({ theme: id }));
+      return true;
+    },
     "get-app-info": () => {
       let agent;
 let monitors;
@@ -232,7 +244,7 @@ let monitors;
 }
 
 function openProcessWindow(host) {
-  const query = typeof host === "string" && host !== "local" ? { host } : {};
+  const query = { ...(typeof host === "string" && host !== "local" ? { host } : {}), theme: chromeTheme.id, platform: process.platform };
   if (processWindow && !processWindow.isDestroyed()) {
     processWindow.loadFile(path.join(app.getAppPath(), "build-renderer", "process.html"), { query });
     processWindow.focus();
@@ -240,7 +252,7 @@ function openProcessWindow(host) {
   }
   const page = path.join(app.getAppPath(), "build-renderer", "process.html");
   processUrl = pathToFileURL(page).href;
-  processWindow = new BrowserWindow({ width: 980, height: 680, minWidth: 640, minHeight: 420, title: "omniTerm 进程监视", backgroundColor: "#14181f", webPreferences: { preload: path.join(path.dirname(fileURLToPath(import.meta.url)), "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
+  processWindow = new BrowserWindow({ width: 980, height: 680, minWidth: 640, minHeight: 420, title: "omniTerm 进程监视", backgroundColor: chromeTheme.background, ...windowChrome(process.platform, chromeTheme), webPreferences: { preload: path.join(path.dirname(fileURLToPath(import.meta.url)), "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
   processWindow.setMenuBarVisibility(false);
   processWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   processWindow.webContents.on("will-navigate", (event) => event.preventDefault());
@@ -294,7 +306,8 @@ function createWindow() {
   const renderer = path.join(appPath, "build-renderer", "index.html");
   rendererUrl = pathToFileURL(renderer).href;
   windowTransparent = readTransparency();
-  window = new BrowserWindow({ width: 1440, height: 940, minWidth: 1000, minHeight: 650, title: "omniTerm", ...(windowTransparent ? { transparent: true, backgroundColor: "#00000000" } : { backgroundColor: "#14181f" }), ...(process.platform === "darwin" ? { titleBarStyle: "hiddenInset", trafficLightPosition: { x: 20, y: 20 } } : {}), webPreferences: { preload: path.join(path.dirname(fileURLToPath(import.meta.url)), "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
+  window = new BrowserWindow({ width: 1440, height: 940, minWidth: 1000, minHeight: 650, title: "omniTerm", ...(windowTransparent ? { transparent: true, backgroundColor: "#00000000" } : { backgroundColor: chromeTheme.background }), ...windowChrome(process.platform, chromeTheme), webPreferences: { preload: path.join(path.dirname(fileURLToPath(import.meta.url)), "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
+  if (process.platform !== "darwin") window.setMenuBarVisibility(false);
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event, url) => { if (url !== rendererUrl) event.preventDefault(); });
   window.webContents.on("will-redirect", (event) => event.preventDefault());
@@ -309,6 +322,8 @@ function createWindow() {
 
 app.setName("omniTerm");
 app.whenReady().then(() => {
+  try { chromeTheme = windowTheme(JSON.parse(readFileSync(themeFile(), "utf8")).theme); } catch { /* First launch uses Midnight. */ }
+  nativeTheme.themeSource = chromeTheme.dark ? "dark" : "light";
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     ...(process.platform === "darwin" ? [{ role: "appMenu" }] : []),
     { role: "editMenu" },
