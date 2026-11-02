@@ -517,3 +517,21 @@ kbd { font-family: var(--mono); font-size: 10px; background: rgb(var(--ink) / 0.
 .agent-error details, .inline-error details { margin-top: 4px; font-size: 10px; color: var(--muted); }
 .agent-error pre, .inline-error pre { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 .operation-card.program-input { border-style: dashed; }
+.agent-views { display: flex; gap: 2px; padding: 4px 12px 0; flex-shrink: 0; }
+.agent-views button { padding: 3px 10px; font-size: 11px; color: var(--muted); background: none; border: 0; border-bottom: 2px solid transparent; }
+.agent-views button.active { color: var(--text-soft); border-bottom-color: var(--accent); }
+.agent-chat { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.agent-chat[hidden] { display: none; }
+.monitor-view { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 9px; font-size: 11px; }
+.monitor-card { border: 1px solid var(--border-strong); border-radius: 6px; padding: 8px 10px; display: flex; flex-direction: column; gap: 5px; }
+.monitor-card.status-pending { border-color: rgb(var(--accent-rgb) / 0.5); }
+.monitor-title { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.monitor-title strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.monitor-status { margin-left: auto; flex-shrink: 0; color: var(--muted); font-size: 10px; }
+.monitor-values, .monitor-note { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+.monitor-action { font-family: monospace; font-size: 10px; padding: 4px 6px; background: rgb(var(--ink) / 0.04); border-radius: 4px; overflow-wrap: anywhere; }
+.monitor-sparkline { width: 100%; height: 26px; color: var(--accent); }
+.monitor-form { display: flex; flex-direction: column; gap: 6px; }
+.monitor-form label { display: flex; flex-direction: column; gap: 2px; color: var(--muted); font-size: 10px; }
+.monitor-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.monitor-history { margin: 0; padding-left: 14px; color: var(--muted); font-size: 10px; }

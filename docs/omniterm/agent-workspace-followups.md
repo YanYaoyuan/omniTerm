@@ -71,6 +71,19 @@ Sending text to an interactive program is a different operation from executing a
 
 ## 3. Persistent monitoring and authorized automatic actions
 
+Status: **first increment implemented** (branch `feat/persistent-monitoring`).
+
+| Requirement | Status |
+| --- | --- |
+| Process, thread, log and shared-memory targets on a selected host | Implemented. Threads and shared memory are Linux only; Windows local hosts aren't supported |
+| Continuous sampling and notifications, with no message per sample | Implemented, with no model calls |
+| Automatic actions with a scope, trigger, duration and run limit | Implemented: one exact command on one pinned terminal, through the broker |
+| Pause, stop, revoke, history | Implemented |
+| Read access separate from modification | Implemented. Shared memory is read-only; **modification isn't implemented** and needs its own authorization |
+| The Agent reacting to a trigger with a model turn | **Outstanding.** A trigger notifies you and runs the approved command; the Agent reads status when asked |
+| Monitors surviving an app restart | **Outstanding.** They stop with the app, in line with approvals not surviving a restart |
+| System V shared memory | **Outstanding** |
+
 A persistent task watching a process, thread, log or shared-memory region, rather than a one-time snapshot or a chat message per observation. This stays separate from scraping a terminal screen.
 
 - Explicit selection of the host and monitoring target.

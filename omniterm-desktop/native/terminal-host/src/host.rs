@@ -151,6 +151,14 @@ struct TaskParams {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct GrantParams {
+    task_id: String,
+    target: TerminalRef,
+    expires_at: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ProposeParams {
     task_id: String,
     call_id: String,
@@ -650,6 +658,11 @@ impl Host {
                 let TaskParams { task_id, context, targets, paused } = parse(params)?;
                 let changed = self.broker().update_task(&task_id, context, targets, paused)?;
                 self.publish(changed);
+                Ok(json!(true))
+            }
+            "task.grant" => {
+                let GrantParams { task_id, target, expires_at } = parse(params)?;
+                self.broker().grant(&task_id, target, expires_at)?;
                 Ok(json!(true))
             }
             "task.cancel" => {
