@@ -282,6 +282,16 @@ test("a turn pins its scope, shares context, and pairs up with the broker task",
   assert.equal(engines.length, 1);
 });
 
+test("what the model is told about SSH follows the operation's result", () => {
+  assert.doesNotMatch(AGENT_INSTRUCTIONS, /SSH commands? (are|is) never|never submitted|always (staged|needs? Enter)/i);
+  const line = (status) => AGENT_INSTRUCTIONS.split("\n").find((text) => text.startsWith(`Status ${status}`) || text.startsWith(`Only status ${status}`));
+  assert.match(line("completed"), /do not ask the user to press Enter/);
+  assert.match(line("staged"), /submit it with Enter/);
+  assert.match(line("blocked"), /nothing was sent/i);
+  for (const status of ["completed", "blocked"]) assert.doesNotMatch(line(status).replace("do not ask the user to press Enter", ""), /Enter/);
+  assert.match(AGENT_INSTRUCTIONS, /outcomeUnknown[^\n]*do not retry/);
+});
+
 test("a turn that fails immediately does not block the next message", async () => {
   const { service, engines } = serviceFixture();
   const sending = service.send(message);
