@@ -4,14 +4,16 @@ import { spawn, execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { PROCESS_LIST_SCRIPT, conditionHolds, parseProbe, parseProcessList, probeScript, validateCondition, validateTarget } from "./monitor-probe.mjs";
+import { localProbeCommand, runLocalProbe } from "./local-probe.mjs";
+import { conditionHolds, parseProbe, parseProcessList, probeScript, processListScript, targetSupport, validateCondition, validateTarget, withCpuRate, withProcessRates } from "./monitor-probe.mjs";
 import { MonitorService } from "./monitor-service.mjs";
 
 const unix = process.platform !== "win32";
+const windows = process.platform === "win32";
 const sh = (script) => execFileSync("sh", ["-c", script], { encoding: "utf8" });
 
 test("targets are validated before they can reach a script", () => {
-  for (const target of [{ kind: "process", name: "a;rm -rf /" }, { kind: "process", name: "$(id)" }, { kind: "process", pid: "1 2" }, { kind: "log", path: "relative" }, { kind: "log", path: "/a b" }, { kind: "log", path: "/etc/../x" }, { kind: "log", path: "/a'b" }, { kind: "thread", pid: 1 }, { kind: "other" }, { kind: "sharedMemory", name: "x", access: "sysv", layout: [{ field: "a", offset: 0, type: "u8" }] }, { kind: "sharedMemory", name: "x/../y", access: "posix-shm", layout: [{ field: "a", offset: 0, type: "u8" }] }, { kind: "sharedMemory", name: "x", access: "posix-shm", layout: [] }, { kind: "sharedMemory", name: "x", access: "posix-shm", layout: [{ field: "a", offset: 9000, type: "u8" }] }]) assert.throws(() => validateTarget(target), undefined, JSON.stringify(target));
+  for (const target of [{ kind: "process", name: "a;rm -rf /" }, { kind: "process", name: "$(id)" }, { kind: "process", pid: "1 2" }, { kind: "log", path: "relative" }, { kind: "log", path: "/etc/../x" }, { kind: "log", path: "/a'b" }, { kind: "thread", pid: 1 }, { kind: "other" }, { kind: "sharedMemory", name: "x", access: "sysv", layout: [{ field: "a", offset: 0, type: "u8" }] }, { kind: "sharedMemory", name: "x/../y", access: "posix-shm", layout: [{ field: "a", offset: 0, type: "u8" }] }, { kind: "sharedMemory", name: "x", access: "posix-shm", layout: [] }, { kind: "sharedMemory", name: "x", access: "posix-shm", layout: [{ field: "a", offset: 9000, type: "u8" }] }]) assert.throws(() => validateTarget(target), undefined, JSON.stringify(target));
 });
 
 test("every probe avoids single quotes, so none can break out of sh -c", () => {
@@ -140,6 +142,8 @@ test("a long read keeps raw byte offsets, even when a character is split", { ski
 test("a mark that is not one of ours never reaches a script", () => {
   const target = validateTarget({ kind: "log", path: "/tmp/app.log" });
   assert.doesNotMatch(probeScript(target, { offset: 4, mark: "x\"; rm -rf /; \"" }), /rm -rf/);
+  const windowsTarget = validateTarget({ kind: "log", path: "C:\\logs\\app.log" }, { platform: "win32" });
+  assert.doesNotMatch(probeScript(windowsTarget, { offset: 4, mark: "x'; Remove-Item C:\\; '" }, "win32"), /Remove-Item/);
 });
 
 test("a real shared-memory region is read through its declared layout", { skip: !existsSync("/dev/shm") }, () => {
@@ -521,6 +525,7 @@ test("a log with no readable file identity says so, once", async () => {
 test("a log absent at the first sample is read from its start once it appears", async () => {
   const seen = [];
   const { service } = fixture();
+  service.platform = "linux";
   const outputs = ["exists=0\n", "exists=1\noffset=0\nnext=6\nmark=1-2\n@@text\nERROR\n"];
   service.run = async (host, script) => { seen.push(script); return outputs.shift() ?? "exists=0\n"; };
   const { id } = service.propose({ ...request, target: { kind: "log", path: "/tmp/absent.log" }, conditions: [{ field: "text", op: "contains", value: "ERROR" }] });
@@ -546,8 +551,117 @@ test("requests that cannot be honoured are refused up front", () => {
 });
 
 test("process lists parse real ps output, including spaces in names", { skip: !unix }, () => {
-  const processes = parseProcessList(sh(PROCESS_LIST_SCRIPT));
+  const processes = parseProcessList(sh(processListScript()));
   assert.ok(processes.some(({ pid }) => pid === process.pid));
   assert.ok(processes.every(({ pid, ppid, cpu, memoryKb }) => [pid, ppid, cpu, memoryKb].every(Number.isFinite)));
   assert.deepEqual(parseProcessList("  12   1  3.5  2048 Google Chrome Helper\nnot a row\n"), [{ pid: 12, ppid: 1, cpu: 3.5, memoryKb: 2048, command: "Google Chrome Helper" }]);
+});
+
+test("unsupported targets say so before anything runs", () => {
+  assert.match(targetSupport("sharedMemory", "win32"), /Windows/);
+  assert.equal(targetSupport("process", "win32"), null);
+  assert.equal(targetSupport("thread", "win32"), null);
+  assert.match(targetSupport("thread", "darwin"), /macOS/);
+  assert.throws(() => validateTarget({ kind: "sharedMemory", name: "x", access: "posix-shm", layout: [{ field: "a", offset: 0, type: "u8" }] }, { platform: "win32" }), /Windows/);
+});
+
+test("Windows paths are validated as Windows paths", () => {
+  assert.equal(validateTarget({ kind: "log", path: "C:\\logs\\app 1.log" }, { platform: "win32" }).path, "C:\\logs\\app 1.log");
+  for (const path of ["relative.log", "/var/log/x", "C:\\logs\\..\\x", "C:\\a'b", "C:\\a\"b", "C:\\$(x)", "\\\\host\\share\\x"]) assert.throws(() => validateTarget({ kind: "log", path }, { platform: "win32" }), undefined, path);
+});
+
+test("real paths are accepted, including Unicode and short names, and quotes never are", () => {
+  for (const path of ["C:\\Users\\RUNNER~1\\AppData\\app.log", "D:\\日志\\服务 1\\app.log", "C:\\logs\\app#2,old.log"]) assert.equal(validateTarget({ kind: "log", path }, { platform: "win32" }).path, path);
+  assert.equal(validateTarget({ kind: "log", path: "/var/log/日志/app.log" }).path, "/var/log/日志/app.log");
+  for (const quote of ["\u2018", "\u2019", "\u201a", "\u201c", "\u201d", "`", "$"]) assert.throws(() => validateTarget({ kind: "log", path: `C:\\a${quote}b` }, { platform: "win32" }), undefined, quote);
+  for (const quote of ['"', "`", "$", "\\"]) assert.throws(() => validateTarget({ kind: "log", path: `/a${quote}b` }), undefined, quote);
+});
+
+test("probes reach PowerShell encoded, never through a command line", () => {
+  const [file, args] = localProbeCommand("'a b'; $x", "win32");
+  assert.equal(file, "powershell.exe");
+  assert.ok(!args.join(" ").includes("a b"));
+  assert.equal(Buffer.from(args.at(-1), "base64").toString("utf16le"), "'a b'; $x");
+  assert.deepEqual(localProbeCommand("x", "linux"), ["sh", ["-c", "x"]]);
+});
+
+test("CPU is a rate between samples where the system only reports a total", () => {
+  const first = { pid: 7, cpuSeconds: 10, at: 1000 };
+  assert.equal(withCpuRate(first, null).cpu, undefined, "one sample has no rate");
+  assert.equal(withCpuRate({ pid: 7, cpuSeconds: 11, at: 3000 }, first).cpu, 50);
+  assert.equal(withCpuRate({ pid: 8, cpuSeconds: 11, at: 3000 }, first).cpu, undefined, "a different process is not a continuation");
+  assert.equal(withCpuRate({ pid: 7, cpuSeconds: 1, at: 3000 }, first).cpu, 0, "a reset counter is not negative");
+  assert.deepEqual(withCpuRate({ cpu: 5, at: 1 }, null), { cpu: 5, at: 1 });
+  const previous = { at: 1000, processes: [{ pid: 1, cpuTicks: 0 }] };
+  const [known, fresh] = withProcessRates([{ pid: 1, cpuTicks: 5_000_000, cpu: 0 }, { pid: 2, cpuTicks: 9, cpu: 0 }], previous, 2000);
+  assert.equal(known.cpu, 50);
+  assert.equal(fresh.cpu, 0);
+  assert.deepEqual(parseProcessList("12\t1\t500\t2048\tmy app.exe\r\nbad\r\n", "win32"), [{ pid: 12, ppid: 1, cpuTicks: 500, cpu: 0, memoryKb: 2048, command: "my app.exe" }]);
+});
+
+test("a real Windows process reports through PowerShell", { skip: !windows, timeout: 60_000 }, async () => {
+  const target = validateTarget({ kind: "process", pid: process.pid }, { platform: "win32" });
+  const sample = parseProbe(target, await runLocalProbe(probeScript(target, {}, "win32")));
+  assert.equal(sample.exists, true);
+  assert.equal(sample.pid, process.pid);
+  assert.ok(sample.memoryKb > 0);
+  assert.ok(sample.threads > 0);
+  assert.ok(String(sample.command).toLowerCase().includes("node"));
+  const byName = validateTarget({ kind: "process", name: "node.exe" }, { platform: "win32" });
+  assert.equal(parseProbe(byName, await runLocalProbe(probeScript(byName, {}, "win32"))).exists, true);
+  const missing = validateTarget({ kind: "process", pid: 4_000_000 }, { platform: "win32" });
+  assert.equal(parseProbe(missing, await runLocalProbe(probeScript(missing, {}, "win32"))).exists, false);
+});
+
+test("a real Windows log is followed across appends and rotation", { skip: !windows, timeout: 60_000 }, async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "omniterm log "));
+  try {
+    const file = path.join(directory, "app.log");
+    writeFileSync(file, "old\n");
+    const target = validateTarget({ kind: "log", path: file }, { platform: "win32" });
+    const read = async (state) => parseProbe(target, await runLocalProbe(probeScript(target, state, "win32")));
+    const first = await read({});
+    assert.equal(first.text, "");
+    appendFileSync(file, "新 ERROR line\n");
+    const second = await read({ offset: first.nextOffset });
+    assert.equal(second.text, "新 ERROR line\n");
+    writeFileSync(file, "x\n");
+    assert.equal((await read({ offset: second.nextOffset })).text, "x\n");
+  } finally { rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
+});
+
+test("a real Windows log is read from its start whenever the file behind the path changes", { skip: !windows, timeout: 120_000 }, async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "omniterm log "));
+  try {
+    const file = path.join(directory, "app.log");
+    const target = validateTarget({ kind: "log", path: file }, { platform: "win32" });
+    const read = async (state) => {
+      const sample = parseProbe(target, await runLocalProbe(probeScript(target, state, "win32")));
+      assert.equal(sample.identity, undefined, "this file system gives a file ID");
+      assert.match(sample.mark, /^[0-9A-F]{48}-[0-9A-F]{64}$/);
+      return sample;
+    };
+    await followsReplacedLogs(read, file);
+  } finally { rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
+});
+
+test("a real Windows process list has names, parents and rates", { skip: !windows, timeout: 60_000 }, async () => {
+  const first = parseProcessList(await runLocalProbe(processListScript("win32")), "win32");
+  const self = first.find(({ pid }) => pid === process.pid);
+  assert.ok(self && self.command.toLowerCase().includes("node") && self.ppid > 0 && self.memoryKb > 0);
+  const started = Date.now();
+  while (Date.now() - started < 300);
+  const second = withProcessRates(parseProcessList(await runLocalProbe(processListScript("win32")), "win32"), { processes: first, at: started - 100 }, Date.now());
+  assert.ok(second.find(({ pid }) => pid === process.pid).cpu > 0);
+});
+
+test("a monitor runs on Windows with a rate from its second sample", { skip: !windows, timeout: 60_000 }, async () => {
+  const times = [];
+  const service = new MonitorService({ host: { request: async () => true }, run: (_host, script) => runLocalProbe(script), schedule: (callback) => { times.push(callback); return 1; }, unschedule: () => {} });
+  const { id } = service.propose({ host: "local", target: { kind: "process", pid: process.pid }, conditions: [{ op: "gone" }], intervalSeconds: 1, durationMinutes: 1 });
+  await service.approve(id);
+  await new Promise((resolve) => { const check = () => times.length ? resolve() : setTimeout(check, 50); check(); });
+  await times.shift()();
+  assert.equal(typeof service.get(id).lastSample.cpu, "number");
+  await service.stop(id);
 });

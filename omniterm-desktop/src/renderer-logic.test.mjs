@@ -1,7 +1,7 @@
 // Copyright 2026 omniTerm contributors. SPDX-License-Identifier: Apache-2.0
 import test from "node:test";
 import { monitorRequest, processRows, pushTrends, summarize } from "./process/process-logic.js";
-import { buildMonitorRequest, emptyMonitorForm, monitorMetrics, monitorReducer, sparkline, targetSummary } from "./agent/monitor-logic.js";
+import { buildMonitorRequest, emptyMonitorForm, kindNote, monitorMetrics, monitorReducer, sparkline, targetSummary } from "./agent/monitor-logic.js";
 import { citationParts, conversationReducer, emptyConversation, executable, mentionMatches, mentionQuery, operationReason, pruneSelection, refsFor, scopeSummary } from "./agent/agent-logic.js";
 import assert from "node:assert/strict";
 import { computeLayout, equalize, MIN_RATIO, neighborPane, pane, paneIds, removePane, setRatio, splitPane } from "./layout.js";
@@ -393,4 +393,13 @@ test("attaching a monitor pins the selected process and host", () => {
   assert.deepEqual(monitorRequest(processList[2], "local"), { host: "local", label: "worker (11)", target: { kind: "process", pid: 11 }, conditions: [{ op: "gone" }], intervalSeconds: 5, durationMinutes: 60 });
   assert.deepEqual(monitorRequest(processList[2], "s1").host, { sessionId: "s1" });
   assert.deepEqual(summarize(processList), { count: 5, cpu: 58, memoryKb: 1500 });
+});
+
+test("a target a host can't read is explained up front", () => {
+  assert.match(kindNote("sharedMemory", "local", "win32"), /Windows/);
+  assert.equal(kindNote("process", "local", "win32"), "");
+  assert.equal(kindNote("thread", "local", "win32"), "");
+  assert.match(kindNote("thread", "local", "darwin"), /macOS/);
+  assert.match(kindNote("sharedMemory", "s1", "win32"), /Linux/);
+  assert.equal(kindNote("log", "s1", "win32"), "");
 });

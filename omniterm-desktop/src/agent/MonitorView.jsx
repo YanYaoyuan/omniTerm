@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { Check, Pause, Play, Plus, Stop, Trash, X } from "@phosphor-icons/react";
-import { MONITOR_STATUS, buildMonitorRequest, emptyMonitorForm, monitorMetrics, monitorReducer, sparkline, targetSummary } from "./monitor-logic.js";
+import { MONITOR_STATUS, buildMonitorRequest, emptyMonitorForm, kindNote, monitorMetrics, monitorReducer, sparkline, targetSummary } from "./monitor-logic.js";
 
 const FIELDS = { process: ["cpu", "memoryKb", "threads"], thread: ["cpu"], log: ["text"], sharedMemory: [] };
 
-function MonitorForm({ api, terminals, notify, onDone }) {
+function MonitorForm({ api, terminals, platform, notify, onDone }) {
   const [form, setForm] = useState(emptyMonitorForm);
   const update = (key) => (event) => setForm((previous) => ({ ...previous, [key]: event.target.type === "checkbox" ? event.target.checked : event.target.value }));
   const hosts = terminals.filter(({ kind }) => kind === "ssh");
@@ -17,11 +17,12 @@ function MonitorForm({ api, terminals, notify, onDone }) {
   return <div className="monitor-form">
     <div className="monitor-row">
       <label>主机<select value={form.host} onChange={update("host")}><option value="local">本机</option>{hosts.map((terminal) => <option key={terminal.ref.sessionId} value={terminal.ref.sessionId}>{terminal.label}</option>)}</select></label>
-      <label>监控对象<select value={form.kind} onChange={update("kind")}><option value="process">进程</option><option value="thread">线程（Linux）</option><option value="log">日志文件</option><option value="sharedMemory">共享内存（只读）</option></select></label>
+      <label>监控对象<select value={form.kind} onChange={update("kind")}>{[["process", "进程"], ["thread", "线程"], ["log", "日志文件"], ["sharedMemory", "共享内存（只读）"]].map(([kind, label]) => { const note = kindNote(kind, form.host, platform); return <option key={kind} value={kind} disabled={form.host === "local" && Boolean(note)}>{label}{note ? `（${note}）` : ""}</option>; })}</select></label>
     </div>
+    {kindNote(form.kind, form.host, platform) && <p className="monitor-note">{kindNote(form.kind, form.host, platform)}</p>}
     {form.kind === "process" && <label>进程 ID 或进程名<input value={form.process} onChange={update("process")} /></label>}
     {form.kind === "thread" && <div className="monitor-row"><label>进程 ID<input value={form.pid} onChange={update("pid")} /></label><label>线程 ID<input value={form.tid} onChange={update("tid")} /></label></div>}
-    {form.kind === "log" && <label>日志路径<input value={form.path} placeholder="/var/log/app.log" onChange={update("path")} /></label>}
+    {form.kind === "log" && <label>日志路径<input value={form.path} placeholder={form.host === "local" && platform === "win32" ? "C:\\logs\\app.log" : "/var/log/app.log"} onChange={update("path")} /></label>}
     {form.kind === "sharedMemory" && <>
       <label>区域名称（/dev/shm 下）<input value={form.region} onChange={update("region")} /></label>
       <label>布局（每行：字段:偏移:类型，例如 count:0:u32）<textarea rows={3} value={form.layout} onChange={update("layout")} /></label>
@@ -68,7 +69,7 @@ function MonitorCard({ monitor, api, notify }) {
   </div>;
 }
 
-export function MonitorView({ api, terminals, notify }) {
+export function MonitorView({ api, terminals, platform, notify }) {
   const [monitors, setMonitors] = useState([]);
   const [creating, setCreating] = useState(false);
   useEffect(() => {
@@ -80,7 +81,7 @@ export function MonitorView({ api, terminals, notify }) {
   }, [api, notify]);
   return <div className="monitor-view">
     {!creating && <div className="operation-actions"><button className="button secondary" onClick={() => setCreating(true)}><Plus size={14} />新建监控</button></div>}
-    {creating && <MonitorForm api={api} terminals={terminals} notify={notify} onDone={() => setCreating(false)} />}
+    {creating && <MonitorForm api={api} terminals={terminals} platform={platform} notify={notify} onDone={() => setCreating(false)} />}
     {!monitors.length && !creating && <p className="monitor-note">直接读取主机上的进程、线程、日志或共享内存，不依赖终端屏幕，也不消耗模型调用。</p>}
     {monitors.map((monitor) => <MonitorCard key={monitor.id} monitor={monitor} api={api} notify={notify} />)}
   </div>;

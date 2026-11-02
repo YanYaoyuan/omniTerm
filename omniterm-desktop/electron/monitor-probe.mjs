@@ -4,7 +4,10 @@
 // because they travel as `sh -c '<script>'`, and every value in them is validated here first.
 
 const NAME = /^[\w.+@-]{1,128}$/;
-const PATH = /^\/[\w./+@-]{0,4095}$/;
+// Letters and digits of any language, but no quotes of any kind: PowerShell also treats curly
+// quotes as quotes, and these paths sit inside quoted strings.
+const PATH = /^\/[\p{L}\p{N}_ ./+@~#,-]{0,4095}$/u;
+const WINDOWS_PATH = /^[A-Za-z]:\\[\p{L}\p{N}_ .\\+@()~#,-]{0,4000}$/u;
 const MAX_LOG_BYTES = 64 * 1024;
 const LOG_MARK_BYTES = 256;
 const MAX_REGION_BYTES = 4096;
@@ -17,7 +20,16 @@ const integer = (value, label, maximum = Number.MAX_SAFE_INTEGER) => {
   return value;
 };
 
-export function validateTarget(input = {}) {
+// What each kind of host can read. Remote hosts are reached through a POSIX shell.
+export function targetSupport(kind, platform) {
+  if (platform === "win32") return kind === "sharedMemory" ? "Windows 本机暂不支持共享内存监控。" : null;
+  if (platform === "darwin") return kind === "thread" || kind === "sharedMemory" ? "macOS 暂不支持这类监控。" : null;
+  return null;
+}
+
+export function validateTarget(input = {}, { platform = "linux" } = {}) {
+  const unsupported = targetSupport(input.kind, platform);
+  if (unsupported) throw new Error(unsupported);
   switch (input.kind) {
     case "process": {
       if (input.pid !== undefined) return { kind: "process", pid: integer(input.pid, "进程 ID") };
@@ -26,7 +38,7 @@ export function validateTarget(input = {}) {
     }
     case "thread": return { kind: "thread", pid: integer(input.pid, "进程 ID"), tid: integer(input.tid, "线程 ID") };
     case "log":
-      if (!PATH.test(input.path ?? "") || input.path.includes("..")) throw new Error("日志路径必须是绝对路径，且只能包含常见文件名字符。");
+      if (!(platform === "win32" ? WINDOWS_PATH : PATH).test(input.path ?? "") || input.path.includes("..")) throw new Error("日志路径必须是绝对路径，且只能包含常见文件名字符。");
       return { kind: "log", path: input.path };
     case "sharedMemory": {
       if (input.access !== "posix-shm") throw new Error("共享内存目前只支持只读的 POSIX 共享内存（/dev/shm）。");
@@ -108,10 +120,101 @@ od -An -v -tx1 -N ${length} "/dev/shm/${name}" | tr -d " \\n"
 `;
 }
 
-export function probeScript(target, state = {}) {
+const UTF8_OUTPUT = "$ErrorActionPreference = 'SilentlyContinue'\n[Console]::OutputEncoding = [Text.Encoding]::UTF8\n";
+
+function windowsProcessScript(target) {
+  const find = target.pid !== undefined ? `Get-Process -Id ${target.pid}` : `Get-Process -Name '${target.name.replace(/\.exe$/i, "")}' | Select-Object -First 1`;
+  return `${UTF8_OUTPUT}$p = ${find}
+if (-not $p) { 'exists=0'; exit 0 }
+'exists=1'
+"pid=$($p.Id)"
+"cpuSeconds=$([math]::Round($p.CPU, 3))"
+"memoryKb=$([int64]($p.WorkingSet64 / 1024))"
+"command=$($p.ProcessName)"
+"threads=$($p.Threads.Count)"
+`;
+}
+
+function windowsThreadScript({ pid, tid }) {
+  return `${UTF8_OUTPUT}$t = (Get-Process -Id ${pid}).Threads | Where-Object { $_.Id -eq ${tid} }
+if (-not $t) { 'exists=0'; exit 0 }
+'exists=1'
+"cpuSeconds=$([math]::Round($t.TotalProcessorTime.TotalSeconds, 3))"
+`;
+}
+
+// The volume and file ID of the open handle, the Windows counterpart of an inode. The call is
+// defined at run time because Add-Type would start a compiler on every sample. PreserveSig keeps
+// its return value. A share or file system that gives no ID is reported, never guessed at.
+const WINDOWS_FILE_ID = `function Get-FileId($handle) {
+  try {
+    $name = New-Object Reflection.AssemblyName 'OmniTermFileId'
+    $assembly = [Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly($name, 'Run')
+    $type = $assembly.DefineDynamicModule('Native').DefineType('FileId', 'Public,Class,Abstract,Sealed')
+    $parameters = [Type[]]@([Microsoft.Win32.SafeHandles.SafeFileHandle], [int], [byte[]], [int])
+    $method = $type.DefinePInvokeMethod('GetFileInformationByHandleEx', 'kernel32.dll', [Reflection.MethodAttributes]'Public,Static,PinvokeImpl', [Reflection.CallingConventions]'Standard', [bool], $parameters, [Runtime.InteropServices.CallingConvention]'Winapi', [Runtime.InteropServices.CharSet]'Auto')
+    $method.SetImplementationFlags($method.GetMethodImplementationFlags() -bor [Reflection.MethodImplAttributes]::PreserveSig)
+    $native = $type.CreateType()
+    $info = New-Object byte[] 24
+    if (-not $native::GetFileInformationByHandleEx($handle, 18, $info, 24)) { return 'none' }
+    if ([BitConverter]::ToUInt64($info, 8) -eq 0 -and [BitConverter]::ToUInt64($info, 16) -eq 0) { return 'none' }
+    return [BitConverter]::ToString($info).Replace('-', '')
+  } catch { return 'none' }
+}
+`;
+
+// The mark mirrors POSIX: the file's identity, then a hash of its first bytes and those before the
+// offset. Creation time is no substitute for the ID: a file created where another was just renamed
+// from inherits it.
+function windowsLogScript({ path }, { offset, mark }) {
+  const saved = savedMark(mark);
+  return `${UTF8_OUTPUT}${WINDOWS_FILE_ID}$path = '${path}'
+if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { 'exists=0'; exit 0 }
+'exists=1'
+$file = [IO.File]::Open($path, 'Open', 'Read', 'ReadWrite,Delete')
+$id = Get-FileId $file.SafeFileHandle
+if ($id -eq 'none') { 'identity=none' }
+function Get-Mark($end) {
+  $length = [Math]::Min(${LOG_MARK_BYTES}, $end)
+  $window = New-Object byte[] (2 * $length)
+  [void]$file.Seek(0, 'Begin')
+  [void]$file.Read($window, 0, $length)
+  [void]$file.Seek($end - $length, 'Begin')
+  [void]$file.Read($window, $length, $length)
+  $id + '-' + [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($window)).Replace('-', '')
+}
+$size = $file.Length
+"size=$size"
+$start = ${offset ?? "$size"}
+if ($start -gt $size${saved ? ` -or (Get-Mark $start) -ne '${saved}'` : ""}) { $start = 0 }
+[void]$file.Seek($start, 'Begin')
+$bytes = New-Object byte[] ([Math]::Min(${MAX_LOG_BYTES}, $size - $start))
+$read = $file.Read($bytes, 0, $bytes.Length)
+$next = $start + $read
+$mark = Get-Mark $next
+$file.Close()
+"offset=$start"
+"next=$next"
+"mark=$mark"
+'@@text'
+[Console]::Out.Write([Text.Encoding]::UTF8.GetString($bytes, 0, $read))
+`;
+}
+
+export function probeScript(target, state = {}, platform = "linux") {
+  if (platform === "win32") return { process: windowsProcessScript, thread: windowsThreadScript, log: windowsLogScript }[target.kind](target, state);
   const script = { process: processScript, thread: threadScript, log: logScript, sharedMemory: regionScript }[target.kind](target, state);
   if (script.includes("'")) throw new Error("Probe scripts must not contain single quotes.");
   return script;
+}
+
+// Windows reports CPU as cumulative seconds, so usage is the rate between two samples, in the
+// same units as ps: 100 means one full core.
+export function withCpuRate(sample, previous) {
+  if (sample.cpuSeconds === undefined) return sample;
+  const elapsed = previous ? (sample.at - previous.at) / 1000 : 0;
+  if (!(elapsed > 0) || previous.cpuSeconds === undefined || previous.pid !== sample.pid) return sample;
+  return { ...sample, cpu: Math.max(0, (sample.cpuSeconds - previous.cpuSeconds) / elapsed * 100) };
 }
 
 function readField(buffer, { offset, type }) {
@@ -122,7 +225,7 @@ function readField(buffer, { offset, type }) {
 }
 
 export function parseProbe(target, output) {
-  const separator = output.search(/^@@(text|bytes)$/m);
+  const separator = output.search(/^@@(text|bytes)\r?$/m);
   const head = separator < 0 ? output : output.slice(0, separator);
   const sample = {};
   for (const line of head.split("\n")) {
@@ -168,17 +271,38 @@ export function conditionHolds(condition, sample) {
 
 const MAX_PROCESSES = 5000;
 
-export const PROCESS_LIST_SCRIPT = `export LC_ALL=C
-ps -A -o pid=,ppid=,pcpu=,rss=,comm=
+export function processListScript(platform = "linux") {
+  if (platform !== "win32") return "export LC_ALL=C\nps -A -o pid=,ppid=,pcpu=,rss=,comm=\n";
+  return `${UTF8_OUTPUT}Get-CimInstance Win32_Process | ForEach-Object { "{0}\`t{1}\`t{2}\`t{3}\`t{4}" -f $_.ProcessId, $_.ParentProcessId, ([int64]$_.KernelModeTime + [int64]$_.UserModeTime), ([int64]($_.WorkingSetSize / 1024)), $_.Name }
 `;
+}
 
-export function parseProcessList(output) {
+export function parseProcessList(output, platform = "linux") {
   const processes = [];
   for (const line of output.split("\n")) {
-    const match = /^\s*(\d+)\s+(\d+)\s+([\d.]+)\s+(\d+)\s+(.+?)\s*$/.exec(line);
-    if (!match) continue;
-    processes.push({ pid: Number(match[1]), ppid: Number(match[2]), cpu: Number(match[3]), memoryKb: Number(match[4]), command: match[5].slice(0, 200) });
+    if (platform === "win32") {
+      const [pid, ppid, ticks, memoryKb, ...name] = line.trimEnd().split("\t");
+      if (!name.length || !/^\d+$/.test(pid)) continue;
+      processes.push({ pid: Number(pid), ppid: Number(ppid), cpuTicks: Number(ticks), cpu: 0, memoryKb: Number(memoryKb), command: name.join(" ").slice(0, 200) });
+    } else {
+      const match = /^\s*(\d+)\s+(\d+)\s+([\d.]+)\s+(\d+)\s+(.+?)\s*$/.exec(line);
+      if (!match) continue;
+      processes.push({ pid: Number(match[1]), ppid: Number(match[2]), cpu: Number(match[3]), memoryKb: Number(match[4]), command: match[5].slice(0, 200) });
+    }
     if (processes.length >= MAX_PROCESSES) break;
   }
   return processes;
+}
+
+const TICKS_PER_SECOND = 10_000_000;
+
+// `previous` is the last list and when it was taken. The first list has no rate to show.
+export function withProcessRates(processes, previous, at) {
+  const ticks = new Map((previous?.processes ?? []).map(({ pid, cpuTicks }) => [pid, cpuTicks]));
+  const elapsed = previous ? (at - previous.at) / 1000 : 0;
+  return processes.map((process) => {
+    const before = ticks.get(process.pid);
+    if (process.cpuTicks === undefined || before === undefined || !(elapsed > 0)) return process;
+    return { ...process, cpu: Math.max(0, (process.cpuTicks - before) / TICKS_PER_SECOND / elapsed * 100) };
+  });
 }
