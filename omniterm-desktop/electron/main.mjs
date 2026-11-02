@@ -108,6 +108,7 @@ function registerHandlers() {
       await manager.write({ id, data: shellIntegrationScript(manager.shellNonce(id)) });
       return true;
     },
+    "allow-auto-submit": ({ id, enabled }) => { manager.require(id); return host.request("session.allowAutoSubmit", { id, enabled: enabled === true }); },
     "workspace-update": (layout) => host.request("workspace.update", layout),
     "workspace-list": () => host.request("workspace.list"),
     "provider-state": providerState,

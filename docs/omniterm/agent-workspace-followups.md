@@ -4,7 +4,11 @@ Scoped follow-ups to [#4](https://github.com/YanYaoyuan/omniTerm/issues/4), from
 
 ## 1. Proposal: reliable approved execution over SSH
 
-Status: **proposal for review.** SSH commands stay staged for a manual Enter until this design is accepted.
+Status: **implemented behind a per-terminal opt-in, off by default** (branch `feat/ssh-approved-execution`). Without the opt-in, SSH commands stay staged for a manual Enter.
+
+Decisions from review: no probe into a full-screen program or password prompt; unsupported shells or keymaps, nested sessions, failed or stale handshakes, disconnects and uncertain state stage or block, and never submit. Only emacs keymaps are bound in this version, and vi falls back to staging.
+
+The one-time ID in step 1 is the key sequence itself: the snippet binds 16 sequences and the host cycles through them, because a widget can't reliably read bytes after its key once the line editor has buffered them.
 
 | Choice | Behaviour |
 | --- | --- |
@@ -37,18 +41,18 @@ The widget runs inside the line editor, so a reply proves that the editor on tha
 - Bash's `bind -x` depends on the active keymap, so vi mode needs handling or an explicit "unsupported, stays staged".
 - Should this be a per-terminal opt-in, or is a working handshake enough?
 
-### Regression tests required before enabling it
+### Regression tests
 
-Run against real `ssh` through an injected-latency proxy, on bash and zsh:
+`npm run test:ssh` runs these against real `ssh` through an injected-latency proxy, at 0 and 250 ms, on bash and zsh. Checked items are covered. Removing the handshake fails the suite.
 
-- [ ] Each case from PR #5 over SSH: unclosed quote, line continuation, heredoc, queued lines, slow `preexec`, `read`.
-- [ ] Input landing after `q=0` was sent, which the current guard can't see.
-- [ ] Probe sent while input is in flight, and a reply lost or delayed.
-- [ ] Nested `ssh`, `su` and tmux: no reply, so the command stays staged.
-- [ ] Full-screen program and password prompt: no probe is sent.
-- [ ] Disconnect between probe and reply: no replay.
-- [ ] A forged reply printed by `cat` is rejected.
-- [ ] Mutation check: removing the handshake fails the suite.
+- [x] Each case from PR #5 over SSH: unclosed quote, line continuation, heredoc, queued lines, slow `preexec`, `read`.
+- [x] Input landing after `q=0` was sent, which the current guard can't see.
+- [x] Probe sent while input is in flight, and a reply lost or delayed.
+- [ ] Nested `ssh`, `su` and tmux. A nested `/bin/sh` is covered; the others have only the same `busy` path so far.
+- [x] Full-screen program and password prompt: no probe is sent.
+- [x] Disconnect between probe and reply: no replay.
+- [x] A forged reply without the session nonce is rejected (unit test).
+- [x] Mutation check: removing the handshake fails the suite.
 
 ## 2. Authorized interaction with programs running in a terminal
 

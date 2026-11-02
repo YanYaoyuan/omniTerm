@@ -18,7 +18,7 @@ function OperationCard({ entry, terminals, api, notify }) {
   const pending = operation.status === "pendingApproval";
   const interaction = target?.interaction?.state ?? "unknown";
   const canRun = interaction === "ready" && target?.autoSubmit === true;
-  const manualReason = interaction === "fullscreen" ? "全屏程序不是 shell：omniTerm Agent 目前只能执行 shell 命令，不能向交互程序发送文本。" : target?.autoSubmit === false ? "SSH 终端不会自动提交：批准后命令只输入到终端，由你检查后按回车。" : canRun ? "" : "无法确认空闲，只能输入后由你手动回车。";
+  const manualReason = interaction === "fullscreen" ? "全屏程序不是 shell：omniTerm Agent 目前只能执行 shell 命令，不能向交互程序发送文本。" : target?.autoSubmit === false ? (target.autoSubmitOptIn ? "该终端已允许自动执行，但远端还不能确认就绪（需要启用就绪标记、zsh 或 bash 4.4+ 和 emacs 键位）。批准后只输入到终端，由你按回车。" : "SSH 终端默认不自动提交：批准后命令只输入到终端，由你检查后按回车。可以在终端列表中为这个终端开启“自动执行”。") : canRun ? "" : "无法确认空闲，只能输入后由你手动回车。";
   const act = (task) => Promise.resolve().then(task).catch((error) => notify(error.message));
   const approve = (scope, mode) => act(() => api.approveOperation({ operationId: operation.operationId, scope, mode, ...(scope === "taskTarget" ? { ttlMs: GRANT_MS } : {}) }));
   return <div className={`operation-card status-${operation.status}`}>
@@ -54,14 +54,14 @@ function Entry({ entry, terminals, api, notify, onLocate }) {
   }
 }
 
-function TerminalPicker({ terminals, context, targets, onContext, onTargets, onAllContext, onStage, platform }) {
+function TerminalPicker({ terminals, context, targets, onContext, onTargets, onAllContext, onStage, onAutoSubmit, platform }) {
   return <div className="terminal-picker">
     <div className="picker-header"><span>终端</span><span>上下文</span><span>执行</span></div>
     {terminals.map((terminal) => {
       const id = terminal.ref.sessionId;
       const Icon = terminal.kind === "shell" ? TerminalWindow : HardDrives;
       return <div className="picker-row" key={id}>
-        <div className="picker-name" title={`${terminal.tab ? `标签 ${terminal.tab.index}${terminal.pane ? ` · 窗格 ${terminal.pane}` : ""}` : "位置未知"} · ${terminal.shortId}`}><Icon size={14} /><span><strong>{terminal.label}</strong><small>{terminal.connection.configured.host ?? (terminal.cwd.value || "目录未知")} · {INTERACTION_LABELS[terminal.interaction.state] ?? "未知"}{terminal.focused ? " · 当前焦点" : ""}</small></span>{terminal.interaction.state === "unknown" && (terminal.kind === "ssh" || (terminal.kind === "shell" && platform !== "win32")) && <button className="picker-link" title="向该终端输入一段启用就绪标记的脚本（zsh 或 bash 4.4+），由你按回车确认。启用后可以识别忙碌和未完成的输入；本地 shell 中已批准的命令才能自动提交，SSH 始终由你按回车。" onClick={() => onStage(terminal)}>启用就绪标记</button>}</div>
+        <div className="picker-name" title={`${terminal.tab ? `标签 ${terminal.tab.index}${terminal.pane ? ` · 窗格 ${terminal.pane}` : ""}` : "位置未知"} · ${terminal.shortId}`}><Icon size={14} /><span><strong>{terminal.label}</strong><small>{terminal.connection.configured.host ?? (terminal.cwd.value || "目录未知")} · {INTERACTION_LABELS[terminal.interaction.state] ?? "未知"}{terminal.focused ? " · 当前焦点" : ""}</small></span>{terminal.interaction.state === "unknown" && (terminal.kind === "ssh" || (terminal.kind === "shell" && platform !== "win32")) && <button className="picker-link" title="向该终端输入一段启用就绪标记的脚本（zsh 或 bash 4.4+），由你按回车确认。启用后可以识别忙碌和未完成的输入；本地 shell 中已批准的命令才能自动提交，SSH 始终由你按回车。" onClick={() => onStage(terminal)}>启用就绪标记</button>}{terminal.requiresHandshake && <label className="picker-link" title="开启后，批准执行的命令在远端行编辑器确认提示符为空后自动提交；无法确认时不会提交。需要先启用就绪标记（zsh 或 bash 4.4+，emacs 键位）。"><input type="checkbox" checked={terminal.autoSubmitOptIn} onChange={(event) => onAutoSubmit(terminal, event.target.checked)} />自动执行</label>}</div>
         <input type="checkbox" aria-label={`将 ${terminal.label} 加入上下文`} checked={context.has(id)} onChange={() => onContext(id)} />
         <input type="radio" name="agent-target" aria-label={`将 ${terminal.label} 设为执行目标`} disabled={!executable(terminal)} checked={targets.has(id)} onChange={() => onTargets(id)} />
       </div>;
@@ -195,7 +195,7 @@ export const AgentPanel = forwardRef(function AgentPanel({ className = "", style
       <button className={`scope-chip ${targets.size ? "armed" : ""}`} aria-expanded={pickerOpen} onClick={() => setPickerOpen(!pickerOpen)} title="选择允许提议命令的终端；切换焦点不会改变它"><Crosshair size={13} /><span><small>执行目标</small>{targetName}</span></button>
       <button className="scope-chip" onClick={() => setSettingsOpen(true)} title="模型设置"><Cpu size={13} /><span><small>{profile ? (WIRE_LABELS[profile.wireApi] ?? profile.wireApi) : "模型"}</small>{profile ? `${profile.name} · ${profile.model}${profile.chatOnly ? " · 仅聊天" : ""}` : "未配置"}</span></button>
     </div>
-    {pickerOpen && <TerminalPicker terminals={terminals} context={context} targets={targets} onContext={toggleContext} onTargets={selectTarget} onAllContext={() => { contextTouched.current = true; setContext(new Set(terminals.map((terminal) => terminal.ref.sessionId))); }} onStage={stageIntegration} platform={info.platform} />}
+    {pickerOpen && <TerminalPicker terminals={terminals} context={context} targets={targets} onContext={toggleContext} onTargets={selectTarget} onAllContext={() => { contextTouched.current = true; setContext(new Set(terminals.map((terminal) => terminal.ref.sessionId))); }} onStage={stageIntegration} onAutoSubmit={(terminal, enabled) => api.allowAutoSubmit({ id: terminal.ref.sessionId, enabled }).then(refresh).catch((error) => notify(error.message))} platform={info.platform} />}
     <div className="agent-log" ref={log}>
       {empty && <div className="agent-invitation"><div className="agent-symbol"><Robot size={32} weight="light" /></div><span className="agent-eyebrow">你的终端搭档</span><h2>从一个问题开始。</h2><p>选择要共享的终端和执行目标。<br />每条命令都由你批准，只在你选定的终端运行。</p>{!available && <div className="agent-unavailable"><WarningCircle size={15} /><span>{info.agent?.error || "未找到 Agent 引擎。"}</span></div>}{available && providers && !providers.profiles.length && <button className="button primary" onClick={() => setSettingsOpen(true)}><GearSix size={16} />配置模型服务</button>}</div>}
       {conversation.entries.map((entry) => <Entry key={`${entry.kind}-${entry.id}`} entry={entry} terminals={terminals} api={api} notify={notify} onLocate={(terminal) => onActivate(terminal.ref.sessionId)} />)}

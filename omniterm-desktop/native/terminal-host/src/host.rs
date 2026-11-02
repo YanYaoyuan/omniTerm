@@ -93,6 +93,18 @@ impl Terminals for Host {
             .ok_or_else(|| "The terminal has closed.".to_string())?
             .write_agent(bytes)
     }
+
+    fn send_probe(&self, session_id: &str) -> Result<(), String> {
+        self.session(session_id)
+            .ok_or_else(|| "The terminal has closed.".to_string())?
+            .send_probe()
+    }
+
+    fn dispatch(&self, session_id: &str, bytes: &[u8]) -> Result<(), String> {
+        self.session(session_id)
+            .ok_or_else(|| "The terminal has closed.".to_string())?
+            .dispatch(bytes)
+    }
 }
 
 #[derive(Deserialize)]
@@ -108,6 +120,13 @@ struct WriteParams {
     data: String,
     #[serde(default)]
     reply: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AutoSubmitParams {
+    id: String,
+    enabled: bool,
 }
 
 #[derive(Deserialize)]
@@ -351,7 +370,10 @@ impl Host {
                 "lastCommand": state.commands.back(),
                 "contextSelected": shared,
                 "executionTarget": targets.contains(&reference),
-                "autoSubmit": session.auto_submit(),
+                "autoSubmit": session.auto_submit(&state),
+                "autoSubmitOptIn": state.allow_auto_submit,
+                "handshakeCapable": session.handshake_capable(&state),
+                "requiresHandshake": session.requires_handshake(),
                 "unknown": unknown,
             })
         };
@@ -566,6 +588,15 @@ impl Host {
                     self.after_user_write();
                 }
                 Ok(json!(written))
+            }
+            "session.allowAutoSubmit" => {
+                let AutoSubmitParams { id, enabled } = parse(params)?;
+                let session = self.require(&id)?;
+                if !session.requires_handshake() {
+                    return Err("Only SSH terminals have this setting.".to_string());
+                }
+                session.lock().allow_auto_submit = enabled;
+                Ok(json!(enabled))
             }
             "session.resize" => {
                 let ResizeParams { id, cols, rows } = parse(params)?;
@@ -827,6 +858,18 @@ mod tests {
             host.handle("session.create", plan.clone()).expect("created");
         }
         assert!(host.handle("session.create", plan).unwrap_err().contains("maximum 20"));
+    }
+
+    #[test]
+    fn the_auto_submit_opt_in_is_per_ssh_terminal() {
+        let (host, _frames) = fixture();
+        terminal(&host, "a", "shell", b"");
+        terminal(&host, "b", "ssh", b"");
+        terminal(&host, "c", "ssh", b"");
+        assert!(host.handle("session.allowAutoSubmit", json!({ "id": "a", "enabled": true })).is_err());
+        host.handle("session.allowAutoSubmit", json!({ "id": "b", "enabled": true })).expect("set");
+        assert!(host.session("b").expect("session").lock().allow_auto_submit);
+        assert!(!host.session("c").expect("session").lock().allow_auto_submit);
     }
 
     #[test]
