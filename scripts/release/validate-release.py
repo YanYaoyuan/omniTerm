@@ -53,6 +53,12 @@ def validate(directory, version, commit, fingerprint):
                     or build.get('sourceDirty') is not False or build.get('debSha256') != actual):
                 raise ValueError(f'{filename}: Debian build record mismatch')
             expected.add(build_name)
+            # The Debian packager also emits its own checksum before the
+            # common release packager adds the .deb.sha256 sidecar.
+            deb_checksum = filename.removesuffix('.deb') + '.sha256'
+            if (directory / deb_checksum).read_text(encoding='utf-8').strip() != f'{actual}  {filename}':
+                raise ValueError(f'{filename}: Debian checksum mismatch')
+            expected.add(deb_checksum)
     actual_names = {p.name for p in directory.iterdir()}
     if actual_names - expected - {'SHA256SUMS'}:
         raise ValueError('Unexpected release files: ' + ', '.join(sorted(actual_names - expected - {'SHA256SUMS'})))

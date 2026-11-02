@@ -34,6 +34,7 @@ class ReleaseTests(unittest.TestCase):
             (self.directory / (filename + '.manifest.json')).write_text(json.dumps(manifest))
             (self.directory / (filename + '.sha256')).write_text(f'{checksum}  {filename}\n')
             if platform == 'linux':
+                (self.directory / filename.replace('.deb', '.sha256')).write_text(f'{checksum}  {filename}\n')
                 (self.directory / filename.replace('.deb', '.build.json')).write_text(json.dumps(dict(
                     version='0.1.0-1', sourceCommit=self.commit, sourceDirty=False, debSha256=checksum)))
 
@@ -42,7 +43,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_complete_set_and_repeatable_checksums(self):
         self.assertEqual(self.run_validation(), self.run_validation())
-        self.assertEqual(len((self.directory / 'SHA256SUMS').read_text().splitlines()), 10)
+        self.assertEqual(len((self.directory / 'SHA256SUMS').read_text().splitlines()), 11)
 
     def test_missing_platform_rejected(self):
         (self.directory / 'omniTerm-0.1.0-macos-arm64.zip').unlink()
