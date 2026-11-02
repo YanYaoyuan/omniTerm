@@ -1,19 +1,20 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   ArrowDown, ArrowUp, ArrowsLeftRight, ArrowsOut, ArrowsIn, Broadcast, CaretRight, Check, Circle,
-  CircleNotch, Command, Copy, DotsThree, FolderOpen, FolderSimple,
+  CircleNotch, Command, Copy, Cpu, DotsSixVertical, DotsThree, FolderOpen, FolderSimple,
   GearSix, HardDrives, MagnifyingGlass, Monitor, PaperPlaneTilt, Palette, PencilSimple,
-  PlugsConnected, Plus, Robot, SidebarSimple, SquareSplitHorizontal, SquareSplitVertical, TerminalWindow, Trash, X,
+  PlugsConnected, Plus, Robot, SidebarSimple, Stack, SquareSplitHorizontal, SquareSplitVertical, TerminalWindow, Trash, X,
   ClipboardText, WarningCircle, SlidersHorizontal, ArrowClockwise, TextAa,
 } from "@phosphor-icons/react";
 import { TerminalView } from "./TerminalView.jsx";
 import { AgentPanel } from "./agent/AgentPanel.jsx";
+import { MonitorView } from "./agent/MonitorView.jsx";
 import { ConnectionDialog, SshImportDialog, connectionLabels, markSshHostsSeen, seenSshHosts } from "./ConnectionDialog.jsx";
 import { CommandPalette } from "./CommandPalette.jsx";
 import { MetricsBar, SftpPanel } from "./RemotePanels.jsx";
 import { createRemoteStore } from "./remote-utils.js";
 import { isTerminalReply } from "./terminal-utils.js";
-import { computeLayout, equalize, neighborPane, pane, paneIds, removePane, setRatio, splitPane } from "./layout.js";
+import { DOCK_KEY, computeLayout, defaultDock, dockedTerminal, dockedTerminals, dropSide, equalize, insertPane, moveDockPanel, movePaneInTabs, neighborPane, pane, paneIds, parseDock, pruneDock, removePane, setRatio, splitPane, storableDock, takePaneFromTabs, visibleDock } from "./layout.js";
 import { SHORTCUTS, matchShortcut, shortcutLabel, tabCycle, tabNumber } from "./shortcuts.js";
 import { THEMES, backdrop, themeFor, themeTokens } from "./themes.js";
 import { WORKSPACE_KEY, parseWorkspace, restoreTree, serializeWorkspace } from "./workspace.js";
@@ -44,6 +45,20 @@ function readSettings() {
   catch { return defaults; }
 }
 
+const MONITOR_VISIBLE_KEY = "omniterm-monitor-panel";
+
+// The same placement in pixels, within a measured box of the dock.
+function paneBoxStyle(rect, box) {
+  const edge = (start, size) => ({ start: start > 0 ? DIVIDER / 2 : 0, end: start + size < 1 - 1e-6 ? DIVIDER / 2 : 0 });
+  const horizontal = edge(rect.x, rect.w);
+  const vertical = edge(rect.y, rect.h);
+  return {
+    left: box.left + rect.x * box.width + horizontal.start, top: box.top + rect.y * box.height + vertical.start,
+    width: rect.w * box.width - horizontal.start - horizontal.end, height: rect.h * box.height - vertical.start - vertical.end,
+    right: "auto", bottom: "auto",
+  };
+}
+
 // Converts a fractional rectangle to absolute CSS with a gutter between panes.
 function paneStyle(rect) {
   const edge = (start, size) => ({ start: start > 0 ? DIVIDER / 2 : 0, end: start + size < 1 - 1e-6 ? DIVIDER / 2 : 0 });
@@ -56,6 +71,16 @@ function paneStyle(rect) {
     height: `calc(${rect.h * 100}% - ${vertical.start + vertical.end}px)`,
     right: "auto", bottom: "auto",
   };
+}
+
+function readDock() {
+  try { return parseDock(localStorage.getItem(DOCK_KEY)) || defaultDock(); }
+  catch { return defaultDock(); }
+}
+
+// Drag handle for a docked panel.
+function PanelGrip({ panel, label, onStart, onEnd }) {
+  return <span className="panel-grip" draggable title={`拖动以移动${label}：放到其他面板的任一边缘`} onDragStart={(event) => { event.stopPropagation(); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/omniterm-panel", panel); onStart(panel); }} onDragEnd={onEnd}><DotsSixVertical size={14} weight="bold" /></span>;
 }
 
 function IconButton({ label, children, className = "", ...props }) {
@@ -191,6 +216,13 @@ export function App() {
   const [searchFound, setSearchFound] = useState(true);
   const [searchOptions, setSearchOptions] = useState({ caseSensitive: false, regex: false });
   const [draggedTab, setDraggedTab] = useState(null);
+  const [draggedPane, setDraggedPane] = useState(null);
+  const [dropHint, setDropHint] = useState(null);
+  const [dock, setDock] = useState(readDock);
+  const [draggedPanel, setDraggedPanel] = useState(null);
+  const [monitorVisible, setMonitorVisible] = useState(() => localStorage.getItem(MONITOR_VISIBLE_KEY) === "1");
+  const [stackBox, setStackBox] = useState(null);
+  const dockRef = useRef(null);
   const [sidebarView, setSidebarView] = useState("files");
   const controls = useRef(new Map());
   const remoteMemory = useRef(new Map());
@@ -395,18 +427,27 @@ export function App() {
   useEffect(() => {
     if (!ready.current) return;
     try {
-      if (settings.restoreWorkspace) localStorage.setItem(WORKSPACE_KEY, JSON.stringify(serializeWorkspace(tabs, sessions, activeTabId)));
+      // A docked pane comes back as a tab: its dock leaf belongs to a session that won't return.
+      if (settings.restoreWorkspace) localStorage.setItem(WORKSPACE_KEY, JSON.stringify(serializeWorkspace([...tabs, ...dockedTerminals(dock).map((id) => ({ id: `docked-${id}`, root: pane(id), title: "" }))], sessions, activeTabId)));
       else localStorage.removeItem(WORKSPACE_KEY);
     } catch { /* Restoring is best effort; the current session is unaffected. */ }
-  }, [tabs, sessions, activeTabId, settings.restoreWorkspace]);
+  }, [tabs, sessions, dock, activeTabId, settings.restoreWorkspace]);
 
   // The host keeps the live sessions; this tells it where they sit and which one has focus.
   useEffect(() => {
     if (!ready.current) return;
     const title = (id) => { const session = sessions.find((item) => item.id === id); return session?.title ?? ""; };
-    const layout = { windowId: "main", focusedSessionId: focusedId, activeTabId, tabs: tabs.map((tab) => ({ id: tab.id, title: tab.title, panes: paneIds(tab.root).map((sessionId) => ({ sessionId, title: title(sessionId) })) })) };
+    const docked = dockedTerminals(dock);
+    const layout = { windowId: "main", focusedSessionId: focusedId, activeTabId, tabs: [...tabs.map((tab) => ({ id: tab.id, title: tab.title, panes: paneIds(tab.root).map((sessionId) => ({ sessionId, title: title(sessionId) })) })), ...(docked.length ? [{ id: "docked", title: "已停靠", panes: docked.map((sessionId) => ({ sessionId, title: title(sessionId) })) }] : [])] };
     Promise.resolve(api.updateWorkspace(layout)).catch(() => { /* Refreshed on the next layout change. */ });
-  }, [tabs, sessions, focusedId, activeTabId]);
+  }, [tabs, sessions, dock, focusedId, activeTabId]);
+
+  useEffect(() => {
+    try { localStorage.setItem(DOCK_KEY, JSON.stringify(storableDock(dock))); localStorage.setItem(MONITOR_VISIBLE_KEY, monitorVisible ? "1" : "0"); }
+    catch { /* The arrangement still applies for this session. */ }
+  }, [dock, monitorVisible]);
+
+  useEffect(() => { setDock((previous) => pruneDock(previous, sessions.map(({ id }) => id))); }, [sessions]);
 
   useEffect(() => {
     try { localStorage.setItem("omniterm-terminal-settings", JSON.stringify(settings)); }
@@ -420,6 +461,9 @@ export function App() {
   }, [info, settings.backgroundMode, notify]);
   const scene = backdrop(settings, windowTransparent);
   const tokens = themeTokens(themeFor(settings.theme));
+  useEffect(() => {
+    api.setWindowTheme(settings.theme).catch((error) => notify(error.message));
+  }, [settings.theme, notify]);
   useLayoutEffect(() => {
     const root = document.documentElement;
     for (const [name, value] of Object.entries(tokens)) root.style.setProperty(name, value);
@@ -430,7 +474,8 @@ export function App() {
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
   const activeSession = sessions.find((session) => session.id === activeTab?.focus);
-  const selectedSession = activeSession;
+  const dockedFocus = focusedId && dockedTerminals(dock).includes(focusedId) ? sessions.find((session) => session.id === focusedId) : null;
+  const selectedSession = dockedFocus ?? activeSession;
   const searchId = selectedSession?.id;
   const remoteSession = settings.remotePanels && activeSession?.remote ? activeSession : null;
   const remote = useSyncExternalStore(remoteSession ? remoteStore.subscribe : ignoreRemote, remoteSession ? () => remoteStore.state(remoteSession.id) : noRemote);
@@ -514,6 +559,39 @@ export function App() {
     setTabs((previous) => previous.map((tab) => tab.id === tabId ? { ...tab, title } : tab));
     if (tabId === activeTabId && selectedSession) focusLater(selectedSession.id);
   };
+  const endPaneDrag = useCallback(() => { setDraggedPane(null); setDropHint(null); }, []);
+  const startPaneDrag = useCallback((id) => setDraggedPane(id), []);
+  const dropPane = useCallback((destination) => {
+    const id = draggedPane;
+    endPaneDrag();
+    if (!id) return;
+    agentPanel.current?.holdScope();
+    const next = movePaneInTabs(tabsRef.current, id, { ...destination, detached: dockedTerminals(dock).includes(id) }, () => ({ id: newTabId(), root: null, focus: id, title: "", broadcast: false, zoomed: null }));
+    if (next === tabsRef.current) return;
+    setTabs(next);
+    setDock((previous) => removePane(previous, dockedTerminal(id)) ?? previous);
+    const tab = next.find((item) => paneIds(item.root).includes(id));
+    setActiveTabId(tab.id);
+    setFocusedId(id);
+    focusLater(id);
+  }, [draggedPane, dock, endPaneDrag, focusLater]);
+  const endPanelDrag = useCallback(() => { setDraggedPanel(null); setDropHint(null); }, []);
+  const dropPanel = useCallback((target, side) => {
+    agentPanel.current?.holdScope();
+    if (draggedPane) {
+      // A pane leaves the tabs and becomes its own dock leaf, keeping its session and view.
+      const leaf = dockedTerminal(draggedPane);
+      setTabs((previous) => takePaneFromTabs(previous, draggedPane));
+      setDock((previous) => paneIds(previous).includes(leaf) ? moveDockPanel(previous, leaf, target, side) : insertPane(previous, target, leaf, side));
+      setFocusedId(draggedPane);
+      focusLater(draggedPane);
+      endPaneDrag();
+      return;
+    }
+    setDock((previous) => moveDockPanel(previous, draggedPanel, target, side));
+    endPanelDrag();
+  }, [draggedPane, draggedPanel, endPaneDrag, endPanelDrag, focusLater]);
+  const showMonitors = useCallback(() => setMonitorVisible(true), []);
   const reorderTab = (fromId, toId) => setTabs((previous) => {
     const from = previous.findIndex((tab) => tab.id === fromId);
     const to = previous.findIndex((tab) => tab.id === toId);
@@ -585,6 +663,8 @@ export function App() {
       { id: "open-folder", group: "工作区", label: "在文件夹中打开终端…", icon: FolderOpen, run: chooseDirectory },
       { id: "agent-send", group: "omniTerm Agent", label: "附加选中内容到 omniTerm Agent", icon: PaperPlaneTilt, shortcut: key("sendToAgent"), run: actions.sendToAgent },
       { id: "agent-toggle", group: "omniTerm Agent", label: agentVisible ? "隐藏 omniTerm Agent 面板" : "显示 omniTerm Agent 面板", icon: SidebarSimple, shortcut: key("toggleAgent"), run: actions.toggleAgent },
+      { id: "process-window", group: "工作区", label: "打开进程监视窗口", keywords: "process monitor top ps 进程", icon: Cpu, run: () => safely(() => api.openProcessWindow(activeSession?.kind === "ssh" && activeSession.remote ? activeSession.id : "local")) },
+      { id: "reset-dock", group: "外观", label: "重置面板布局", keywords: "dock layout panel", icon: SidebarSimple, run: () => setDock(defaultDock()) },
       { id: "font-bigger", group: "外观", label: "放大字体", icon: TextAa, shortcut: key("fontBigger"), run: actions.fontBigger },
       { id: "font-smaller", group: "外观", label: "缩小字体", icon: TextAa, shortcut: key("fontSmaller"), run: actions.fontSmaller },
       { id: "font-reset", group: "外观", label: "重置字体大小", icon: TextAa, shortcut: key("fontReset"), run: actions.fontReset },
@@ -604,20 +684,44 @@ export function App() {
   const paneCount = activeTab ? paneIds(activeTab.root).length : 0;
 
   const layouts = useMemo(() => new Map(tabs.map((tab) => [tab.id, computeLayout(tab.root)])), [tabs]);
+  const hiddenPanels = [...(agentVisible ? [] : ["agent"]), ...(monitorVisible ? [] : ["monitor"])];
+  const dockLayout = computeLayout(visibleDock(dock, hiddenPanels));
+  const dockPlacement = new Map(dockLayout.panes.map(({ sessionId, rect }) => [sessionId, paneStyle(rect)]));
+  const dockStyle = (panel) => dockPlacement.get(panel) ?? { display: "none" };
+  // Every terminal is drawn at the top of the dock, wherever it sits, so moving one between a tab
+  // and the dock changes its position and never its parent, which would restart the terminal.
+  useLayoutEffect(() => {
+    const stack = stackRef.current;
+    const root = dockRef.current;
+    if (!stack || !root) return undefined;
+    const measure = () => {
+      const [inner, outer] = [stack.getBoundingClientRect(), root.getBoundingClientRect()];
+      setStackBox((previous) => {
+        const next = { left: inner.left - outer.left, top: inner.top - outer.top, width: inner.width, height: inner.height };
+        return previous && Object.keys(next).every((key) => previous[key] === next[key]) ? previous : next;
+      });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(stack);
+    observer.observe(root);
+    return () => observer.disconnect();
+  });
   const placement = useMemo(() => {
     const result = new Map();
+    if (!stackBox) return result;
     for (const tab of tabs) {
       for (const item of layouts.get(tab.id).panes) {
         const zoomedOut = tab.zoomed && tab.zoomed !== item.sessionId;
-        result.set(item.sessionId, { tab, style: tab.zoomed && !zoomedOut ? paneStyle({ x: 0, y: 0, w: 1, h: 1 }) : paneStyle(item.rect), hidden: Boolean(zoomedOut) });
+        result.set(item.sessionId, { tab, style: paneBoxStyle(tab.zoomed && !zoomedOut ? { x: 0, y: 0, w: 1, h: 1 } : item.rect, stackBox), hidden: Boolean(zoomedOut) });
       }
     }
     return result;
-  }, [tabs, layouts]);
+  }, [tabs, layouts, stackBox]);
 
-  const startDividerDrag = (event, tabId, divider) => {
+  const startDividerDrag = (event, container, divider, update) => {
     event.preventDefault();
-    const stack = stackRef.current?.getBoundingClientRect();
+    const stack = container.current?.getBoundingClientRect();
     if (!stack) return;
     const target = event.currentTarget;
     target.setPointerCapture(event.pointerId);
@@ -625,13 +729,15 @@ export function App() {
       const row = divider.direction === "row";
       const fraction = row ? (moveEvent.clientX - stack.left) / stack.width : (moveEvent.clientY - stack.top) / stack.height;
       const ratio = row ? (fraction - divider.parent.x) / divider.parent.w : (fraction - divider.parent.y) / divider.parent.h;
-      setTabs((previous) => previous.map((tab) => tab.id === tabId ? { ...tab, root: setRatio(tab.root, divider.path, ratio) } : tab));
+      update(ratio);
     };
     const stop = () => { target.removeEventListener("pointermove", move); target.removeEventListener("pointerup", stop); target.removeEventListener("pointercancel", stop); };
     target.addEventListener("pointermove", move);
     target.addEventListener("pointerup", stop);
     target.addEventListener("pointercancel", stop);
   };
+
+  const panelGrip = (panel, label) => <PanelGrip panel={panel} label={label} onStart={setDraggedPanel} onEnd={endPanelDrag} />;
 
   if (!info) return <div className="app-boot"><div className="boot-logo"><TerminalWindow size={32} /></div><h1>omniTerm</h1>{bootError ? <><p className="boot-error">{bootError}</p><button className="button secondary" onClick={() => window.location.reload()}><ArrowClockwise size={16} />重新连接</button></> : <p><CircleNotch size={16} className="spin" />正在打开工作区…</p>}</div>;
 
@@ -650,13 +756,14 @@ export function App() {
       <div className="window-title"><FolderSimple size={13} /><span>{basename(shownCwd)}</span><span className="title-divider">/</span><span>{activeTab ? tabLabel(activeTab) : "工作区"}</span></div>
       <div className="titlebar-actions">
         <ThemeMenu current={settings.theme} onSelect={(id) => setSettings((previous) => ({ ...previous, theme: id }))} />
-        <button className="titlebar-button" title={`命令面板（${key("palette")}）`} onClick={() => setPaletteOpen(true)}><Command size={15} /><span>命令</span><kbd>{key("palette")}</kbd></button>
+        <button className={`titlebar-button ${monitorVisible ? "active" : ""}`} title="显示或隐藏监控面板" onClick={() => setMonitorVisible((visible) => !visible)}><Stack size={15} /><span>监控</span></button><button className="titlebar-button" title="打开进程监视窗口" onClick={() => safely(() => api.openProcessWindow(activeSession?.kind === "ssh" && activeSession.remote ? activeSession.id : "local"))}><Cpu size={15} /><span>进程</span></button><button className="titlebar-button" title={`命令面板（${key("palette")}）`} onClick={() => setPaletteOpen(true)}><Command size={15} /><span>命令</span><kbd>{key("palette")}</kbd></button>
         <button className={`titlebar-button ${agentVisible ? "active" : ""}`} title={`${agentVisible ? "隐藏 omniTerm Agent 面板（对话继续运行）" : "显示 omniTerm Agent 面板"}（${key("toggleAgent")}）`} onClick={() => setAgentVisible((visible) => !visible)}><Robot size={16} /><span>omniTerm Agent</span><SidebarSimple size={15} /></button>
       </div>
     </header>
 
-    <div className={`workspace-layout ${filesView ? "with-files" : ""}`}>
-      <aside className="sidebar">
+    <div className="workspace-layout" ref={dockRef}>
+      <aside className="sidebar dock-panel" style={dockStyle("sidebar")}>
+        <div className="sidebar-grip">{panelGrip("sidebar", "工作区面板")}</div>
         {remote && <div className="sidebar-views" role="tablist" aria-label="侧边栏视图"><button role="tab" aria-selected={filesView} className={filesView ? "active" : ""} onClick={() => setSidebarView("files")}><FolderOpen size={14} />文件</button><button role="tab" aria-selected={!filesView} className={filesView ? "" : "active"} onClick={() => setSidebarView("connections")}><HardDrives size={14} />工作区</button></div>}
         {filesView ? <SftpPanel key={remoteSession.id} session={remoteSession} remote={remote} store={remoteStore} api={api} notify={notify} memory={remoteMemory.current} /> : <>
         <div className="sidebar-section-heading"><span>工作区</span><IconButton label="打开工作文件夹" onClick={chooseDirectory}><FolderOpen size={16} /></IconButton></div>
@@ -676,16 +783,16 @@ export function App() {
         </>}
       </aside>
 
-      <main className="main-workspace">
-        <div className="workspace-toolbar"><div className="breadcrumb" title={shownCwd}><FolderSimple size={16} /><span>工作区</span><CaretRight size={12} /><strong>{pathLabel(shownCwd, info.home)}</strong></div><button className="button toolbar-button" onClick={chooseDirectory}><FolderOpen size={15} />打开文件夹</button></div>
-        <div className={`panes ${agentVisible ? "with-agent" : ""}`}>
+      <main className="main-workspace dock-panel" style={dockStyle("terminals")}>
+        <div className="workspace-toolbar">{panelGrip("terminals", "终端区域")}<div className="breadcrumb" title={shownCwd}><FolderSimple size={16} /><span>工作区</span><CaretRight size={12} /><strong>{pathLabel(shownCwd, info.home)}</strong></div><button className="button toolbar-button" onClick={chooseDirectory}><FolderOpen size={15} />打开文件夹</button></div>
+        <div className="panes">
           <section className="terminal-pane" aria-label="终端工作区">
             <div className="tabstrip"><div className="tabs" role="tablist" aria-label="终端会话">{tabs.map((tab, index) => {
               const focused = sessions.find((session) => session.id === tab.focus);
               const Icon = kindIcons[focused?.kind] || TerminalWindow;
               const ids = paneIds(tab.root);
               const allDone = ids.every((id) => finished(sessions.find((session) => session.id === id)?.status));
-              return <div key={tab.id} className={`tab ${activeTabId === tab.id ? "active" : ""} ${draggedTab === tab.id ? "dragging" : ""}`} draggable onDragStart={(event) => { setDraggedTab(tab.id); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/omniterm-tab", tab.id); }} onDragEnd={() => setDraggedTab(null)} onDragOver={(event) => { if (draggedTab) event.preventDefault(); }} onDrop={(event) => { event.preventDefault(); if (draggedTab) reorderTab(draggedTab, tab.id); setDraggedTab(null); }} onAuxClick={(event) => { if (event.button === 1) closeTab(tab.id); }}>
+              return <div key={tab.id} className={`tab ${activeTabId === tab.id ? "active" : ""} ${draggedTab === tab.id ? "dragging" : ""}`} draggable onDragStart={(event) => { setDraggedTab(tab.id); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/omniterm-tab", tab.id); }} onDragEnd={() => setDraggedTab(null)} onDragOver={(event) => { if (draggedTab || draggedPane) event.preventDefault(); }} onDrop={(event) => { event.preventDefault(); if (draggedPane) dropPane({ tabId: tab.id }); else if (draggedTab) reorderTab(draggedTab, tab.id); setDraggedTab(null); }} onAuxClick={(event) => { if (event.button === 1) closeTab(tab.id); }}>
                 <button role="tab" aria-selected={activeTabId === tab.id} onClick={() => selectTab(tab.id)} title={`${tabLabel(tab)}${index < 9 ? `（${info.platform === "darwin" ? "⌘" : "Alt+"}${index + 1}）` : ""}`}>
                   <Icon size={15} />
                   <TabTitle tab={tab} title={tabLabel(tab)} onEdit={cancelFocus} onRename={renameTab} />
@@ -695,7 +802,7 @@ export function App() {
                 </button>
                 <IconButton label={`关闭 ${tabLabel(tab)}`} onClick={() => closeTab(tab.id)}><X size={12} /></IconButton>
               </div>;
-            })}</div><IconButton className="new-tab" label={`新建终端（${key("newTab")}）`} onClick={() => safely(() => addTab())}><Plus size={17} /></IconButton></div>
+            })}</div><IconButton className="new-tab" label={`新建终端（${key("newTab")}）；也可以把窗格拖到这里变成新标签`} onClick={() => safely(() => addTab())} onDragOver={(event) => { if (draggedPane) event.preventDefault(); }} onDrop={(event) => { event.preventDefault(); if (draggedPane) dropPane({}); }}><Plus size={17} /></IconButton></div>
             <div className="terminal-toolbar">
               <div className="session-detail">{activeSession ? <><span className={`status-dot ${activeSession.status === "running" ? "" : "muted"}`} /><span>{activeSession.kind === "shell" ? "本地 Shell" : connectionLabels[activeSession.kind]}</span><span className="toolbar-dot">·</span><span>{activeSession.status === "exited" ? "会话已结束" : activeSession.status === "error" ? "启动失败" : activeSession.status === "running" ? "已连接" : "正在连接"}</span>{paneCount > 1 && <><span className="toolbar-dot">·</span><span>{paneCount} 个窗格{activeTab.zoomed ? "（已最大化）" : ""}</span></>}{activeTab?.broadcast && <span className="broadcast-pill"><Broadcast size={12} />广播输入</span>}</> : <span>终端</span>}</div>
               <div className="terminal-actions">
@@ -716,20 +823,19 @@ export function App() {
               <button type="button" className={`search-option ${searchOptions.regex ? "on" : ""}`} title="正则表达式" aria-pressed={searchOptions.regex} onClick={() => { const next = { ...searchOptions, regex: !searchOptions.regex }; setSearchOptions(next); find(searchValue, false, next); }}>.*</button>
               <IconButton label="上一个结果" onClick={() => find(searchValue, true)}><ArrowUp size={14} /></IconButton><IconButton label="下一个结果" onClick={() => find()}><ArrowDown size={14} /></IconButton><IconButton label="关闭搜索" onClick={hideSearch}><X size={14} /></IconButton></div>}
             <div className="terminal-stack" ref={stackRef}>
-              {sessions.map((session) => {
+              {/* Terminals swallow drag events, so targets sit above them during a drag. */}
+              {draggedPane && sessions.map((session) => {
                 const place = placement.get(session.id);
-                if (!place) return null;
-                const visible = place.tab.id === activeTabId && !place.hidden;
-                const multiple = paneIds(place.tab.root).length > 1 && !place.tab.zoomed;
-                const isFocused = multiple && place.tab.focus === session.id;
-                return <TerminalView key={session.id} session={session} visible={visible} selected={visible && place.tab.focus === session.id} focused={isFocused} dimmed={multiple && settings.dimInactive && place.tab.focus !== session.id} style={place.style} onFocus={focusPane} {...viewProps} />;
+                if (!place || place.tab.id !== activeTabId || place.hidden || session.id === draggedPane) return null;
+                const side = dropHint?.target === session.id ? dropHint.side : null;
+                return <div key={session.id} className="pane-drop-target" style={place.style} onDragOver={(event) => { event.preventDefault(); const box = event.currentTarget.getBoundingClientRect(); const next = dropSide((event.clientX - box.left) / box.width, (event.clientY - box.top) / box.height); if (dropHint?.target !== session.id || dropHint.side !== next) setDropHint({ target: session.id, side: next }); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setDropHint(null); }} onDrop={(event) => { event.preventDefault(); dropPane({ tabId: activeTabId, target: session.id, side: side ?? "right" }); }}>{side && <span className={`pane-drop-preview side-${side}`} />}</div>;
               })}
               {activeTab && !activeTab.zoomed && layouts.get(activeTab.id)?.dividers.map((divider) => {
                 const row = divider.direction === "row";
                 const style = row
                   ? { left: `calc(${divider.position * 100}% - ${DIVIDER / 2}px)`, top: `${divider.parent.y * 100}%`, width: DIVIDER, height: `${divider.parent.h * 100}%` }
                   : { top: `calc(${divider.position * 100}% - ${DIVIDER / 2}px)`, left: `${divider.parent.x * 100}%`, height: DIVIDER, width: `${divider.parent.w * 100}%` };
-                return <div key={divider.path.join("-") || "root"} className={`pane-divider ${row ? "row" : "column"}`} style={style} role="separator" aria-orientation={row ? "vertical" : "horizontal"} title="拖动调整大小，双击平均分配" onPointerDown={(event) => startDividerDrag(event, activeTab.id, divider)} onDoubleClick={() => setTabs((previous) => previous.map((tab) => tab.id === activeTab.id ? { ...tab, root: setRatio(tab.root, divider.path, 0.5) } : tab))} />;
+                return <div key={divider.path.join("-") || "root"} className={`pane-divider ${row ? "row" : "column"}`} style={style} role="separator" aria-orientation={row ? "vertical" : "horizontal"} title="拖动调整大小，双击平均分配" onPointerDown={(event) => startDividerDrag(event, stackRef, divider, (ratio) => setTabs((previous) => previous.map((tab) => tab.id === activeTab.id ? { ...tab, root: setRatio(tab.root, divider.path, ratio) } : tab)))} onDoubleClick={() => setTabs((previous) => previous.map((tab) => tab.id === activeTab.id ? { ...tab, root: setRatio(tab.root, divider.path, 0.5) } : tab))} />;
               })}
               {!tabs.length && <div className="terminal-empty"><div className="empty-terminal-icon"><TerminalWindow size={34} weight="light" /></div><h2>开始一个新的会话</h2><p>打开本地终端，或连接到你的远程主机。</p><button className="button primary" onClick={() => safely(() => addTab())}><Plus size={16} />新建终端<kbd>{key("newTab")}</kbd></button><p className="empty-hint">按 <kbd>{key("palette")}</kbd> 打开命令面板</p></div>}
             </div>
@@ -737,9 +843,34 @@ export function App() {
             <div className="terminal-footnote"><span>{pathLabel(shownCwd, info.home)}</span><span>{theme.name} · {settings.gpu ? "GPU" : "DOM"} · UTF-8</span></div>
           </section>
 
-          <AgentPanel ref={agentPanel} api={api} info={info} visible={agentVisible} sessionsVersion={sessions.length} focusedId={activeTab?.focus ?? null} getSelection={getSelection} onActivate={activatePane} onHide={() => setAgentVisible(false)} notify={notify} />
         </div>
       </main>
+      {sessions.map((session) => {
+        const docked = dockPlacement.has(dockedTerminal(session.id));
+        const place = docked ? { style: dockStyle(dockedTerminal(session.id)) } : placement.get(session.id);
+        if (!place) return null;
+        const visible = docked || (place.tab.id === activeTabId && !place.hidden);
+        const multiple = !docked && paneIds(place.tab.root).length > 1 && !place.tab.zoomed;
+        const isFocused = docked ? focusedId === session.id : multiple && place.tab.focus === session.id;
+        return <TerminalView key={session.id} session={session} visible={visible} selected={docked ? focusedId === session.id : visible && place.tab.focus === session.id} focused={isFocused} dimmed={multiple && settings.dimInactive && place.tab.focus !== session.id} style={place.style} onFocus={focusPane} onPaneDragStart={startPaneDrag} onPaneDragEnd={endPaneDrag} {...viewProps} />;
+      })}
+      <section className="monitor-panel dock-panel" style={dockStyle("monitor")} aria-label="监控面板">
+        <div className="agent-heading">{panelGrip("monitor", "监控面板")}<Stack size={17} /><strong>监控</strong><div className="agent-heading-actions"><IconButton label="隐藏监控面板" onClick={() => setMonitorVisible(false)}><X size={15} /></IconButton></div></div>
+        <MonitorView api={api} platform={info.platform} notify={notify} onProposal={showMonitors} />
+      </section>
+      <AgentPanel ref={agentPanel} className="dock-panel" style={dockStyle("agent")} grip={panelGrip("agent", "omniTerm Agent 面板")} api={api} info={info} visible={agentVisible} sessionsVersion={sessions.length} focusedId={activeTab?.focus ?? null} getSelection={getSelection} onActivate={activatePane} onHide={() => setAgentVisible(false)} notify={notify} />
+      {dockLayout.dividers.map((divider) => {
+        const row = divider.direction === "row";
+        const style = row
+          ? { left: `calc(${divider.position * 100}% - ${DIVIDER / 2}px)`, top: `${divider.parent.y * 100}%`, width: DIVIDER, height: `${divider.parent.h * 100}%` }
+          : { top: `calc(${divider.position * 100}% - ${DIVIDER / 2}px)`, left: `${divider.parent.x * 100}%`, height: DIVIDER, width: `${divider.parent.w * 100}%` };
+        return <div key={divider.path.join("-") || "root"} className={`pane-divider dock-divider ${row ? "row" : "column"}`} style={style} role="separator" aria-orientation={row ? "vertical" : "horizontal"} title="拖动调整面板大小" onPointerDown={(event) => startDividerDrag(event, dockRef, divider, (ratio) => setDock((previous) => setRatio(previous, divider.path, ratio)))} />;
+      })}
+      {/* Panels swallow drag events, so targets sit above them during a drag. */}
+      {(draggedPanel || draggedPane) && dockLayout.panes.filter(({ sessionId }) => sessionId !== draggedPanel && sessionId !== (draggedPane && dockedTerminal(draggedPane)) && !(draggedPane && sessionId === "terminals")).map(({ sessionId }) => {
+        const side = dropHint?.target === sessionId ? dropHint.side : null;
+        return <div key={sessionId} className="pane-drop-target" data-panel={sessionId} style={dockStyle(sessionId)} onDragOver={(event) => { event.preventDefault(); const box = event.currentTarget.getBoundingClientRect(); const next = dropSide((event.clientX - box.left) / box.width, (event.clientY - box.top) / box.height); if (dropHint?.target !== sessionId || dropHint.side !== next) setDropHint({ target: sessionId, side: next }); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setDropHint(null); }} onDrop={(event) => { event.preventDefault(); dropPanel(sessionId, side ?? "right"); }}>{side && <span className={`pane-drop-preview side-${side}`} />}</div>;
+      })}
     </div>
     <footer className="statusbar"><div><Monitor size={13} /><span>{platformNames[info.platform] || info.platform}</span><span className="statusbar-separator" /><span className="status-dot" /><span>{runningCount} 个活动会话</span>{activeTab?.broadcast && <><span className="statusbar-separator" /><Broadcast size={12} /><span>广播输入中</span></>}</div><div><span className={`status-dot ${info.agent?.available ? "" : "muted"}`} /><span>omniTerm Agent {info.agent?.available ? "已就绪" : "未就绪"}</span><span className="statusbar-separator" /><button onClick={() => setPaletteOpen(true)} title="命令面板"><Command size={12} /><span>{key("palette")}</span></button></div></footer>
     {dialog && <ConnectionDialog initial={dialog} onClose={() => setDialog(null)} onSave={async (profile) => setProfiles(await api.saveProfile(profile))} onConnect={addTab} />}

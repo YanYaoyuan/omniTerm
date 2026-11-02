@@ -1,10 +1,16 @@
 # omniTerm Agent follow-ups
 
+`integration/agent-workspace` combines everything below for acceptance. Nothing is merged to `main`.
+
 Scoped follow-ups to [#4](https://github.com/YanYaoyuan/omniTerm/issues/4), from manual GUI testing of PR #5. **None of this is implemented or part of PR #5.** Each section can become its own issue.
 
 ## 1. Proposal: reliable approved execution over SSH
 
-Status: **proposal for review.** SSH commands stay staged for a manual Enter until this design is accepted.
+Status: **implemented behind a per-terminal opt-in, off by default** (branch `feat/ssh-approved-execution`). Without the opt-in, SSH commands stay staged for a manual Enter.
+
+Decisions from review: no probe into a full-screen program or password prompt; unsupported shells or keymaps, nested sessions, failed or stale handshakes, disconnects and uncertain state stage or block, and never submit. Only emacs keymaps are bound in this version, and vi falls back to staging.
+
+The one-time ID in step 1 is the key sequence itself: the snippet binds 16 sequences and the host cycles through them, because a widget can't reliably read bytes after its key once the line editor has buffered them.
 
 | Choice | Behaviour |
 | --- | --- |
@@ -37,20 +43,22 @@ The widget runs inside the line editor, so a reply proves that the editor on tha
 - Bash's `bind -x` depends on the active keymap, so vi mode needs handling or an explicit "unsupported, stays staged".
 - Should this be a per-terminal opt-in, or is a working handshake enough?
 
-### Regression tests required before enabling it
+### Regression tests
 
-Run against real `ssh` through an injected-latency proxy, on bash and zsh:
+`npm run test:ssh` runs these against real `ssh` through an injected-latency proxy, at 0 and 250 ms, on bash and zsh. Checked items are covered. Removing the handshake fails the suite.
 
-- [ ] Each case from PR #5 over SSH: unclosed quote, line continuation, heredoc, queued lines, slow `preexec`, `read`.
-- [ ] Input landing after `q=0` was sent, which the current guard can't see.
-- [ ] Probe sent while input is in flight, and a reply lost or delayed.
-- [ ] Nested `ssh`, `su` and tmux: no reply, so the command stays staged.
-- [ ] Full-screen program and password prompt: no probe is sent.
-- [ ] Disconnect between probe and reply: no replay.
-- [ ] A forged reply printed by `cat` is rejected.
-- [ ] Mutation check: removing the handshake fails the suite.
+- [x] Each case from PR #5 over SSH: unclosed quote, line continuation, heredoc, queued lines, slow `preexec`, `read`.
+- [x] Input landing after `q=0` was sent, which the current guard can't see.
+- [x] Probe sent while input is in flight, and a reply lost or delayed.
+- [ ] Nested `ssh`, `su` and tmux. A nested `/bin/sh` is covered; the others have only the same `busy` path so far.
+- [x] Full-screen program and password prompt: no probe is sent.
+- [x] Disconnect between probe and reply: no replay.
+- [x] A forged reply without the session nonce is rejected (unit test).
+- [x] Mutation check: removing the handshake fails the suite.
 
 ## 2. Authorized interaction with programs running in a terminal
+
+Status: **implemented** (branch `feat/terminal-program-input`). The original notes follow.
 
 The Agent only runs shell commands at a shell prompt. Asked to send instructions to another Agent in a terminal, the full-screen guard correctly blocked it. PR #5 states this limit on the card and tells the model, but the capability doesn't exist.
 
@@ -65,6 +73,28 @@ Sending text to an interactive program is a different operation from executing a
 
 ## 3. Persistent monitoring and authorized automatic actions
 
+Status: **first increment implemented** (branch `feat/persistent-monitoring`).
+
+| Requirement | Status |
+| --- | --- |
+| Process, thread, log and shared-memory targets on a selected host | Implemented. See the capability table below |
+| Continuous sampling and notifications, with no message per sample | Implemented, with no model calls |
+| Automatic actions with a scope, trigger, duration and run limit | Implemented: one exact command on one pinned terminal, through the broker |
+| Pause, stop, revoke, history | Implemented |
+| Read access separate from modification | Implemented. Shared memory is read-only; **modification isn't implemented** and needs its own authorization |
+| The Agent reacting to a trigger with a model turn | **Outstanding.** A trigger notifies you and runs the approved command; the Agent reads status when asked |
+| Monitors surviving an app restart | **Outstanding.** They stop with the app, in line with approvals not surviving a restart |
+| System V shared memory | **Outstanding** |
+
+| Target | Linux local or remote | macOS local | Windows local |
+| --- | --- | --- | --- |
+| Process | Yes | Yes | Yes, through PowerShell |
+| Thread | Yes | **No** | Yes, through PowerShell |
+| Log file | Yes | Yes | Yes, through PowerShell |
+| Shared memory (read-only) | Yes | **No** | **No**, marked unavailable in the form |
+
+Remote hosts are reached through a POSIX shell, so Windows SSH hosts aren't supported.
+
 A persistent task watching a process, thread, log or shared-memory region, rather than a one-time snapshot or a chat message per observation. This stays separate from scraping a terminal screen.
 
 - Explicit selection of the host and monitoring target.
@@ -77,6 +107,8 @@ Design questions: where collection runs and how it survives disconnects, sleep a
 
 ## 4. Visual process-monitor window
 
+Status: **implemented** for Linux, macOS and Windows local hosts (branches `feat/process-monitor-window`, `feat/windows-monitoring`). Thread-level and shared-memory views are not included. The original notes follow.
+
 A separate window showing processes on the selected local or remote host.
 
 - Process tree and list, with search and filtering.
@@ -86,11 +118,21 @@ A separate window showing processes on the selected local or remote host.
 
 `electron/remote-metrics.mjs` already collects host metrics and may be a starting point for remote hosts.
 
-## 5. Draggable panels
+## 5. Dockable workspace
 
-- Drag a panel to the left, right, top or bottom of another to change the split layout.
-- Move a panel into another tab.
-- Preserve the resulting layout.
-- Moving a panel preserves its live session rather than recreating the terminal.
+Maintainer scope: terminal panes, the Agent panel, workspace and file panels, and future monitoring panels all dock, resize, save and restore, with live state preserved. Moving a panel must not change the Agent's context or execution target.
 
-Terminal views are already rendered flat and positioned from the layout tree, so a move can be a layout change without touching the xterm instance or session; `src/layout.js` needs a move operation. Workspace restore needs to handle the new layouts. Operations pin to session and epoch, so add a regression that a move can't affect execution targets.
+| Requirement | Status |
+| --- | --- |
+| Terminal panes: dock on any side, move between tabs, new tab | Implemented |
+| Agent panel and workspace/file panel: dock on any side of each other or the terminal area | Implemented |
+| Resize docked regions | Implemented |
+| Save and restore arrangement and sizes | Implemented |
+| Live state survives moves | Implemented by construction: panels and terminals are never remounted. `npm run test:gui` verifies it |
+| Reset the layout | Implemented, in the command palette |
+| A single terminal pane docked directly beside the Agent, workspace or monitoring panel, and back into a tab | Implemented on `feat/unified-docking` (#16) |
+| The monitoring panel in the dock | Implemented on `feat/unified-docking` (#16). It opens by itself when the Agent proposes a monitor |
+| Dropping a pane onto the terminal area's own edge | **Outstanding.** Panes drop on other panes, panels, tabs or **+** |
+| Separate windows or floating panels | Not requested, not implemented |
+
+A docked pane comes back as a tab after a restart, because its session doesn't survive one. Terminal views and panels are rendered flat and positioned from their layout trees, so a move only changes layout state. A stored layout is used only if it holds every panel exactly once, so a layout saved by a build with different panels falls back to the default.

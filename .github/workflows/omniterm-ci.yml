@@ -61,6 +61,43 @@ jobs:
       - name: Build desktop main process and renderer
         run: npm run build
 
+  gui:
+    name: Desktop window / ubuntu-latest
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: omniterm-desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: omniterm-desktop/package-lock.json
+      - name: Install the repository Rust toolchain
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+      - name: Install a virtual display and Electron's libraries
+        run: sudo apt-get update && sudo apt-get install -y xvfb fonts-noto-cjk libgtk-3-0t64 libnss3 libgbm1 libasound2t64 libxss1
+      - name: Install desktop dependencies
+        run: npm ci
+      - name: Build the desktop and terminal host
+        run: npm run build && npm run build:native
+      - name: Exercise the real window
+        env:
+          OMNITERM_GUI_ARTIFACTS: ${{ runner.temp }}/gui
+          OMNITERM_TERMINAL_HOST: ${{ github.workspace }}/dist/terminal-host/omniterm-terminal-host
+        run: xvfb-run -a -s "-screen 0 1440x940x24" node scripts/test-gui.mjs
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-window-screenshots
+          path: ${{ runner.temp }}/gui
+          if-no-files-found: ignore
+
   terminal-host:
     name: Terminal host / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -81,15 +118,18 @@ jobs:
         run: |
           rustup toolchain install 1.95.0 --profile minimal
           rustup default 1.95.0
-      - name: Install zsh for the readiness tests
+      - name: Install zsh and sshd for the readiness tests
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y zsh
+        run: sudo apt-get update && sudo apt-get install -y zsh openssh-server
       - name: Test sessions, screen model and operation broker
         run: cargo test --locked --manifest-path native/terminal-host/Cargo.toml
       - name: Build the terminal host
         run: node scripts/build-native.mjs
       - name: Exercise a real PTY through the host
         run: node scripts/test-pty.mjs
+      - name: Exercise approved execution over real SSH with injected latency
+        if: runner.os != 'Windows'
+        run: node scripts/test-ssh.mjs
 
   engine:
     name: Agent engine / ubuntu-latest

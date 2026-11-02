@@ -93,6 +93,18 @@ impl Terminals for Host {
             .ok_or_else(|| "The terminal has closed.".to_string())?
             .write_agent(bytes)
     }
+
+    fn send_probe(&self, session_id: &str) -> Result<(), String> {
+        self.session(session_id)
+            .ok_or_else(|| "The terminal has closed.".to_string())?
+            .send_probe()
+    }
+
+    fn dispatch(&self, session_id: &str, bytes: &[u8]) -> Result<(), String> {
+        self.session(session_id)
+            .ok_or_else(|| "The terminal has closed.".to_string())?
+            .dispatch(bytes)
+    }
 }
 
 #[derive(Deserialize)]
@@ -108,6 +120,13 @@ struct WriteParams {
     data: String,
     #[serde(default)]
     reply: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AutoSubmitParams {
+    id: String,
+    enabled: bool,
 }
 
 #[derive(Deserialize)]
@@ -132,12 +151,31 @@ struct TaskParams {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct GrantParams {
+    task_id: String,
+    target: TerminalRef,
+    expires_at: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ProposeParams {
     task_id: String,
     call_id: String,
     terminal: String,
     command: String,
     timeout_ms: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProposeInputParams {
+    task_id: String,
+    call_id: String,
+    terminal: String,
+    text: String,
+    #[serde(default)]
+    append_enter: bool,
 }
 
 #[derive(Deserialize)]
@@ -351,7 +389,10 @@ impl Host {
                 "lastCommand": state.commands.back(),
                 "contextSelected": shared,
                 "executionTarget": targets.contains(&reference),
-                "autoSubmit": session.auto_submit(),
+                "autoSubmit": session.auto_submit(&state),
+                "autoSubmitOptIn": state.allow_auto_submit,
+                "handshakeCapable": session.handshake_capable(&state),
+                "requiresHandshake": session.requires_handshake(),
                 "unknown": unknown,
             })
         };
@@ -567,6 +608,15 @@ impl Host {
                 }
                 Ok(json!(written))
             }
+            "session.allowAutoSubmit" => {
+                let AutoSubmitParams { id, enabled } = parse(params)?;
+                let session = self.require(&id)?;
+                if !session.requires_handshake() {
+                    return Err("Only SSH terminals have this setting.".to_string());
+                }
+                session.lock().allow_auto_submit = enabled;
+                Ok(json!(enabled))
+            }
             "session.resize" => {
                 let ResizeParams { id, cols, rows } = parse(params)?;
                 if !(2..=1000).contains(&cols) || !(1..=500).contains(&rows) {
@@ -610,6 +660,11 @@ impl Host {
                 self.publish(changed);
                 Ok(json!(true))
             }
+            "task.grant" => {
+                let GrantParams { task_id, target, expires_at } = parse(params)?;
+                self.broker().grant(&task_id, target, expires_at)?;
+                Ok(json!(true))
+            }
             "task.cancel" => {
                 let TaskParams { task_id, .. } = parse(params)?;
                 let mut broker = self.broker();
@@ -640,6 +695,15 @@ impl Host {
                 let target = self.resolve(&terminal)?;
                 let mut broker = self.broker();
                 let operation = broker.propose(self, &task_id, &call_id, &target, &command, timeout_ms, now())?;
+                drop(broker);
+                self.outbox.event("operation.update", json!(operation));
+                Ok(json!(operation))
+            }
+            "operation.proposeInput" => {
+                let ProposeInputParams { task_id, call_id, terminal, text, append_enter } = parse(params)?;
+                let target = self.resolve(&terminal)?;
+                let mut broker = self.broker();
+                let operation = broker.propose_input(self, &task_id, &call_id, &target, &text, append_enter, now())?;
                 drop(broker);
                 self.outbox.event("operation.update", json!(operation));
                 Ok(json!(operation))
@@ -827,6 +891,18 @@ mod tests {
             host.handle("session.create", plan.clone()).expect("created");
         }
         assert!(host.handle("session.create", plan).unwrap_err().contains("maximum 20"));
+    }
+
+    #[test]
+    fn the_auto_submit_opt_in_is_per_ssh_terminal() {
+        let (host, _frames) = fixture();
+        terminal(&host, "a", "shell", b"");
+        terminal(&host, "b", "ssh", b"");
+        terminal(&host, "c", "ssh", b"");
+        assert!(host.handle("session.allowAutoSubmit", json!({ "id": "a", "enabled": true })).is_err());
+        host.handle("session.allowAutoSubmit", json!({ "id": "b", "enabled": true })).expect("set");
+        assert!(host.session("b").expect("session").lock().allow_auto_submit);
+        assert!(!host.session("c").expect("session").lock().allow_auto_submit);
     }
 
     #[test]

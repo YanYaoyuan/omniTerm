@@ -214,6 +214,24 @@ export class RemoteManager {
       this.onMetrics({ id: remote.id, available: false, delivered });
     });
   }
+  // Runs one read-only probe on the session's shared login and returns its output.
+  exec(id, script, timeoutMs = 10_000) {
+    const remote = this.require(id);
+    if (!remote.linked) throw new Error("这个 SSH 会话还没有可用的共享连接。");
+    const { target } = remote;
+    return new Promise((resolve, reject) => {
+      const child = this.spawnProcess(target.executable, [...this.channelArgs(target), target.destination, `sh -c '${script}'`], { env: target.env, stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+      let output = "";
+      const timer = setTimeout(() => { child.kill(); reject(new Error("远程采样超时。")); }, timeoutMs);
+      child.stdout.setEncoding("utf8");
+      child.stdout.on("data", (chunk) => { if (output.length < 256 * 1024) output += chunk; });
+      child.once("error", (error) => { clearTimeout(timer); reject(error); });
+      child.once("close", (code) => {
+        clearTimeout(timer);
+        if (code === 0) resolve(output); else reject(new Error(`远程采样失败（退出码 ${code}）。`));
+      });
+    });
+  }
   stopMetrics(remote) {
     const child = remote.metricsChild;
     remote.metricsChild = null;

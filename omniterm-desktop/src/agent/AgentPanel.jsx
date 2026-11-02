@@ -1,5 +1,5 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useReducer, useRef, useState } from "react";
-import { Broom, Check, CircleNotch, Cpu, Crosshair, GearSix, HardDrives, Pause, PaperPlaneTilt, Play, Robot, ShieldCheck, SidebarSimple, Stack, Stop, TerminalWindow, WarningCircle, X } from "@phosphor-icons/react";
+import { Broom, Check, CircleNotch, Cpu, Crosshair, GearSix, HardDrives, Keyboard, Pause, PaperPlaneTilt, Play, Robot, ShieldCheck, SidebarSimple, Stack, Stop, TerminalWindow, WarningCircle, X } from "@phosphor-icons/react";
 import { ProviderDialog } from "./ProviderDialog.jsx";
 import { INTERACTION_LABELS, OPEN_OPERATIONS, OPERATION_LABELS, WIRE_LABELS, citationParts, conversationReducer, operationReason, emptyConversation, executable, mentionMatches, mentionQuery, pruneSelection, refsFor, scopeSummary, terminalName } from "./agent-logic.js";
 
@@ -11,6 +11,27 @@ function Citations({ text, terminals, onLocate }) {
   return <>{citationParts(text, terminals).map((part, index) => typeof part === "string" ? <span key={index}>{part}</span> : <button key={index} className="citation" title={terminalName(part.terminal)} onClick={() => onLocate(part.terminal)}>{part.text}</button>)}</>;
 }
 
+function ProgramInputCard({ api, operation, target, name, interaction, act, approve }) {
+  const pending = operation.status === "pendingApproval";
+  const shellPrompt = interaction === "ready";
+  const enterAllowed = ["busy", "fullscreen"].includes(interaction);
+  return <div className={`operation-card program-input status-${operation.status}`}>
+    <div className="operation-target"><Keyboard size={14} /><span>发送给运行中的程序 · <strong>{name}</strong></span><span className="operation-status">{OPERATION_LABELS[operation.status] ?? operation.status}</span></div>
+    {operation.rationale && <p>{operation.rationale}</p>}
+    <pre>{operation.command}</pre>
+    {operation.reason && <p className="operation-reason">{operationReason(operation.reason)}</p>}
+    {pending && <>
+      <div className="operation-state">这不是 shell 命令：文本会输入给 {name} 中正在运行的程序。{operation.appendEnter ? "Agent 建议按回车。" : "Agent 建议不按回车。"}{shellPrompt && " 该终端现在在 shell 提示符，不会发送。"}{!target && " 终端已关闭。"}</div>
+      <div className="operation-actions">
+        <button className="button primary" disabled={shellPrompt} onClick={() => approve("once", "stage")}>只发送文本</button>
+        <button className="button secondary" disabled={!enterAllowed} title={enterAllowed ? "" : "无法确认正在运行程序时不能按回车"} onClick={() => approve("once", "run")}>发送并按回车</button>
+        <button className="button ghost" onClick={() => act(() => api.denyOperation(operation.operationId))}><X size={14} />拒绝</button>
+      </div>
+    </>}
+    {!pending && OPEN_OPERATIONS.has(operation.status) && <div className="operation-actions"><button className="button ghost" onClick={() => act(() => api.cancelOperation(operation.operationId))}><Stop size={14} />取消</button></div>}
+  </div>;
+}
+
 function OperationCard({ entry, terminals, api, notify }) {
   const { operation } = entry;
   const target = terminals.find((terminal) => terminal.ref.sessionId === operation.target.sessionId);
@@ -18,9 +39,10 @@ function OperationCard({ entry, terminals, api, notify }) {
   const pending = operation.status === "pendingApproval";
   const interaction = target?.interaction?.state ?? "unknown";
   const canRun = interaction === "ready" && target?.autoSubmit === true;
-  const manualReason = interaction === "fullscreen" ? "全屏程序不是 shell：omniTerm Agent 目前只能执行 shell 命令，不能向交互程序发送文本。" : target?.autoSubmit === false ? "SSH 终端不会自动提交：批准后命令只输入到终端，由你检查后按回车。" : canRun ? "" : "无法确认空闲，只能输入后由你手动回车。";
+  const manualReason = interaction === "fullscreen" ? "全屏程序不是 shell，shell 命令无法执行。如需向这个程序输入，请让 Agent 使用“发送给运行中的程序”。" : target?.autoSubmit === false ? (target.autoSubmitOptIn ? "该终端已允许自动执行，但远端还不能确认就绪（需要启用就绪标记、zsh 或 bash 4.4+ 和 emacs 键位）。批准后只输入到终端，由你按回车。" : "SSH 终端默认不自动提交：批准后命令只输入到终端，由你检查后按回车。可以在终端列表中为这个终端开启“自动执行”。") : canRun ? "" : "无法确认空闲，只能输入后由你手动回车。";
   const act = (task) => Promise.resolve().then(task).catch((error) => notify(error.message));
   const approve = (scope, mode) => act(() => api.approveOperation({ operationId: operation.operationId, scope, mode, ...(scope === "taskTarget" ? { ttlMs: GRANT_MS } : {}) }));
+  if (operation.kind === "programInput") return <ProgramInputCard api={api} operation={operation} target={target} name={name} interaction={interaction} act={act} approve={approve} />;
   return <div className={`operation-card status-${operation.status}`}>
     <div className="operation-target"><Crosshair size={14} /><span>执行于 <strong>{name}</strong></span><span className="operation-status">{OPERATION_LABELS[operation.status] ?? operation.status}</span></div>
     {operation.rationale && <p>{operation.rationale}</p>}
@@ -54,14 +76,14 @@ function Entry({ entry, terminals, api, notify, onLocate }) {
   }
 }
 
-function TerminalPicker({ terminals, context, targets, onContext, onTargets, onAllContext, onStage, platform }) {
+function TerminalPicker({ terminals, context, targets, onContext, onTargets, onAllContext, onStage, onAutoSubmit, platform }) {
   return <div className="terminal-picker">
     <div className="picker-header"><span>终端</span><span>上下文</span><span>执行</span></div>
     {terminals.map((terminal) => {
       const id = terminal.ref.sessionId;
       const Icon = terminal.kind === "shell" ? TerminalWindow : HardDrives;
       return <div className="picker-row" key={id}>
-        <div className="picker-name" title={`${terminal.tab ? `标签 ${terminal.tab.index}${terminal.pane ? ` · 窗格 ${terminal.pane}` : ""}` : "位置未知"} · ${terminal.shortId}`}><Icon size={14} /><span><strong>{terminal.label}</strong><small>{terminal.connection.configured.host ?? (terminal.cwd.value || "目录未知")} · {INTERACTION_LABELS[terminal.interaction.state] ?? "未知"}{terminal.focused ? " · 当前焦点" : ""}</small></span>{terminal.interaction.state === "unknown" && (terminal.kind === "ssh" || (terminal.kind === "shell" && platform !== "win32")) && <button className="picker-link" title="向该终端输入一段启用就绪标记的脚本（zsh 或 bash 4.4+），由你按回车确认。启用后可以识别忙碌和未完成的输入；本地 shell 中已批准的命令才能自动提交，SSH 始终由你按回车。" onClick={() => onStage(terminal)}>启用就绪标记</button>}</div>
+        <div className="picker-name" title={`${terminal.tab ? `标签 ${terminal.tab.index}${terminal.pane ? ` · 窗格 ${terminal.pane}` : ""}` : "位置未知"} · ${terminal.shortId}`}><Icon size={14} /><span><strong>{terminal.label}</strong><small>{terminal.connection.configured.host ?? (terminal.cwd.value || "目录未知")} · {INTERACTION_LABELS[terminal.interaction.state] ?? "未知"}{terminal.focused ? " · 当前焦点" : ""}</small></span>{terminal.interaction.state === "unknown" && (terminal.kind === "ssh" || (terminal.kind === "shell" && platform !== "win32")) && <button className="picker-link" title="向该终端输入一段启用就绪标记的脚本（zsh 或 bash 4.4+），由你按回车确认。启用后可以识别忙碌和未完成的输入；本地 shell 中已批准的命令才能自动提交，SSH 始终由你按回车。" onClick={() => onStage(terminal)}>启用就绪标记</button>}{terminal.requiresHandshake && <label className="picker-link" title="开启后，批准执行的命令在远端行编辑器确认提示符为空后自动提交；无法确认时不会提交。需要先启用就绪标记（zsh 或 bash 4.4+，emacs 键位）。"><input type="checkbox" checked={terminal.autoSubmitOptIn} onChange={(event) => onAutoSubmit(terminal, event.target.checked)} />自动执行</label>}</div>
         <input type="checkbox" aria-label={`将 ${terminal.label} 加入上下文`} checked={context.has(id)} onChange={() => onContext(id)} />
         <input type="radio" name="agent-target" aria-label={`将 ${terminal.label} 设为执行目标`} disabled={!executable(terminal)} checked={targets.has(id)} onChange={() => onTargets(id)} />
       </div>;
@@ -70,7 +92,7 @@ function TerminalPicker({ terminals, context, targets, onContext, onTargets, onA
   </div>;
 }
 
-export const AgentPanel = forwardRef(function AgentPanel({ api, info, visible, sessionsVersion, focusedId, getSelection, onActivate, onHide, notify }, ref) {
+export const AgentPanel = forwardRef(function AgentPanel({ className = "", style, grip, api, info, visible, sessionsVersion, focusedId, getSelection, onActivate, onHide, notify }, ref) {
   const [conversation, dispatch] = useReducer(conversationReducer, emptyConversation);
   const [terminals, setTerminals] = useState([]);
   const [context, setContext] = useState(new Set());
@@ -118,6 +140,9 @@ export const AgentPanel = forwardRef(function AgentPanel({ api, info, visible, s
   const selectTarget = (id) => setTargets(id ? new Set([id]) : new Set());
 
   useImperativeHandle(ref, () => ({
+    // Rearranging must not change what is shared: focus moves with a pane, and the default
+    // scope follows focus until something fixes it.
+    holdScope() { contextTouched.current = true; },
     attachSelection(id, selection) {
       contextTouched.current = true;
       setContext((ids) => new Set(ids).add(id));
@@ -181,18 +206,19 @@ export const AgentPanel = forwardRef(function AgentPanel({ api, info, visible, s
   const available = info.agent?.available;
   const targetName = useMemo(() => targets.size ? scopeSummary(terminals, targets) : "只读", [terminals, targets]);
   const contextName = useMemo(() => paused ? "已暂停" : scopeSummary(terminals, context), [terminals, context, paused]);
-  return <aside className={`agent-pane ${visible ? "is-visible" : ""}`} aria-label="omniTerm Agent 面板">
-    <div className="agent-heading"><Robot size={18} /><strong>omniTerm Agent</strong><div className="agent-heading-actions">
+  return <aside className={`agent-pane ${className} ${visible ? "is-visible" : ""}`} style={style} aria-label="omniTerm Agent 面板">
+    <div className="agent-heading">{grip}<Robot size={18} /><strong>omniTerm Agent</strong><div className="agent-heading-actions">
       <button type="button" className="icon-button" title={paused ? "恢复共享" : "暂停共享"} aria-label={paused ? "恢复共享" : "暂停共享"} onClick={togglePause}>{paused ? <Play size={15} /> : <Pause size={15} />}</button>
       <button type="button" className="icon-button" title="新建对话（清除此前共享的内容）" aria-label="新建对话" onClick={newConversation}><Broom size={15} /></button>
       <button type="button" className="icon-button" title="隐藏 Agent 面板" aria-label="隐藏 Agent 面板" onClick={onHide}><SidebarSimple size={17} /></button>
     </div></div>
+    <div className="agent-chat">
     <div className="agent-scope">
       <button className="scope-chip" aria-expanded={pickerOpen} onClick={() => setPickerOpen(!pickerOpen)} title="选择共享给模型的终端"><Stack size={13} /><span><small>上下文</small>{contextName}</span></button>
       <button className={`scope-chip ${targets.size ? "armed" : ""}`} aria-expanded={pickerOpen} onClick={() => setPickerOpen(!pickerOpen)} title="选择允许提议命令的终端；切换焦点不会改变它"><Crosshair size={13} /><span><small>执行目标</small>{targetName}</span></button>
       <button className="scope-chip" onClick={() => setSettingsOpen(true)} title="模型设置"><Cpu size={13} /><span><small>{profile ? (WIRE_LABELS[profile.wireApi] ?? profile.wireApi) : "模型"}</small>{profile ? `${profile.name} · ${profile.model}${profile.chatOnly ? " · 仅聊天" : ""}` : "未配置"}</span></button>
     </div>
-    {pickerOpen && <TerminalPicker terminals={terminals} context={context} targets={targets} onContext={toggleContext} onTargets={selectTarget} onAllContext={() => { contextTouched.current = true; setContext(new Set(terminals.map((terminal) => terminal.ref.sessionId))); }} onStage={stageIntegration} platform={info.platform} />}
+    {pickerOpen && <TerminalPicker terminals={terminals} context={context} targets={targets} onContext={toggleContext} onTargets={selectTarget} onAllContext={() => { contextTouched.current = true; setContext(new Set(terminals.map((terminal) => terminal.ref.sessionId))); }} onStage={stageIntegration} onAutoSubmit={(terminal, enabled) => api.allowAutoSubmit({ id: terminal.ref.sessionId, enabled }).then(refresh).catch((error) => notify(error.message))} platform={info.platform} />}
     <div className="agent-log" ref={log}>
       {empty && <div className="agent-invitation"><div className="agent-symbol"><Robot size={32} weight="light" /></div><span className="agent-eyebrow">你的终端搭档</span><h2>从一个问题开始。</h2><p>选择要共享的终端和执行目标。<br />每条命令都由你批准，只在你选定的终端运行。</p>{!available && <div className="agent-unavailable"><WarningCircle size={15} /><span>{info.agent?.error || "未找到 Agent 引擎。"}</span></div>}{available && providers && !providers.profiles.length && <button className="button primary" onClick={() => setSettingsOpen(true)}><GearSix size={16} />配置模型服务</button>}</div>}
       {conversation.entries.map((entry) => <Entry key={`${entry.kind}-${entry.id}`} entry={entry} terminals={terminals} api={api} notify={notify} onLocate={(terminal) => onActivate(terminal.ref.sessionId)} />)}
@@ -203,6 +229,7 @@ export const AgentPanel = forwardRef(function AgentPanel({ api, info, visible, s
       {mentions.length > 0 && <div className="mention-menu" role="listbox">{mentions.map((terminal) => <button key={terminal.ref.sessionId} role="option" aria-selected="false" onClick={() => pickMention(terminal)}>{terminalName(terminal)}</button>)}</div>}
       <textarea rows={3} value={text} placeholder={profile ? "描述问题，输入 @ 引用终端…" : "请先配置模型服务"} disabled={!profile || !available} onChange={(event) => setText(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); send(); } }} />
       <div className="composer-actions"><span>{paused ? "共享已暂停" : `将共享 ${context.size} 个终端${targets.size ? " · 可提议命令" : " · 只读"}`}</span>{conversation.running ? <button className="button secondary" onClick={() => api.agentCancel().catch((error) => notify(error.message))}><Stop size={14} />停止</button> : <button className="button primary" disabled={!text.trim() || !profile || sending} onClick={send}>{sending ? <CircleNotch className="spin" size={14} /> : <PaperPlaneTilt size={14} />}发送</button>}</div>
+    </div>
     </div>
     {settingsOpen && providers && <ProviderDialog api={api} state={providers} notify={notify} onState={(next) => { setProviders(next); }} onClose={(id) => { setSettingsOpen(false); if (id) setProfileId(id); }} />}
   </aside>;

@@ -259,3 +259,11 @@ test("importing SSH hosts skips saved aliases and refuses batches that do not fi
     assert.equal(store.list().length, 2);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+test("the process window's channels cannot reach a terminal, an approval or a credential", () => {
+  const source = readFileSync(new URL("./main.mjs", import.meta.url), "utf8");
+  const channels = /PROCESS_WINDOW_CHANNELS = new Set\(\[(.*?)\]\)/.exec(source)[1];
+  assert.equal(channels, '"process-snapshot", "workspace-list", "process-monitor-start"');
+  for (const forbidden of ["write-session", "operation-approve", "agent-send", "provider", "stage-shell", "allow-auto-submit", "monitor-create", "monitor-approve"]) assert.ok(!channels.includes(forbidden), forbidden);
+  assert.match(source, /"process-monitor-start": async \(request\) => \{\r?\n\s+const \{ id \} = monitors\.propose\(\{ \.\.\.request, action: null,/);
+});

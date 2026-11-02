@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildCommandPlan } from "../electron/command-plan.mjs";
+import { MonitorService } from "../electron/monitor-service.mjs";
 import { SessionManager } from "../electron/session-manager.mjs";
 import { shellIntegrationScript } from "../electron/shell-integration.mjs";
 import { TerminalHost, resolveTerminalHost } from "../electron/terminal-host.mjs";
@@ -20,8 +22,9 @@ try { executable = resolveTerminalHost({ desktopRoot, env: { ...env, OMNITERM_TE
 catch { executable = resolveTerminalHost({ desktopRoot, env }); }
 let output = "";
 const operations = new Map();
+const monitorForward = new Set();
 const exits = [];
-const host = new TerminalHost({ executable, onData: ({ id, data }) => { output += data; if (data.includes(CURSOR_QUERY)) host.request("session.write", { id, data: CURSOR_REPLY, reply: true }).catch(() => {}); }, onEvent: (event, params) => { if (event === "session.exit") exits.push(params); if (event === "operation.update") operations.set(params.operationId, params); } });
+const host = new TerminalHost({ executable, onData: ({ id, data }) => { output += data; if (data.includes(CURSOR_QUERY)) host.request("session.write", { id, data: CURSOR_REPLY, reply: true }).catch(() => {}); }, onEvent: (event, params) => { if (event === "session.exit") exits.push(params); if (event === "operation.update") { operations.set(params.operationId, params); for (const listener of monitorForward) listener(params); } } });
 const manager = new SessionManager({ host, planner: (request) => buildCommandPlan(request, { repositoryRoot, defaultCwd: repositoryRoot, env }) });
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const waitFor = async (predicate, label) => {
@@ -65,7 +68,7 @@ async function verifySshStaging() {
   await host.request("session.close", { id });
 }
 
-const FINAL_OPERATION = ["blocked", "cancelled", "completed", "invalidated", "outcomeUnknown", "staged"];
+const FINAL_OPERATION = ["blocked", "cancelled", "completed", "delivered", "invalidated", "outcomeUnknown", "staged"];
 
 // A shell owning the foreground is not at a prompt: `read` must not receive a command, and a
 // continuation prompt must not inherit the primary prompt before it.
@@ -175,6 +178,42 @@ async function verifyReadiness(executable, args, supportsMarks) {
   await send("yes\r");
   await delay(2500);
   await state("ready", "An answer long before the prompt must need no extra Enter");
+
+  // Program input goes to a running program, and only there.
+  const sendText = async (call, text, mode) => {
+    const { operationId } = await host.request("operation.proposeInput", { taskId, callId: call, terminal: id, text, appendEnter: mode === "run" });
+    await host.request("operation.approve", { operationId, scope: "once", mode });
+    await host.request("operation.execute", { operationId });
+    return finished(operationId, `Program input ${call}`);
+  };
+  const atPrompt = await sendText("at-prompt", "printf 'SHELL_%s\\n' RAN", "run");
+  assert.equal(atPrompt.status, "blocked", "Program input must never reach a shell prompt");
+  assert.ok(!recent().includes("SHELL_RAN"));
+  await send("cat\r");
+  await state("busy", "A running program must hold the terminal");
+  assert.equal((await sendText("typed", "partial", "stage")).status, "delivered");
+  assert.equal((await sendText("entered", " line", "run")).status, "delivered");
+  await waitFor(() => hasOutputLine(recent(), "partial line"), "The program must receive the line, and echo it back");
+  await send("\x04");
+  await delay(1700);
+  await send("\r");
+  await state("ready", "The shell must return after the program ends");
+
+  // A monitor reads the host, and its approved action goes through the broker on its own.
+  const log = path.join(mkdtempSync(path.join(os.tmpdir(), "omniterm-monitor-")), "app.log");
+  writeFileSync(log, "start\n");
+  const monitors = new MonitorService({ host, run: async (_target, script) => execFileSync("sh", ["-c", script], { encoding: "utf8" }) });
+  const forward = monitorForward.add((operation) => monitors.operationChanged(operation));
+  const monitor = monitors.propose({ host: "local", target: { kind: "log", path: log }, conditions: [{ field: "text", op: "contains", value: "ERROR" }], intervalSeconds: 1, durationMinutes: 1, action: { command: "printf 'ACTION_%s\\n' RAN", terminal: { sessionId: id, epoch: 1 }, maxRuns: 1 } });
+  await monitors.approve(monitor.id);
+  await delay(1300);
+  assert.ok(!recent().includes("ACTION_RAN"), "Nothing may happen before the condition holds");
+  appendFileSync(log, "an ERROR line\n");
+  await waitFor(() => hasOutputLine(recent(), "ACTION_RAN"), "A trigger must run the approved command in the approved terminal");
+  await waitFor(() => monitors.get(monitor.id).history.some(({ message }) => message.includes("completed")), "The action's result must reach the history");
+  await monitors.stop(monitor.id);
+  monitorForward.delete(forward);
+  await state("ready", "The shell must be ready after the action");
 
   await send("echo 'interrupted\r");
   await delay(200);

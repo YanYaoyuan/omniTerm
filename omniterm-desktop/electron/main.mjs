@@ -1,5 +1,5 @@
 // Copyright 2026 omniTerm contributors. SPDX-License-Identifier: Apache-2.0
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, safeStorage, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, safeStorage, shell } from "electron";
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { copyFile, mkdir, readdir, rm, stat } from "node:fs/promises";
@@ -9,6 +9,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { buildCommandPlan, externalUrl, resolveDesktopAgent, validateProfile } from "./command-plan.mjs";
 import { describeFailure } from "./agent-runtime.mjs";
 import { AgentService } from "./agent-service.mjs";
+import { runLocalProbe } from "./local-probe.mjs";
+import { parseProcessList, processListScript, withProcessRates } from "./monitor-probe.mjs";
+import { MonitorService } from "./monitor-service.mjs";
 import { ProfileStore } from "./profile-store.mjs";
 import { CredentialVault, PROVIDER_PRESETS, ProviderStore } from "./provider-store.mjs";
 import { RemoteManager } from "./remote-manager.mjs";
@@ -16,19 +19,25 @@ import { SessionManager } from "./session-manager.mjs";
 import { shellIntegrationScript } from "./shell-integration.mjs";
 import { hostSummary, readSshHosts } from "./ssh-config.mjs";
 import { TerminalHost, resolveTerminalHost } from "./terminal-host.mjs";
+import { applyWindowTheme, windowChrome, windowTheme } from "./window-chrome.mjs";
 
 let window;
 let manager;
 let remote;
 let host;
 let agent;
+let monitors;
 let providers;
 let vault;
 let profiles;
 let planOptions;
 let rendererUrl;
+let processWindow = null;
+let processUrl;
 let downloadDirectory;
 let windowTransparent = false;
+let chromeTheme = windowTheme("midnight");
+const themeFile = () => path.join(app.getPath("userData"), "window-theme.json");
 
 const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "webp", "gif", "avif", "bmp"];
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
@@ -67,17 +76,41 @@ async function chooseBackgroundImage() {
   return { url: pathToFileURL(path.join(directory, name)).href, name: path.basename(source) };
 }
 
+// Windows lists hold cumulative CPU time, so rates need the list before them.
+const previousLists = new Map();
+
+async function processSnapshot(host) {
+  const local = host === "local";
+  const platform = local ? process.platform : "linux";
+  const script = processListScript(platform);
+  const output = local ? await runLocalProbe(script) : await remote.exec(host, script);
+  const at = Date.now();
+  const processes = withProcessRates(parseProcessList(output, platform), previousLists.get(host), at);
+  previousLists.set(host, { processes, at });
+  return processes;
+}
+
 function send(channel, payload) {
   if (window && !window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send(channel, payload);
 }
 
-function trustedSender(event) {
+// The process window sees host data and starts read-only monitors. It has no path to a
+// terminal, an approval or a credential, whatever its renderer tries.
+const PROCESS_WINDOW_CHANNELS = new Set(["process-snapshot", "workspace-list", "process-monitor-start"]);
+
+function trustedSender(event, channel) {
+  if (processWindow && !processWindow.isDestroyed() && event.sender === processWindow.webContents) {
+    if (event.senderFrame !== processWindow.webContents.mainFrame || event.senderFrame.url.split("?")[0] !== processUrl || !PROCESS_WINDOW_CHANNELS.has(channel)) throw new Error("This window cannot make that request.");
+    return;
+  }
   if (!window || window.isDestroyed() || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== rendererUrl) throw new Error("IPC requests are only accepted from the omniTerm main window.");
 }
 
 // Remote first: it stops each SSH master synchronously through its control
 // socket, which must still exist when the terminals behind them go away.
 function disposeSessions() {
+  if (processWindow && !processWindow.isDestroyed()) processWindow.close();
+  monitors?.dispose();
   agent?.dispose();
   remote?.dispose();
   manager?.dispose();
@@ -91,8 +124,18 @@ const providerState = () => ({
 
 function registerHandlers() {
   const handlers = {
+    "set-window-theme": (id) => {
+      chromeTheme = windowTheme(id);
+      nativeTheme.themeSource = chromeTheme.dark ? "dark" : "light";
+      applyWindowTheme(window, process.platform, chromeTheme);
+      applyWindowTheme(processWindow, process.platform, chromeTheme);
+      if (processWindow && !processWindow.isDestroyed() && !processWindow.webContents.isDestroyed()) processWindow.webContents.send("omniterm:window-theme", id);
+      writeFileSync(themeFile(), JSON.stringify({ theme: id }));
+      return true;
+    },
     "get-app-info": () => {
       let agent;
+let monitors;
       try { const command = resolveDesktopAgent(planOptions); agent = { available: true, path: command.args[0] || command.executable }; }
       catch (error) { agent = { available: false, path: null, error: error.message }; }
       return { platform: process.platform, hostname: os.hostname(), home: os.homedir(), cwd: planOptions.defaultCwd, version: app.getVersion(), agent, profiles: profiles.list(), windowTransparent };
@@ -108,6 +151,7 @@ function registerHandlers() {
       await manager.write({ id, data: shellIntegrationScript(manager.shellNonce(id)) });
       return true;
     },
+    "allow-auto-submit": ({ id, enabled }) => { manager.require(id); return host.request("session.allowAutoSubmit", { id, enabled: enabled === true }); },
     "workspace-update": (layout) => host.request("workspace.update", layout),
     "workspace-list": () => host.request("workspace.list"),
     "provider-state": providerState,
@@ -126,6 +170,22 @@ function registerHandlers() {
       try { await agent.testProvider(id); return { state: providerState() }; }
       catch (error) { return { state: providerState(), failure: describeFailure(error.message) }; }
     },
+    "open-process-window": (host) => openProcessWindow(host),
+    "process-snapshot": processSnapshot,
+    // Clicking the button is the approval, so this path can never carry an action.
+    "process-monitor-start": async (request) => {
+      const { id } = monitors.propose({ ...request, action: null, proposedBy: "user" });
+      return monitors.approve(id);
+    },
+    "monitor-list": () => monitors.list(),
+    "monitor-create": (request) => monitors.propose({ ...request, proposedBy: "user" }),
+    "monitor-approve": (id) => monitors.approve(id),
+    "monitor-deny": (id) => monitors.deny(id),
+    "monitor-pause": (id) => monitors.pause(id),
+    "monitor-resume": (id) => monitors.resume(id),
+    "monitor-stop": (id) => monitors.stop(id),
+    "monitor-revoke-action": (id) => monitors.revokeAction(id),
+    "monitor-remove": (id) => monitors.remove(id),
     "agent-send": (request) => agent.send(request),
     "agent-cancel": () => agent.cancel(),
     "agent-pause": ({ paused, context, targets }) => agent.pause(paused, { context, targets }),
@@ -172,7 +232,7 @@ function registerHandlers() {
       return downloadDirectory;
     },
   };
-  for (const [name, handler] of Object.entries(handlers)) ipcMain.handle(`omniterm:${name}`, (event, payload) => { trustedSender(event); return handler(payload); });
+  for (const [name, handler] of Object.entries(handlers)) ipcMain.handle(`omniterm:${name}`, (event, payload) => { trustedSender(event, name); return handler(payload); });
   // startDrag must run while the renderer is still inside its dragstart event.
   ipcMain.on("omniterm:remote-start-drag", (event, request) => {
     try {
@@ -181,6 +241,26 @@ function registerHandlers() {
       event.sender.startDrag({ file: remote.dragFile(request), icon });
     } catch (error) { send("omniterm:remote-drag-error", { message: error.message }); }
   });
+}
+
+function openProcessWindow(host) {
+  const query = { ...(typeof host === "string" && host !== "local" ? { host } : {}), theme: chromeTheme.id, platform: process.platform };
+  if (processWindow && !processWindow.isDestroyed()) {
+    processWindow.loadFile(path.join(app.getAppPath(), "build-renderer", "process.html"), { query });
+    processWindow.focus();
+    return true;
+  }
+  const page = path.join(app.getAppPath(), "build-renderer", "process.html");
+  processUrl = pathToFileURL(page).href;
+  processWindow = new BrowserWindow({ width: 980, height: 680, minWidth: 640, minHeight: 420, title: "omniTerm 进程监视", backgroundColor: chromeTheme.background, ...windowChrome(process.platform, chromeTheme), webPreferences: { preload: path.join(path.dirname(fileURLToPath(import.meta.url)), "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
+  processWindow.setMenuBarVisibility(false);
+  processWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  processWindow.webContents.on("will-navigate", (event) => event.preventDefault());
+  processWindow.webContents.on("will-redirect", (event) => event.preventDefault());
+  processWindow.webContents.on("will-attach-webview", (event) => event.preventDefault());
+  processWindow.on("closed", () => { processWindow = null; });
+  processWindow.loadFile(page, { query });
+  return true;
 }
 
 function createWindow() {
@@ -195,7 +275,7 @@ function createWindow() {
     onData: ({ id, data }) => send("omniterm:session-data", { id, data }),
     onEvent: (event, params) => {
       if (event === "session.exit") onExit(params);
-      else if (event === "operation.update") agent.operationChanged(params);
+      else if (event === "operation.update") { agent.operationChanged(params); monitors.operationChanged(params); }
     },
     onExit: () => manager.hostStopped(onExit),
   });
@@ -207,8 +287,16 @@ function createWindow() {
   });
   providers = new ProviderStore(path.join(app.getPath("userData"), "model-providers.json"));
   vault = new CredentialVault({ filename: path.join(app.getPath("userData"), "model-credentials.json"), safeStorage });
+  monitors = new MonitorService({
+    host,
+    run: (target, script) => target === "local" ? runLocalProbe(script) : remote.exec(target.sessionId, script),
+    emit: (event) => {
+      send("omniterm:monitor-event", event);
+      if (event.type === "monitor-alert" && Notification.isSupported()) new Notification({ title: event.label || "omniTerm 监控", body: event.message }).show();
+    },
+  });
   agent = new AgentService({
-    host, providers, vault,
+    host, providers, vault, monitors,
     resolveCommand: () => resolveDesktopAgent(planOptions),
     env: process.env,
     agentHome: path.join(app.getPath("userData"), "agent-home"),
@@ -218,7 +306,8 @@ function createWindow() {
   const renderer = path.join(appPath, "build-renderer", "index.html");
   rendererUrl = pathToFileURL(renderer).href;
   windowTransparent = readTransparency();
-  window = new BrowserWindow({ width: 1440, height: 940, minWidth: 1000, minHeight: 650, title: "omniTerm", ...(windowTransparent ? { transparent: true, backgroundColor: "#00000000" } : { backgroundColor: "#14181f" }), ...(process.platform === "darwin" ? { titleBarStyle: "hiddenInset", trafficLightPosition: { x: 20, y: 20 } } : {}), webPreferences: { preload: path.join(path.dirname(fileURLToPath(import.meta.url)), "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
+  window = new BrowserWindow({ width: 1440, height: 940, minWidth: 1000, minHeight: 650, title: "omniTerm", ...(windowTransparent ? { transparent: true, backgroundColor: "#00000000" } : { backgroundColor: chromeTheme.background }), ...windowChrome(process.platform, chromeTheme), webPreferences: { preload: path.join(path.dirname(fileURLToPath(import.meta.url)), "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
+  if (process.platform !== "darwin") window.setMenuBarVisibility(false);
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event, url) => { if (url !== rendererUrl) event.preventDefault(); });
   window.webContents.on("will-redirect", (event) => event.preventDefault());
@@ -233,6 +322,8 @@ function createWindow() {
 
 app.setName("omniTerm");
 app.whenReady().then(() => {
+  try { chromeTheme = windowTheme(JSON.parse(readFileSync(themeFile(), "utf8")).theme); } catch { /* First launch uses Midnight. */ }
+  nativeTheme.themeSource = chromeTheme.dark ? "dark" : "light";
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     ...(process.platform === "darwin" ? [{ role: "appMenu" }] : []),
     { role: "editMenu" },
