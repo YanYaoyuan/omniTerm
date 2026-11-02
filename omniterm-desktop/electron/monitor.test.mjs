@@ -90,8 +90,28 @@ async function followsReplacedLogs(read, file) {
   [sample, state] = await next(state);
   assert.equal(sample.text, "x\n", "truncated");
   appendFileSync(file, "y\n");
-  [sample] = await next(state);
+  [sample, state] = await next(state);
   assert.equal(sample.text, "y\n");
+
+  // Only the start differs, so the bytes before the saved offset say nothing.
+  const padding = "x".repeat(256);
+  writeFileSync(file, `old!!\n${padding}`);
+  [, state] = await next(state);
+  renameSync(file, `${file}.3`);
+  writeFileSync(file, `ERROR\n${padding}\nnext\n`);
+  [sample, state] = await next(state);
+  assert.equal(sample.text, `ERROR\n${padding}\nnext\n`, "replacement ending in the same bytes");
+
+  writeFileSync(file, `FATAL\n${padding}\nnext\nmore\n`);
+  [sample, state] = await next(state);
+  assert.match(sample.text, /^FATAL/, "rewritten in place, ending in the same bytes");
+
+  // The same file under the same name again is not a replacement.
+  renameSync(file, `${file}.4`);
+  renameSync(`${file}.4`, file);
+  appendFileSync(file, "still the same file\n");
+  [sample] = await next(state);
+  assert.equal(sample.text, "still the same file\n", "renamed away and back");
 }
 
 test("a real log is read from its start whenever the file behind the path changes", { skip: !unix }, async () => {
@@ -488,6 +508,20 @@ test("a stopped task stays stopped, and a finished one keeps its outcome", async
   assert.equal(calls.filter(([method]) => method === "task.end").length, ends);
 });
 
+test("a log with no readable file identity says so, once", async () => {
+  const { service } = fixture();
+  service.platform = "linux";
+  service.run = async () => "exists=1\nidentity=none\noffset=0\nnext=0\nmark=none-2\n@@text\n";
+  const { id } = service.propose({ ...request, target: { kind: "log", path: "/tmp/share.log" }, conditions: [] });
+  await service.approve(id);
+  await settle();
+  const monitor = service.monitors.get(id);
+  await service.sample(monitor);
+  assert.equal(service.get(id).identityUnverified, true);
+  assert.equal(monitor.history.filter(({ message }) => message.includes("身份")).length, 1);
+  assert.equal(service.get(id).lastSample.identity, undefined);
+});
+
 test("a log absent at the first sample is read from its start once it appears", async () => {
   const seen = [];
   const { service } = fixture();
@@ -601,7 +635,13 @@ test("a real Windows log is read from its start whenever the file behind the pat
   try {
     const file = path.join(directory, "app.log");
     const target = validateTarget({ kind: "log", path: file }, { platform: "win32" });
-    await followsReplacedLogs(async (state) => parseProbe(target, await runLocalProbe(probeScript(target, state, "win32"))), file);
+    const read = async (state) => {
+      const sample = parseProbe(target, await runLocalProbe(probeScript(target, state, "win32")));
+      assert.equal(sample.identity, undefined, "this file system gives a file ID");
+      assert.match(sample.mark, /^[0-9A-F]{48}-[0-9A-F]{64}$/);
+      return sample;
+    };
+    await followsReplacedLogs(read, file);
   } finally { rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
 });
 

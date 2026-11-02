@@ -185,7 +185,15 @@ export class MonitorService {
       const platform = monitor.host === "local" ? this.platform : "linux";
       const output = await this.run(monitor.host, probeScript(monitor.target, monitor.probeState, platform));
       if (!live()) return;
+<<<<<<< HEAD
       const { mark, ...sample } = withCpuRate({ ...parseProbe(monitor.target, output), at: this.now() }, monitor.lastSample);
+=======
+      const { mark, identity, ...sample } = { ...parseProbe(monitor.target, output), at: this.now() };
+      if (identity === "none" && !monitor.identityUnverified) {
+        monitor.identityUnverified = true;
+        this.record(monitor, "error", "无法读取这个日志文件的身份，文件被替换时可能漏掉新内容。");
+      }
+>>>>>>> feat/process-monitor-window
       // A log that is absent now is new when it appears, so all of it counts.
       if (monitor.target.kind === "log") monitor.probeState = sample.nextOffset === undefined ? { offset: 0 } : { offset: sample.nextOffset, mark };
       monitor.failures = 0;

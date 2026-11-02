@@ -79,10 +79,10 @@ ps -L -p ${pid} -o tid=,pcpu= | while read -r id cpu; do if [ "$id" = "${tid}" ]
 const savedMark = (mark) => (typeof mark === "string" && /^[\w-]{1,128}$/.test(mark) ? mark : null);
 
 // An offset only means something in the file it was taken from. The mark names that file: its
-// inode, which a rename changes, and a checksum of the bytes before the offset, which also catches
-// a reused inode and a file rewritten in place. A mismatch means a new file, read from its start.
-// The inode is read first, so a rotation during this sample shows up in the next one: text may
-// then be read twice, but none is skipped.
+// inode, which a rename changes, and a checksum of the bytes at its start and before the offset,
+// which also catch a reused inode and a file rewritten in place. A mismatch means a new file, read
+// from its start. The inode is read first, so a rotation during this sample shows up in the next
+// one: text may then be read twice, but none is skipped.
 function logScript({ path }, { offset, mark }) {
   const saved = savedMark(mark);
   return `export LC_ALL=C
@@ -93,7 +93,7 @@ inode=$(ls -idL "$file" | { read -r id rest; echo "$id"; })
 mark() {
   length=$1
   if [ "$length" -gt ${LOG_MARK_BYTES} ]; then length=${LOG_MARK_BYTES}; fi
-  if [ "$length" -gt 0 ]; then tail -c +$(($1 - length + 1)) "$file" | head -c "$length"; fi | cksum | { read -r crc rest; echo "$inode-$crc"; }
+  if [ "$length" -gt 0 ]; then head -c "$length" "$file"; tail -c +$(($1 - length + 1)) "$file" | head -c "$length"; fi | cksum | { read -r crc rest; echo "$inode-$crc"; }
 }
 size=$(wc -c < "$file" | tr -d " ")
 echo size=$size
@@ -143,21 +143,45 @@ if (-not $t) { 'exists=0'; exit 0 }
 `;
 }
 
-// Windows has no inode to read cheaply, and a file created where another was just renamed from
-// inherits its creation time. So the mark is the hash of the bytes before the offset: a replacement
-// only passes for the same file if those bytes match, and then reading on loses nothing unseen.
+// The volume and file ID of the open handle, the Windows counterpart of an inode. The call is
+// defined at run time because Add-Type would start a compiler on every sample. PreserveSig keeps
+// its return value. A share or file system that gives no ID is reported, never guessed at.
+const WINDOWS_FILE_ID = `function Get-FileId($handle) {
+  try {
+    $name = New-Object Reflection.AssemblyName 'OmniTermFileId'
+    $assembly = [Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly($name, 'Run')
+    $type = $assembly.DefineDynamicModule('Native').DefineType('FileId', 'Public,Class,Abstract,Sealed')
+    $parameters = [Type[]]@([Microsoft.Win32.SafeHandles.SafeFileHandle], [int], [byte[]], [int])
+    $method = $type.DefinePInvokeMethod('GetFileInformationByHandleEx', 'kernel32.dll', [Reflection.MethodAttributes]'Public,Static,PinvokeImpl', [Reflection.CallingConventions]'Standard', [bool], $parameters, [Runtime.InteropServices.CallingConvention]'Winapi', [Runtime.InteropServices.CharSet]'Auto')
+    $method.SetImplementationFlags($method.GetMethodImplementationFlags() -bor [Reflection.MethodImplAttributes]::PreserveSig)
+    $native = $type.CreateType()
+    $info = New-Object byte[] 24
+    if (-not $native::GetFileInformationByHandleEx($handle, 18, $info, 24)) { return 'none' }
+    if ([BitConverter]::ToUInt64($info, 8) -eq 0 -and [BitConverter]::ToUInt64($info, 16) -eq 0) { return 'none' }
+    return [BitConverter]::ToString($info).Replace('-', '')
+  } catch { return 'none' }
+}
+`;
+
+// The mark mirrors POSIX: the file's identity, then a hash of its first bytes and those before the
+// offset. Creation time is no substitute for the ID: a file created where another was just renamed
+// from inherits it.
 function windowsLogScript({ path }, { offset, mark }) {
   const saved = savedMark(mark);
-  return `${UTF8_OUTPUT}$path = '${path}'
+  return `${UTF8_OUTPUT}${WINDOWS_FILE_ID}$path = '${path}'
 if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { 'exists=0'; exit 0 }
 'exists=1'
 $file = [IO.File]::Open($path, 'Open', 'Read', 'ReadWrite,Delete')
+$id = Get-FileId $file.SafeFileHandle
+if ($id -eq 'none') { 'identity=none' }
 function Get-Mark($end) {
   $length = [Math]::Min(${LOG_MARK_BYTES}, $end)
-  $window = New-Object byte[] $length
+  $window = New-Object byte[] (2 * $length)
+  [void]$file.Seek(0, 'Begin')
+  [void]$file.Read($window, 0, $length)
   [void]$file.Seek($end - $length, 'Begin')
-  $got = $file.Read($window, 0, $length)
-  [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($window, 0, $got))
+  [void]$file.Read($window, $length, $length)
+  $id + '-' + [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($window)).Replace('-', '')
 }
 $size = $file.Length
 "size=$size"
