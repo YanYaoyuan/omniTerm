@@ -18,8 +18,8 @@
     "test": "node --test electron/*.test.mjs src/*.test.mjs",
     "test:native": "cargo test --locked --manifest-path native/terminal-host/Cargo.toml",
     "test:pty": "node scripts/test-pty.mjs",
-    "test:gui": "node scripts/test-gui.mjs",
     "test:ssh": "node scripts/test-ssh.mjs",
+    "test:gui": "node scripts/test-gui.mjs",
     "test:live": "node scripts/test-agent-live.mjs"
   },
   "devDependencies": {
