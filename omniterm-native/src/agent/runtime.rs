@@ -146,11 +146,13 @@ pub fn describe(message: &str) -> (String, Option<String>) {
 }
 
 type ToolHandler = Arc<dyn Fn(Value) -> Result<Value, String> + Send + Sync>;
+/// Replies waited for, by request ID.
+type Pending = Arc<Mutex<HashMap<u64, Sender<Result<Value, String>>>>>;
 
 pub struct Runtime {
     stdin: Mutex<Option<ChildStdin>>,
     child: Mutex<Option<Child>>,
-    pending: Arc<Mutex<HashMap<u64, Sender<Result<Value, String>>>>>,
+    pending: Pending,
     next: AtomicU64,
     stopped: Arc<AtomicBool>,
     pub model: String,

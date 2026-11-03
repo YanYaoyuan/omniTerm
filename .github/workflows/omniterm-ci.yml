@@ -157,7 +157,7 @@ jobs:
       - name: Unit tests (emulation, input, layout, quads, atlas)
         run: cargo test --locked
       - name: Lints
-        run: cargo clippy --locked --all-targets
+        run: cargo clippy --locked --all-targets -- -D warnings
       - name: Build the release app
         run: cargo build --release --locked
       - name: Measure emulation throughput and frame building
@@ -177,6 +177,8 @@ jobs:
           path: |
             omniterm-native/smoke-*.png
             omniterm-native/bench-*.json
+            omniterm-native/target/release/omniterm-app
+            omniterm-native/target/release/omniterm-app.exe
           if-no-files-found: ignore
 
   engine:

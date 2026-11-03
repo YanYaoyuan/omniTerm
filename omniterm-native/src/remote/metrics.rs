@@ -201,13 +201,21 @@ pub fn parse(text: &str) -> Sample {
 /// CPU and network figures are counters, so each report compares two samples.
 #[derive(Default)]
 pub struct Tracker {
-    previous: Option<(Option<(f64, f64)>, Option<(f64, f64)>, Instant)>,
+    previous: Option<Counters>,
+}
+
+/// CPU ticks (total, idle) and network bytes (received, sent), and when they were read.
+#[derive(Clone, Copy)]
+struct Counters {
+    cpu: Option<(f64, f64)>,
+    net: Option<(f64, f64)>,
+    at: Instant,
 }
 
 impl Tracker {
     pub fn next(&mut self, mut sample: Sample) -> Sample {
         let now = Instant::now();
-        if let Some((ticks, net, time)) = self.previous {
+        if let Some(Counters { cpu: ticks, net, at: time }) = self.previous {
             if let (Some((total, idle)), Some((old_total, old_idle))) = (sample.cpu_ticks, ticks) {
                 let elapsed = total - old_total;
                 if elapsed > 0.0 {
@@ -221,7 +229,7 @@ impl Tracker {
                 sample.net = Some(((rx - old_rx).max(0.0) / seconds, (tx - old_tx).max(0.0) / seconds));
             }
         }
-        self.previous = Some((sample.cpu_ticks, sample.net_total, now));
+        self.previous = Some(Counters { cpu: sample.cpu_ticks, net: sample.net_total, at: now });
         sample
     }
 }

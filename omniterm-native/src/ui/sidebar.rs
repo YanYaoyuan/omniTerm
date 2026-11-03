@@ -34,48 +34,38 @@ pub fn connection_label(kind: Kind) -> &'static str {
 
 pub fn show(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
     let palette = style::palette(ui);
-    let response = egui::Panel::left("sidebar")
-        .resizable(true)
-        .default_size(app.sidebar_width)
-        .size_range(180.0..=520.0)
-        .frame(egui::Frame::new().fill(palette.panel).inner_margin(egui::Margin { left: 12, right: 12, top: 17, bottom: 0 }))
-        .show(ui, |ui| {
-            let rect = ui.max_rect().expand2(Vec2::new(12.0, 0.0));
-            ui.painter().vline(rect.right() - 0.5, rect.y_range(), Stroke::new(1.0, palette.border_strong));
-            // An SSH tab adds its files beside the workspace view.
-            if let Some(remote) = app.focused_remote() {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 3.0;
-                    let width = (ui.available_width() - 3.0) / 2.0;
-                    for (files, glyph, label) in [(true, icons::FOLDER_OPEN, "文件"), (false, icons::HARD_DRIVES, "工作区")] {
-                        let active = app.sidebar_files == files;
-                        let button = egui::Button::new((icon(glyph, 14.0), RichText::new(label).size(11.0)))
-                            .min_size(Vec2::new(width, 27.0))
-                            .fill(if active { palette.hover() } else { Color32::TRANSPARENT })
-                            .stroke(Stroke::NONE)
-                            .corner_radius(5);
-                        if ui.add(button).clicked() {
-                            app.sidebar_files = files;
-                        }
-                    }
-                });
-                ui.add_space(10.0);
-                if app.sidebar_files {
-                    super::remote_panel::file_panel(app, ui, &remote, intents);
-                    return;
+    // An SSH tab adds its files beside the workspace view.
+    if let Some(remote) = app.focused_remote() {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            let width = (ui.available_width() - 3.0) / 2.0;
+            for (files, glyph, label) in [(true, icons::FOLDER_OPEN, "文件"), (false, icons::HARD_DRIVES, "工作区")] {
+                let active = app.sidebar_files == files;
+                let button = egui::Button::new((icon(glyph, 14.0), RichText::new(label).size(11.0)))
+                    .min_size(Vec2::new(width, 27.0))
+                    .fill(if active { palette.hover() } else { Color32::TRANSPARENT })
+                    .stroke(Stroke::NONE)
+                    .corner_radius(5);
+                if ui.add(button).clicked() {
+                    app.sidebar_files = files;
                 }
             }
-            ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
-                bottom(ui, intents);
-                ui.with_layout(Layout::top_down(Align::Min), |ui| {
-                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                        workspace(app, ui, intents);
-                        connections(app, ui, intents);
-                    });
-                });
+        });
+        ui.add_space(10.0);
+        if app.sidebar_files {
+            super::remote_panel::file_panel(app, ui, &remote, intents);
+            return;
+        }
+    }
+    ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
+        bottom(ui, intents);
+        ui.with_layout(Layout::top_down(Align::Min), |ui| {
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                workspace(app, ui, intents);
+                connections(app, ui, intents);
             });
         });
-    app.sidebar_width = response.response.rect.width();
+    });
 }
 
 fn heading(ui: &mut Ui, title: &str, action: Option<(&str, &str)>) -> bool {
@@ -168,7 +158,7 @@ fn workspace(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
 fn connections(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
     let palette = style::palette(ui);
     if heading(ui, "已保存的连接", Some((icons::PLUS, "添加连接"))) {
-        intents.push(Intent::Dialog(Dialog::Connection(ConnectionForm::new(Kind::Ssh, None))));
+        intents.push(Intent::Dialog(Dialog::Connection(Box::new(ConnectionForm::new(Kind::Ssh, None)))));
     }
     if app.profiles.is_empty() {
         ui.vertical_centered(|ui| {
@@ -178,7 +168,7 @@ fn connections(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
             ui.label(RichText::new("保存常用主机，一键连接。").size(10.5).color(palette.faint()));
             ui.add_space(4.0);
             if ui.add(egui::Button::new((icon(icons::PLUS, 13.0).color(palette.accent()), RichText::new("添加第一个连接").size(11.0).color(palette.accent()))).frame(false)).clicked() {
-                intents.push(Intent::Dialog(Dialog::Connection(ConnectionForm::new(Kind::Ssh, None))));
+                intents.push(Intent::Dialog(Dialog::Connection(Box::new(ConnectionForm::new(Kind::Ssh, None)))));
             }
             if ui.add(egui::Button::new((icon(icons::HARD_DRIVES, 13.0).color(palette.accent()), RichText::new("从 ~/.ssh/config 导入").size(11.0).color(palette.accent()))).frame(false)).clicked() {
                 intents.push(Intent::OpenSshImport);
@@ -194,7 +184,7 @@ fn connections(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
         let menu = ui.put(menu_rect, egui::Button::new(icon(icons::DOTS_THREE, 18.0).color(palette.muted())).frame(false)).on_hover_text(format!("{}的选项", profile.display_name()));
         egui::Popup::menu(&menu).show(|ui| {
             if ui.button(format!("{}  编辑连接", icons::PENCIL_SIMPLE)).clicked() {
-                intents.push(Intent::Dialog(Dialog::Connection(ConnectionForm::new(kind, Some(profile.clone())))));
+                intents.push(Intent::Dialog(Dialog::Connection(Box::new(ConnectionForm::new(kind, Some(profile.clone()))))));
             }
             if ui.button(format!("{}  删除连接", icons::TRASH)).clicked() {
                 intents.push(Intent::Dialog(Dialog::Delete { profile: profile.clone(), error: None }));
@@ -245,7 +235,7 @@ fn bottom(ui: &mut Ui, intents: &mut Vec<Intent>) {
                     .stroke(Stroke::new(1.0, palette.border))
                     .corner_radius(6);
                 if ui.add(button).clicked() {
-                    intents.push(Intent::Dialog(Dialog::Connection(ConnectionForm::new(kind, None))));
+                    intents.push(Intent::Dialog(Dialog::Connection(Box::new(ConnectionForm::new(kind, None)))));
                 }
             }
         });

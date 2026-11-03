@@ -5,6 +5,9 @@
 //! and `--smoke <png>` opens the window, runs one command in a real shell, saves a screenshot
 //! and exits, for CI.
 
+// A windowed app on Windows: no console window opens beside it in release builds.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod agent;
 mod backend;
 mod bench;
@@ -15,6 +18,7 @@ mod grid;
 mod icons;
 mod input;
 mod layout;
+mod monitor;
 mod png;
 mod remote;
 mod smoke;

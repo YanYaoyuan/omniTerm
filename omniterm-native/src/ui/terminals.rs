@@ -548,7 +548,7 @@ fn pane(app: &mut App, ui: &mut Ui, id: &str, rect: Rect, focused: bool, many: b
     }
 
     // The focused pane owns the keyboard while nothing else does.
-    let keyboard = focused && !modal && !app.search.open || focused && !modal && response.has_focus();
+    let keyboard = focused && !modal && (!app.search.open || response.has_focus());
     if keyboard {
         if !response.has_focus() && ui.ctx().memory(|memory| memory.focused().is_none()) {
             response.request_focus();
@@ -561,7 +561,7 @@ fn pane(app: &mut App, ui: &mut Ui, id: &str, rect: Rect, focused: bool, many: b
 
     // Quads are rebuilt only when something they depend on changed.
     let blink = app.settings.cursor_blink && focused && response.has_focus();
-    let cursor_on = !blink || (app.blink_epoch.elapsed().as_millis() / BLINK.as_millis()) % 2 == 0;
+    let cursor_on = !blink || (app.blink_epoch.elapsed().as_millis() / BLINK.as_millis()).is_multiple_of(2);
     if blink {
         let phase = BLINK.as_millis() - app.blink_epoch.elapsed().as_millis() % BLINK.as_millis();
         ui.ctx().request_repaint_after(Duration::from_millis(phase as u64));
@@ -698,11 +698,7 @@ fn type_keys(app: &mut App, ui: &Ui) {
                     app.type_text(bytes);
                 }
             }
-            Event::Text(text) => {
-                if !(handled && swallow_text(modifiers)) && app.preedit.is_empty() {
-                    app.type_text(text);
-                }
-            }
+            Event::Text(text) if !(handled && swallow_text(modifiers)) && app.preedit.is_empty() => app.type_text(text),
             // Ctrl+C copies a selection and otherwise interrupts, like Windows Terminal;
             // Ctrl+Shift+C and Command+C only ever copy.
             Event::Copy => {
@@ -711,11 +707,7 @@ fn type_keys(app: &mut App, ui: &Ui) {
                     app.type_text("\x03".into());
                 }
             }
-            Event::Cut => {
-                if !mac {
-                    app.type_text("\x18".into());
-                }
-            }
+            Event::Cut if !mac => app.type_text("\x18".into()),
             Event::Paste(text) => app.paste(&text),
             Event::Ime(egui::ImeEvent::Preedit { text, .. }) => app.preedit = text,
             Event::Ime(egui::ImeEvent::Commit(text)) => {

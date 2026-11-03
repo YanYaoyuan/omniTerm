@@ -71,7 +71,7 @@ pub fn title_bar(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
             let maximized = ui.ctx().input(|input| input.viewport().maximized.unwrap_or(false));
             intents.push(Intent::Window(ViewportCommand::Maximized(!maximized)));
         }
-        let brand_width = if app.sidebar_visible { app.sidebar_width } else { 230.0 };
+        let brand_width = if app.sidebar_visible && app.dock.sidebar == super::dock::Edge::Left { app.dock.size(super::dock::Edge::Left) } else { 230.0 };
         let mut left = rect.left() + if app.mac { MAC_TRAFFIC_LIGHTS } else { 22.0 };
         let center_y = rect.center().y;
         ui.painter().text(Pos2::new(left, center_y), Align2::LEFT_CENTER, icons::TERMINAL_WINDOW, FontId::new(19.0, egui::FontFamily::Name(style::ICONS.into())), palette.accent());
@@ -85,6 +85,12 @@ pub fn title_bar(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
             let agent_label = format!("{}（{}）", if app.agent_visible { "隐藏 omniTerm Agent 面板（对话继续运行）" } else { "显示 omniTerm Agent 面板" }, super::shortcuts::label(Action::ToggleAgent, app.mac));
             if title_button(ui, icons::ROBOT, "omniTerm Agent", app.agent_visible).on_hover_text(agent_label).clicked() {
                 intents.push(Intent::Action(Action::ToggleAgent));
+            }
+            if title_button(ui, icons::CPU, "进程", false).on_hover_text("打开进程监视窗口").clicked() {
+                app.open_processes();
+            }
+            if title_button(ui, icons::STACK, "监控", app.monitor_visible).on_hover_text("显示或隐藏监控面板").clicked() {
+                app.monitor_visible = !app.monitor_visible;
             }
             let palette_key = super::shortcuts::label(Action::Palette, app.mac);
             if title_button(ui, icons::COMMAND, &format!("命令  {palette_key}"), false).on_hover_text(format!("命令面板（{palette_key}）")).clicked() {

@@ -109,9 +109,12 @@ pub struct Snapshot {
     pub uploads_done: u64,
 }
 
+/// A transfer's work: given the remote and the transfer ID, the number of items skipped.
+type Work = Box<dyn FnOnce(&Remote, u64) -> Result<usize, String> + Send>;
+
 struct Job {
     transfer: u64,
-    run: Box<dyn FnOnce(&Remote, u64) -> Result<usize, String> + Send>,
+    run: Work,
 }
 
 struct State {
@@ -505,7 +508,7 @@ impl Remote {
         Ok(())
     }
 
-    fn enqueue(self: &Arc<Self>, upload: bool, name: String, run: Box<dyn FnOnce(&Remote, u64) -> Result<usize, String> + Send>) {
+    fn enqueue(self: &Arc<Self>, upload: bool, name: String, run: Work) {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         self.publish(|state| {
             state.transfers.push(Transfer { id, upload, name, bytes: 0, total: 0, status: TransferStatus::Queued, skipped: 0, error: String::new(), canceled: Arc::default() });
@@ -794,6 +797,19 @@ impl Manager {
 impl Remote {
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    /// Runs one read-only probe on the session's shared login and returns its output.
+    pub fn exec(&self, script: &str, timeout: Duration) -> Result<String, String> {
+        if !lock(&self.state).linked {
+            return Err("这个 SSH 会话还没有可用的共享连接。".into());
+        }
+        let mut args = self.channel_args();
+        args.push(self.target.destination.clone());
+        args.push(format!("sh -c '{script}'"));
+        let mut command = command(&self.target.executable);
+        command.args(&args);
+        crate::monitor::probe::run_with_timeout(&mut command, timeout).ok_or_else(|| "远程采样失败或超时。".into())
     }
 }
 

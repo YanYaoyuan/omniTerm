@@ -75,13 +75,16 @@ enum Entry {
     Notice(String),
 }
 
+/// The outcome of a provider test: whether it connected and whether it called a tool.
+type TestResult = std::sync::Arc<std::sync::Mutex<Option<Result<(bool, bool), String>>>>;
+
 pub struct ProviderForm {
     profile: Profile,
     key: String,
     editing: bool,
     error: Option<String>,
     testing: bool,
-    result: std::sync::Arc<std::sync::Mutex<Option<Result<(bool, bool), String>>>>,
+    result: TestResult,
 }
 
 impl ProviderForm {
@@ -243,7 +246,7 @@ pub fn show(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
     // Heading.
     ui.horizontal(|ui| {
         ui.set_height(41.0);
-        ui.add_space(6.0);
+        super::dock::grip(app, ui, super::dock::Panel::Agent);
         ui.label(icon(icons::ROBOT, 17.0).color(palette.accent()));
         ui.label(RichText::new("omniTerm Agent").strong().size(12.5).color(palette.text()));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -616,7 +619,15 @@ fn composer(app: &mut App, ui: &mut Ui, profile: Option<&Profile>) {
                     state.text.clear();
                     let selections = std::mem::take(&mut state.attached);
                     let context = if state.paused { Vec::new() } else { state.refs(&state.context) };
-                    app.agent.send(profile.map(|profile| profile.id.clone()).unwrap_or_default(), text, context, state.refs(&state.targets), selections, cwd.clone(), state.paused);
+                    app.agent.send(crate::agent::service::Message {
+                        profile_id: profile.map(|profile| profile.id.clone()).unwrap_or_default(),
+                        text,
+                        context,
+                        targets: state.refs(&state.targets),
+                        selections,
+                        cwd: cwd.clone(),
+                        paused: state.paused,
+                    });
                 }
             }
         });

@@ -122,7 +122,7 @@ pub fn action(key: Key, modifiers: Modifiers, mac: bool) -> Option<Action> {
 
 /// Ctrl+Tab cycles tabs everywhere; it means nothing to shells.
 pub fn tab_cycle(key: Key, modifiers: Modifiers) -> i32 {
-    if key != Key::Tab || !modifiers.ctrl || modifiers.alt || modifiers.mac_cmd && !modifiers.ctrl {
+    if key != Key::Tab || !modifiers.ctrl || modifiers.alt || modifiers.mac_cmd {
         return 0;
     }
     if modifiers.shift { -1 } else { 1 }

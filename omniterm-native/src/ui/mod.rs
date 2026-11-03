@@ -5,6 +5,9 @@
 mod agent_panel;
 mod chrome;
 mod dialogs;
+mod dock;
+mod monitor_view;
+mod process_window;
 mod palette;
 mod remote_panel;
 pub mod shortcuts;
@@ -90,7 +93,7 @@ enum Placement {
 
 pub enum Dialog {
     Settings,
-    Connection(dialogs::ConnectionForm),
+    Connection(Box<dialogs::ConnectionForm>),
     Delete { profile: Profile, error: Option<String> },
     SshImport(dialogs::ImportState),
 }
@@ -110,7 +113,9 @@ pub struct Toast {
     pub until: Instant,
 }
 
-/// Something the user asked for while a frame was drawn.
+/// Something the user asked for while a frame was drawn. Intents live for one frame, so the
+/// size of their largest variant costs nothing worth an allocation.
+#[allow(clippy::large_enum_variant)]
 pub enum Intent {
     Action(Action),
     NewTab { kind: Kind, profile: Option<Profile>, cwd: Option<String> },
@@ -139,6 +144,8 @@ pub enum Intent {
     ClearBackground,
     Window(ViewportCommand),
     SetTheme(&'static str),
+    OpenProcesses,
+    ResetDock,
 }
 
 pub struct App {
@@ -163,7 +170,6 @@ pub struct App {
     sidebar_visible: bool,
     agent_visible: bool,
     focus_mode: bool,
-    sidebar_width: f32,
     dialog: Option<Dialog>,
     palette: Option<palette::State>,
     search: Search,
@@ -174,6 +180,13 @@ pub struct App {
     workspace_dirty: Option<Instant>,
     remotes: Arc<crate::remote::manager::Manager>,
     agent: Arc<crate::agent::service::Service>,
+    monitors: Arc<crate::monitor::service::Service>,
+    monitor_visible: bool,
+    monitor_form: Option<monitor_view::Form>,
+    pending_seen: HashSet<String>,
+    processes: process_window::ProcessWindow,
+    dock: dock::Dock,
+    dragging_panel: Option<dock::Panel>,
     agent_state: agent_panel::AgentState,
     workspace_layout: Option<serde_json::Value>,
     file_panels: HashMap<String, remote_panel::PanelState>,
@@ -187,7 +200,6 @@ pub struct App {
     windows: bool,
 }
 
-const SIDEBAR_DEFAULT: f32 = 248.0;
 const UI_STATE: &str = "native-ui.json";
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
@@ -195,9 +207,10 @@ const UI_STATE: &str = "native-ui.json";
 struct UiState {
     sidebar_hidden: bool,
     agent_hidden: bool,
-    sidebar_width: Option<f32>,
     seen_ssh_hosts: Vec<String>,
     agent_profile: Option<String>,
+    monitor_visible: bool,
+    dock: Option<dock::Dock>,
 }
 
 fn next_counter(counter: &mut u64) -> u64 {
@@ -216,6 +229,9 @@ impl App {
         let remotes = Arc::new(crate::remote::manager::Manager::new(move || context.request_repaint()));
         let context = cc.egui_ctx.clone();
         let agent = crate::agent::service::Service::new(backend.host().clone(), paths::file("agent-home"), move || context.request_repaint());
+        let context = cc.egui_ctx.clone();
+        let monitors = crate::monitor::service::Service::new(backend.host().clone(), remotes.clone(), move || context.request_repaint());
+        agent.set_monitors(monitors.clone());
         let scale = cc.egui_ctx.pixels_per_point();
         let ui_state: UiState = std::fs::read(paths::file(UI_STATE)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
         let store = Store::new(paths::file("profiles.json"));
@@ -243,7 +259,6 @@ impl App {
             sidebar_visible: !ui_state.sidebar_hidden,
             agent_visible: !ui_state.agent_hidden,
             focus_mode: false,
-            sidebar_width: ui_state.sidebar_width.unwrap_or(SIDEBAR_DEFAULT).clamp(180.0, 520.0),
             dialog: None,
             palette: None,
             search: Search { found: true, ..Search::default() },
@@ -254,6 +269,13 @@ impl App {
             workspace_dirty: None,
             remotes,
             agent,
+            monitors,
+            monitor_visible: ui_state.monitor_visible,
+            monitor_form: None,
+            pending_seen: HashSet::new(),
+            processes: process_window::ProcessWindow::default(),
+            dock: ui_state.dock.clone().unwrap_or_default(),
+            dragging_panel: None,
             agent_state: agent_panel::AgentState::with_profile(ui_state.agent_profile.clone()),
             workspace_layout: None,
             file_panels: HashMap::new(),
@@ -397,7 +419,7 @@ impl App {
         id
     }
 
-    fn opened(&mut self, token: u64, result: Result<Session, String>) {
+    fn opened(&mut self, token: u64, result: Result<Box<Session>, String>) {
         let placement = self.pending.remove(&token);
         let session = match result {
             Ok(session) => session,
@@ -406,7 +428,7 @@ impl App {
                 return;
             }
         };
-        let id = self.attach(session);
+        let id = self.attach(*session);
         match placement {
             Some(Placement::Split { tab, target, row }) if self.tab(tab).is_some_and(|tab| tab.root.panes().contains(&target)) => {
                 let tab = self.tab_mut(tab).expect("checked");
@@ -798,6 +820,8 @@ impl App {
             }
             Intent::Window(command) => ctx.send_viewport_cmd(command),
             Intent::SetTheme(id) => self.settings.theme = id.to_string(),
+            Intent::OpenProcesses => self.open_processes(),
+            Intent::ResetDock => self.dock = dock::Dock::default(),
         }
     }
 
@@ -858,6 +882,7 @@ impl App {
                 }
                 Notice::Host(value) => {
                     if value["event"] == "operation.update" {
+                        self.monitors.operation_changed(&value["params"]);
                         self.agent.operation_changed(value["params"].clone());
                     }
                 }
@@ -914,10 +939,23 @@ impl App {
     }
 
     fn save_ui_state(&self) {
-        let state = UiState { sidebar_hidden: !self.sidebar_visible, agent_hidden: !self.agent_visible, sidebar_width: Some(self.sidebar_width), seen_ssh_hosts: self.seen_hosts.iter().cloned().collect(), agent_profile: self.agent_state.profile.clone() };
+        let state = UiState { sidebar_hidden: !self.sidebar_visible, agent_hidden: !self.agent_visible, seen_ssh_hosts: self.seen_hosts.iter().cloned().collect(), agent_profile: self.agent_state.profile.clone(), monitor_visible: self.monitor_visible, dock: Some(self.dock.clone()) };
         if let Ok(json) = serde_json::to_vec(&state) {
             let _ = paths::write_atomically(&paths::file(UI_STATE), &json);
         }
+    }
+
+    fn panel_visible(&self, panel: dock::Panel) -> bool {
+        match panel {
+            dock::Panel::Sidebar => self.sidebar_visible,
+            dock::Panel::Agent => self.agent_visible,
+            dock::Panel::Monitor => self.monitor_visible,
+        }
+    }
+
+    pub fn open_processes(&mut self) {
+        let host = self.focused().filter(|pane| pane.session.kind == Kind::Ssh && self.remotes.get(pane.id()).is_some()).map(|pane| pane.id().to_string());
+        self.processes.open_for(host);
     }
 
     /// The SSH companion of the focused pane, when the file panel and metrics are on.
@@ -1023,16 +1061,39 @@ impl eframe::App for App {
             chrome::title_bar(self, ui, &mut intents);
             chrome::status_bar(self, ui, &mut intents);
         }
-        if self.sidebar_visible && !self.focus_mode {
-            sidebar::show(self, ui, &mut intents);
+        // A proposal waits on a person, so it must not sit in a hidden panel.
+        let pending: Vec<String> = self.monitors.list().into_iter().filter(|monitor| monitor.status == crate::monitor::service::Status::Pending).map(|monitor| monitor.id).collect();
+        if pending.iter().any(|id| !self.pending_seen.contains(id)) {
+            self.monitor_visible = true;
+            self.pending_seen.extend(pending);
         }
-        if self.agent_visible && !self.focus_mode {
-            let palette = style::palette(ui);
-            egui::Panel::right("agent").resizable(true).default_size(400.0).size_range(300.0..=760.0).frame(egui::Frame::new().fill(palette.panel_soft).inner_margin(egui::Margin::symmetric(10, 0))).show(ui, |ui| agent_panel::show(self, ui, &mut intents));
+        if !self.focus_mode {
+            dock::show(self, ui, &mut intents);
         }
+        dock::drag_overlay(self, &ctx);
         egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| terminals::show(self, ui, &mut intents, modal));
         dialogs::show(self, &ctx, &mut intents);
         palette::show(self, &ctx, &mut intents);
+        let hosts: Vec<(String, String)> = self.panes.values().filter(|pane| self.remotes.get(pane.id()).is_some()).map(|pane| (pane.id().to_string(), pane.title.clone())).collect();
+        let monitors = self.monitors.clone();
+        let mut started = None;
+        process_window::show(&mut self.processes, &ctx, &self.remotes, &hosts, |host, pid, command| {
+            let request = serde_json::json!({ "host": host.map(|id| serde_json::json!({ "sessionId": id })).unwrap_or(serde_json::json!("local")), "label": format!("{command} ({pid})"), "target": { "kind": "process", "pid": pid }, "conditions": [], "intervalSeconds": 5, "durationMinutes": 60 });
+            started = Some(monitors.propose(&request).map(|monitor| monitor.id));
+        });
+        match started {
+            Some(Ok(id)) => {
+                // The process window starts read-only monitors only, so this approval cannot grant anything.
+                let monitors = self.monitors.clone();
+                std::thread::spawn(move || {
+                    let _ = monitors.approve(&id);
+                });
+                self.monitor_visible = true;
+                self.notify("已开始只读监控这个进程。", false);
+            }
+            Some(Err(error)) => self.notify(error, true),
+            None => {}
+        }
         chrome::toast(self, &ctx);
         for intent in intents {
             self.apply(&ctx, intent);
@@ -1045,6 +1106,7 @@ impl eframe::App for App {
             self.save_ui_state();
             self.remotes.shutdown();
             self.agent.shutdown();
+            self.monitors.shutdown();
             self.backend.shutdown();
         }
         self.watch_metrics();

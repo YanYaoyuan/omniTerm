@@ -36,6 +36,18 @@ pub trait MonitorTools: Send + Sync {
     fn status(&self) -> Value;
 }
 
+/// One user message and what it may see and do. `context` and `targets` are the host's
+/// terminal references; `selections` maps session IDs to text attached from a terminal.
+pub struct Message {
+    pub profile_id: String,
+    pub text: String,
+    pub context: Vec<Value>,
+    pub targets: Vec<Value>,
+    pub selections: HashMap<String, String>,
+    pub cwd: String,
+    pub paused: bool,
+}
+
 struct Conversation {
     profile: Profile,
     fingerprint: u64,
@@ -233,19 +245,20 @@ impl Service {
         Ok(())
     }
 
-    /// Sends a message on a worker thread. `context` and `targets` are the host's terminal
-    /// references, `selections` maps session IDs to text attached from a terminal.
-    pub fn send(self: &Arc<Self>, profile_id: String, text: String, context: Vec<Value>, targets: Vec<Value>, selections: HashMap<String, String>, cwd: String, paused: bool) {
+    /// Sends a message on a worker thread.
+    pub fn send(self: &Arc<Self>, message: Message) {
         let service = self.clone();
         std::thread::spawn(move || {
-            if let Err(error) = service.send_now(&profile_id, &text, context, targets, selections, &cwd, paused) {
+            if let Err(error) = service.send_now(message) {
                 service.fail(&error);
                 service.emit(AgentEvent::Engine(Event::TurnCompleted { turn: String::new(), error: None }));
             }
         });
     }
 
-    fn send_now(self: &Arc<Self>, profile_id: &str, text: &str, context: Vec<Value>, targets: Vec<Value>, selections: HashMap<String, String>, cwd: &str, paused: bool) -> Result<(), String> {
+    fn send_now(self: &Arc<Self>, message: Message) -> Result<(), String> {
+        let Message { profile_id, text, context, targets, selections, cwd, paused } = message;
+        let (profile_id, text, cwd) = (profile_id.as_str(), text.as_str(), cwd.as_str());
         if text.trim().is_empty() || text.len() > 200_000 {
             return Err("请输入不超过 200,000 个字符的消息。".into());
         }

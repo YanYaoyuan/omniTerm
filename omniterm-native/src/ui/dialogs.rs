@@ -354,7 +354,7 @@ fn group(value: usize) -> String {
     let digits = value.to_string();
     let mut out = String::new();
     for (index, character) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index) % 3 == 0 {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
             out.push(',');
         }
         out.push(character);
@@ -516,7 +516,7 @@ fn delete(profile: &Profile, error: Option<&str>, ctx: &egui::Context, intents: 
 fn import(state: &mut ImportState, ctx: &egui::Context, intents: &mut Vec<Intent>) -> bool {
     let palette = style::palette_of(ctx);
     let subtitle = format!("在本机 SSH 配置中发现 {} 个主机", state.hosts.len());
-    let closed = modal(ctx, "ssh-import", 460.0, icons::HARD_DRIVES, "导入 SSH 配置？", &subtitle, |ui| {
+    modal(ctx, "ssh-import", 460.0, icons::HARD_DRIVES, "导入 SSH 配置？", &subtitle, |ui| {
         ui.add(egui::Label::new(RichText::new(format!("所选主机会加入“已保存的连接”。连接时由系统 ssh 读取 {}，其中的跳板机、密钥等设置继续生效；不会读取或保存密码和私钥内容。", state.path.display())).size(11.5)).wrap());
         ui.add_space(8.0);
         if state.hosts.len() > 1 {
@@ -561,6 +561,5 @@ fn import(state: &mut ImportState, ctx: &egui::Context, intents: &mut Vec<Intent
                 }
             });
         });
-    });
-    closed
+    })
 }

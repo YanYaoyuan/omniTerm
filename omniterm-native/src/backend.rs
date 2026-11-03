@@ -41,7 +41,7 @@ pub struct Session {
 
 /// What the UI hears about, apart from output.
 pub enum Notice {
-    Opened { token: u64, result: Result<Session, String> },
+    Opened { token: u64, result: Result<Box<Session>, String> },
     Exited { id: String, code: Option<i64> },
     Title { id: String, title: Option<String> },
     Directory { id: String, url: String },
@@ -168,7 +168,7 @@ impl Backend {
                 .spawn(move || {
                     for open in open_queue {
                         let result = open_session(&host, &terminals, &requests, &open, &control_path);
-                        let _ = notify.send(Notice::Opened { token: open.token, result });
+                        let _ = notify.send(Notice::Opened { token: open.token, result: result.map(Box::new) });
                         wake();
                     }
                 })
