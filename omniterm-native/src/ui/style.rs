@@ -98,6 +98,10 @@ pub fn install_fonts(ctx: &egui::Context) {
             }
         }
     }
+    // Icons also appear inside button and label text, so every family falls back to them.
+    for family in [FontFamily::Proportional, FontFamily::Monospace] {
+        fonts.families.entry(family).or_default().push(ICONS.into());
+    }
     ctx.set_fonts(fonts);
 }
 
