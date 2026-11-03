@@ -5,6 +5,10 @@
 //! this process. Windows OpenSSH has no control sockets; there the channels open their own
 //! non-interactive connection instead.
 
+pub mod manager;
+pub mod metrics;
+pub mod sftp;
+
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 

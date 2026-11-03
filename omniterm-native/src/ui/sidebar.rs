@@ -42,6 +42,29 @@ pub fn show(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
         .show(ui, |ui| {
             let rect = ui.max_rect().expand2(Vec2::new(12.0, 0.0));
             ui.painter().vline(rect.right() - 0.5, rect.y_range(), Stroke::new(1.0, palette.border_strong));
+            // An SSH tab adds its files beside the workspace view.
+            if let Some(remote) = app.focused_remote() {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 3.0;
+                    let width = (ui.available_width() - 3.0) / 2.0;
+                    for (files, glyph, label) in [(true, icons::FOLDER_OPEN, "文件"), (false, icons::HARD_DRIVES, "工作区")] {
+                        let active = app.sidebar_files == files;
+                        let button = egui::Button::new((icon(glyph, 14.0), RichText::new(label).size(11.0)))
+                            .min_size(Vec2::new(width, 27.0))
+                            .fill(if active { palette.hover() } else { Color32::TRANSPARENT })
+                            .stroke(Stroke::NONE)
+                            .corner_radius(5);
+                        if ui.add(button).clicked() {
+                            app.sidebar_files = files;
+                        }
+                    }
+                });
+                ui.add_space(10.0);
+                if app.sidebar_files {
+                    super::remote_panel::file_panel(app, ui, &remote, intents);
+                    return;
+                }
+            }
             ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
                 bottom(ui, intents);
                 ui.with_layout(Layout::top_down(Align::Min), |ui| {

@@ -5,6 +5,7 @@
 mod chrome;
 mod dialogs;
 mod palette;
+mod remote_panel;
 pub mod shortcuts;
 mod sidebar;
 pub mod style;
@@ -170,6 +171,10 @@ pub struct App {
     preedit: String,
     seen_hosts: HashSet<String>,
     workspace_dirty: Option<Instant>,
+    remotes: Arc<crate::remote::manager::Manager>,
+    file_panels: HashMap<String, remote_panel::PanelState>,
+    sidebar_files: bool,
+    watched: Option<String>,
     background: Option<(std::path::PathBuf, egui::TextureHandle)>,
     applied_theme: Option<&'static str>,
     blink_epoch: Instant,
@@ -202,6 +207,8 @@ impl App {
         style::install_fonts(&cc.egui_ctx);
         let context = cc.egui_ctx.clone();
         let backend = Backend::new(move || context.request_repaint(), crate::remote::control_path);
+        let context = cc.egui_ctx.clone();
+        let remotes = Arc::new(crate::remote::manager::Manager::new(move || context.request_repaint()));
         let scale = cc.egui_ctx.pixels_per_point();
         let ui_state: UiState = std::fs::read(paths::file(UI_STATE)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
         let store = Store::new(paths::file("profiles.json"));
@@ -238,6 +245,10 @@ impl App {
             preedit: String::new(),
             seen_hosts: ui_state.seen_ssh_hosts.into_iter().collect(),
             workspace_dirty: None,
+            remotes,
+            file_panels: HashMap::new(),
+            sidebar_files: true,
+            watched: None,
             background: None,
             applied_theme: None,
             blink_epoch: Instant::now(),
@@ -351,6 +362,9 @@ impl App {
 
     fn attach(&mut self, session: Session) -> String {
         let id = session.terminal.id.clone();
+        if let Some(companion) = session.companion.clone() {
+            self.remotes.attach(&id, companion);
+        }
         let local = self.panes.values().filter(|pane| pane.session.kind == Kind::Shell).count() + 1;
         let title = match session.kind {
             Kind::Shell if self.panes.is_empty() => "本地终端".to_string(),
@@ -444,6 +458,8 @@ impl App {
     }
 
     fn close_pane(&mut self, id: &str) {
+        self.remotes.detach(id);
+        self.file_panels.remove(id);
         self.backend.close(id);
         self.panes.remove(id);
         if self.search.open && self.focused().is_none_or(|pane| pane.id() == id) {
@@ -476,6 +492,8 @@ impl App {
     fn close_tab(&mut self, tab: u64) {
         let Some(ids) = self.tab(tab).map(|tab| tab.root.panes()) else { return };
         for id in ids {
+            self.remotes.detach(&id);
+            self.file_panels.remove(&id);
             self.backend.close(&id);
             self.panes.remove(&id);
         }
@@ -885,6 +903,30 @@ impl App {
         }
     }
 
+    /// The SSH companion of the focused pane, when the file panel and metrics are on.
+    pub fn focused_remote(&self) -> Option<Arc<crate::remote::manager::Remote>> {
+        let pane = self.focused()?;
+        if !self.settings.remote_panels {
+            return None;
+        }
+        self.remotes.get(pane.id())
+    }
+
+    /// Only the focused SSH tab samples its host; the others stop until they are shown.
+    fn watch_metrics(&mut self) {
+        let focused = self.focused_remote().map(|remote| remote.id().to_string());
+        if focused == self.watched {
+            return;
+        }
+        if let Some(previous) = self.watched.take().and_then(|id| self.remotes.get(&id)) {
+            previous.watch_metrics(false);
+        }
+        if let Some(remote) = focused.as_ref().and_then(|id| self.remotes.get(id)) {
+            remote.watch_metrics(true);
+        }
+        self.watched = focused;
+    }
+
     fn scene(&self) -> Scene {
         scene(&self.settings, self.window_transparent)
     }
@@ -962,8 +1004,10 @@ impl eframe::App for App {
         if ctx.input(|input| input.viewport().close_requested()) {
             self.save_workspace(true);
             self.save_ui_state();
+            self.remotes.shutdown();
             self.backend.shutdown();
         }
+        self.watch_metrics();
         if let Some(smoke) = self.smoke.as_mut() {
             let first = self.tabs.first().and_then(|tab| self.panes.get(&tab.focus)).map(|pane| (pane.session.terminal.clone(), self.render_state.adapter.get_info().backend));
             smoke.tick(&ctx, &self.backend, first, self.fonts.family());
@@ -976,6 +1020,7 @@ impl eframe::App for App {
     fn on_exit(&mut self) {
         self.save_workspace(true);
         self.save_ui_state();
+        self.remotes.shutdown();
         self.backend.shutdown();
     }
 }

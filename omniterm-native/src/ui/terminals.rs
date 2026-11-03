@@ -26,6 +26,7 @@ const TOOLBAR: f32 = 55.0;
 const TABSTRIP: f32 = 41.0;
 const TERMINAL_TOOLBAR: f32 = 34.0;
 const FOOTNOTE: f32 = 28.0;
+const METRICS: f32 = 32.0;
 const GAP: f32 = 6.0;
 const BLINK: Duration = Duration::from_millis(600);
 
@@ -61,6 +62,11 @@ pub fn show(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>, modal: bool) 
         let note = Rect::from_min_max(Pos2::new(area.left(), area.bottom() - FOOTNOTE), area.max);
         footnote(app, ui, note);
         area.max.y -= FOOTNOTE;
+        if let Some(remote) = app.focused_remote() {
+            let bar = Rect::from_min_max(Pos2::new(area.left(), area.bottom() - METRICS), area.max);
+            super::remote_panel::metrics_bar(ui, bar, &remote.snapshot());
+            area.max.y -= METRICS;
+        }
     }
     area.min.y += 4.0;
     ui.painter().rect_filled(area, 0.0, if palette.panel_bg == Color32::TRANSPARENT { Color32::TRANSPARENT } else { style::color(app.theme().background) });

@@ -7,6 +7,7 @@ use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Boundary, Column, Direction, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
+use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::search::RegexSearch;
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{ClearMode, CursorShape, CursorStyle, Handler, Processor};
@@ -329,7 +330,8 @@ impl Terminal {
         let offset = term.grid().display_offset() as i32;
         for cell in term.grid().display_iter() {
             let row = (cell.point.line.0 + offset) as usize;
-            if row < lines.len() {
+            // The second column of a wide character holds a placeholder, not a space.
+            if row < lines.len() && !cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
                 lines[row].push(cell.c);
             }
         }
@@ -458,7 +460,8 @@ mod tests {
 
     #[test]
     fn exits_are_announced_once_in_gray() {
-        let (terminal, _) = terminal();
+        let (sender, _receiver) = channel();
+        let terminal = Terminal::new("t".into(), Size { cols: 60, rows: 4 }, OPTIONS, sender);
         terminal.finish(Some(2));
         terminal.finish(Some(3));
         assert!(terminal.screen_text().contains("进程已退出 · 退出码 2"));
