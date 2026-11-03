@@ -1,0 +1,31 @@
+[package]
+name = "omniterm-native"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.95"
+license = "Apache-2.0"
+description = "omniTerm as a native Rust application: GPU-rendered terminals, no web runtime"
+publish = false
+
+# Built on its own, like the terminal host: a terminal must not need the Agent workspace.
+[workspace]
+
+[[bin]]
+name = "omniterm-app"
+path = "src/main.rs"
+
+[dependencies]
+alacritty_terminal = "0.26"
+arboard = { version = "3", default-features = false }
+bytemuck = { version = "1", features = ["derive"] }
+cosmic-text = "0.19"
+eframe = "0.37"
+omniterm-terminal-host = { path = "../omniterm-desktop/native/terminal-host" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = "symbols"
