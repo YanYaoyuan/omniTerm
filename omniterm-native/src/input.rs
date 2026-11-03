@@ -71,7 +71,7 @@ fn control_or_meta(key: Key, modifiers: Modifiers) -> Option<String> {
     if cfg!(windows) && modifiers.ctrl && modifiers.alt {
         return None;
     }
-    let name = key.name();
+    let name = key.symbol_or_name();
     let character = match name {
         "Space" => ' ',
         _ if name.chars().count() == 1 => name.chars().next()?,

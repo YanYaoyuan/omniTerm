@@ -92,6 +92,53 @@ impl Node {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Direction {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+impl Node {
+    /// The closest pane in a direction, preferring panes that overlap along the other axis.
+    pub fn neighbor_in(&self, from: &str, direction: Direction) -> Option<String> {
+        let (mut panes, mut dividers) = (Vec::new(), Vec::new());
+        self.layout(Rect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 }, &mut Vec::new(), &mut panes, &mut dividers);
+        let origin = panes.iter().find(|(id, _)| id == from)?.1;
+        let epsilon = 1e-6;
+        let center = |rect: &Rect| (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
+        let (ox, oy) = center(&origin);
+        panes
+            .iter()
+            .filter(|(id, _)| id != from)
+            .filter(|(_, rect)| match direction {
+                Direction::Left => rect.x + rect.w <= origin.x + epsilon,
+                Direction::Right => rect.x >= origin.x + origin.w - epsilon,
+                Direction::Up => rect.y + rect.h <= origin.y + epsilon,
+                Direction::Down => rect.y >= origin.y + origin.h - epsilon,
+            })
+            .map(|(id, rect)| {
+                let horizontal = matches!(direction, Direction::Left | Direction::Right);
+                let overlaps = if horizontal {
+                    rect.y < origin.y + origin.h - epsilon && rect.y + rect.h > origin.y + epsilon
+                } else {
+                    rect.x < origin.x + origin.w - epsilon && rect.x + rect.w > origin.x + epsilon
+                };
+                let (x, y) = center(rect);
+                (id, (x - ox).hypot(y - oy) + if overlaps { 0.0 } else { 10.0 })
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(id, _)| id.clone())
+    }
+
+    /// Where focus goes when `closed` leaves `before`: its left or upper neighbor, in this tree.
+    pub fn neighbor(&self, closed: &str, before: &Node) -> Option<String> {
+        let ids = self.panes();
+        [Direction::Left, Direction::Up].into_iter().filter_map(|direction| before.neighbor_in(closed, direction)).find(|id| ids.contains(id))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,6 +165,17 @@ mod tests {
         let tree = Node::Pane("a".into()).split("a", "b", true);
         assert_eq!(tree.remove("b"), Some(Node::Pane("a".into())));
         assert_eq!(Node::Pane("a".into()).remove("a"), None);
+    }
+
+    #[test]
+    fn neighbors_are_found_by_direction() {
+        let tree = Node::Pane("a".into()).split("a", "b", true).split("b", "c", false);
+        assert_eq!(tree.neighbor_in("a", Direction::Right).as_deref(), Some("b"));
+        assert_eq!(tree.neighbor_in("c", Direction::Up).as_deref(), Some("b"));
+        assert_eq!(tree.neighbor_in("c", Direction::Left).as_deref(), Some("a"));
+        assert_eq!(tree.neighbor_in("a", Direction::Left), None);
+        let after = tree.remove("c").unwrap();
+        assert_eq!(after.neighbor("c", &tree).as_deref(), Some("a"));
     }
 
     #[test]

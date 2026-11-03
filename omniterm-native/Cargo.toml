@@ -20,9 +20,12 @@ arboard = { version = "3", default-features = false }
 bytemuck = { version = "1", features = ["derive"] }
 cosmic-text = "0.19"
 eframe = "0.37"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
+rfd = "0.17"
 omniterm-terminal-host = { path = "../omniterm-desktop/native/terminal-host" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
 
 [profile.release]
 opt-level = 3

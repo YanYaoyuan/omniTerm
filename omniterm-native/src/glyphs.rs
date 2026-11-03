@@ -72,10 +72,12 @@ pub struct Fonts {
 }
 
 impl Fonts {
-    pub fn new(size: f32, line_height: f32) -> Self {
+    /// `wanted` lists the families the user chose, tried before the platform's defaults.
+    pub fn new(size: f32, line_height: f32, wanted: &[&str]) -> Self {
         let mut system = FontSystem::new();
-        let family = PREFERRED
+        let family = wanted
             .iter()
+            .chain(PREFERRED)
             .find(|name| system.db().faces().any(|face| face.families.iter().any(|(family, _)| family == *name)))
             .map(|name| name.to_string());
         if let Some(name) = &family {
@@ -95,6 +97,14 @@ impl Fonts {
         };
         fonts.set_size(size);
         fonts
+    }
+
+    /// Changes size and line height together, re-rasterizing only if either changed.
+    pub fn configure(&mut self, size: f32, line_height: f32) {
+        if (size - self.size).abs() > f32::EPSILON || (line_height - self.line_height).abs() > f32::EPSILON {
+            self.line_height = line_height;
+            self.set_size(size);
+        }
     }
 
     pub fn family(&self) -> &str {
@@ -228,7 +238,7 @@ mod tests {
 
     #[test]
     fn the_atlas_packs_rows_and_reports_when_it_is_full() {
-        let mut fonts = Fonts { shelf: Shelf { x: 1, y: 1, row: 0 }, ..Fonts::new(14.0, 1.2) };
+        let mut fonts = Fonts { shelf: Shelf { x: 1, y: 1, row: 0 }, ..Fonts::new(14.0, 1.2, &[]) };
         let first = fonts.allocate(10, 20).unwrap();
         let second = fonts.allocate(10, 5).unwrap();
         assert_eq!((first, second), ((1, 1), (12, 1)));

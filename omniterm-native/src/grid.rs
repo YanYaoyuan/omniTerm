@@ -17,10 +17,7 @@ fn rgba(color: Rgb, alpha: f32) -> [f32; 4] {
     [color.r as f32 / 255.0, color.g as f32 / 255.0, color.b as f32 / 255.0, alpha]
 }
 
-fn mix(a: Rgb, b: Rgb, amount: f32) -> Rgb {
-    let channel = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * amount).round() as u8;
-    Rgb { r: channel(a.r, b.r), g: channel(a.g, b.g), b: channel(a.b, b.b) }
-}
+use crate::theme::mix;
 
 fn solid(x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) -> Instance {
     Instance { rect: [x, y, w, h], color, kind: SOLID, ..Default::default() }
@@ -32,6 +29,10 @@ pub struct Frame<'a> {
     pub focused: bool,
     /// Opacity of the terminal background, so the window's backdrop can show through.
     pub background_alpha: f32,
+    /// An unfocused pane of a split is faded so the focused one stands out.
+    pub dim: bool,
+    /// The blinking cursor's current phase.
+    pub cursor_on: bool,
 }
 
 /// Builds every quad for one pane: background runs, glyphs, decorations, then the cursor.
@@ -45,9 +46,11 @@ pub fn build(term: &Term<Listener>, fonts: &mut Fonts, frame: &Frame) -> Vec<Ins
     let rows = term.screen_lines() as i32;
     let mut out = Vec::with_capacity(term.columns() * term.screen_lines() / 2 + 16);
     let mut glyphs = Vec::with_capacity(term.columns() * term.screen_lines());
-    out.push(solid(0.0, 0.0, frame.size[0], frame.size[1], rgba(theme.background, frame.background_alpha)));
+    if frame.background_alpha > 0.0 {
+        out.push(solid(0.0, 0.0, frame.size[0], frame.size[1], rgba(theme.background, frame.background_alpha)));
+    }
 
-    let cursor_visible = content.mode.contains(TermMode::SHOW_CURSOR) && content.cursor.shape != CursorShape::Hidden;
+    let cursor_visible = frame.cursor_on && content.mode.contains(TermMode::SHOW_CURSOR) && content.cursor.shape != CursorShape::Hidden;
     let cursor_row = content.cursor.point.line.0 + offset;
     let cursor_column = content.cursor.point.column.0;
     let block_cursor = cursor_visible && frame.focused && matches!(content.cursor.shape, CursorShape::Block);
@@ -85,6 +88,9 @@ pub fn build(term: &Term<Listener>, fonts: &mut Fonts, frame: &Frame) -> Vec<Ins
         }
         if flags.contains(Flags::DIM) {
             fg = mix(fg, bg, 0.34);
+        }
+        if frame.dim {
+            fg = mix(fg, theme.background, 0.38);
         }
         if selection.is_some_and(|range| range.contains(indexed.point)) {
             bg = theme.selection;
@@ -183,10 +189,11 @@ mod tests {
     #[test]
     fn text_backgrounds_and_the_cursor_become_quads() {
         let (sender, _receiver) = channel();
-        let terminal = Terminal::new("t".into(), Size { cols: 10, rows: 2 }, sender);
+        let options = crate::terminal::Options { scrollback: 100, cursor: CursorShape::Block, blinking: false };
+        let terminal = Terminal::new("t".into(), Size { cols: 10, rows: 2 }, options, sender);
         terminal.feed(b"\x1b[41mab\x1b[0m c");
-        let mut fonts = Fonts::new(14.0, 1.2);
-        let frame = Frame { theme: &THEMES[0], size: [200.0, 60.0], focused: true, background_alpha: 1.0 };
+        let mut fonts = Fonts::new(14.0, 1.2, &[]);
+        let frame = Frame { theme: &THEMES[0], size: [200.0, 60.0], focused: true, background_alpha: 1.0, dim: false, cursor_on: true };
         let quads = build(&terminal.lock(), &mut fonts, &frame);
         let solids: Vec<_> = quads.iter().filter(|quad| quad.kind == SOLID).collect();
         // Pane background, the red run covering both cells, and the block cursor.

@@ -35,7 +35,8 @@ fn rate(bytes: usize, seconds: f64) -> f64 {
 pub fn run(megabytes: usize) -> serde_json::Value {
     let data = workload(megabytes);
     let (sender, _receiver) = channel();
-    let terminal = Terminal::new("bench".into(), Size { cols: 200, rows: 60 }, sender);
+    let options = crate::terminal::Options { scrollback: 10_000, cursor: alacritty_terminal::vte::ansi::CursorShape::Beam, blinking: false };
+    let terminal = Terminal::new("bench".into(), Size { cols: 200, rows: 60 }, options, sender);
     let started = Instant::now();
     for chunk in data.chunks(64 * 1024) {
         terminal.feed(chunk);
@@ -49,9 +50,9 @@ pub fn run(megabytes: usize) -> serde_json::Value {
     }
     let screen_model = rate(data.len(), started.elapsed().as_secs_f64());
 
-    let mut fonts = Fonts::new(14.0, 1.22);
+    let mut fonts = Fonts::new(14.0, 1.22, &[]);
     let size = [200.0 * fonts.cell.width + 16.0, 60.0 * fonts.cell.height + 16.0];
-    let frame = Frame { theme: &THEMES[0], size, focused: true, background_alpha: 1.0 };
+    let frame = Frame { theme: &THEMES[0], size, focused: true, background_alpha: 1.0, dim: false, cursor_on: true };
     let started = Instant::now();
     let first = grid::build(&terminal.lock(), &mut fonts, &frame).len();
     let cold = started.elapsed().as_secs_f64() * 1000.0;
