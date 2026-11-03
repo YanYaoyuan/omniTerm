@@ -144,6 +144,8 @@ pub enum Intent {
     ClearBackground,
     Window(ViewportCommand),
     SetTheme(&'static str),
+    /// A pane dragged onto a side of another pane, or onto the tab strip (`None`) for a tab.
+    MovePane { id: String, target: Option<(String, crate::layout::Direction)> },
     OpenProcesses,
     ResetDock,
 }
@@ -187,6 +189,7 @@ pub struct App {
     processes: process_window::ProcessWindow,
     dock: dock::Dock,
     dragging_panel: Option<dock::Panel>,
+    dragging_pane: Option<String>,
     agent_state: agent_panel::AgentState,
     workspace_layout: Option<serde_json::Value>,
     file_panels: HashMap<String, remote_panel::PanelState>,
@@ -276,6 +279,7 @@ impl App {
             processes: process_window::ProcessWindow::default(),
             dock: ui_state.dock.clone().unwrap_or_default(),
             dragging_panel: None,
+            dragging_pane: None,
             agent_state: agent_panel::AgentState::with_profile(ui_state.agent_profile.clone()),
             workspace_layout: None,
             file_panels: HashMap::new(),
@@ -821,6 +825,7 @@ impl App {
             Intent::Window(command) => ctx.send_viewport_cmd(command),
             Intent::SetTheme(id) => self.settings.theme = id.to_string(),
             Intent::OpenProcesses => self.open_processes(),
+            Intent::MovePane { id, target } => self.move_pane(&id, target),
             Intent::ResetDock => self.dock = dock::Dock::default(),
         }
     }
@@ -943,6 +948,46 @@ impl App {
         if let Ok(json) = serde_json::to_vec(&state) {
             let _ = paths::write_atomically(&paths::file(UI_STATE), &json);
         }
+    }
+
+    /// Moves a pane, with its live session, beside another pane or into a tab of its own.
+    fn move_pane(&mut self, id: &str, target: Option<(String, crate::layout::Direction)>) {
+        if target.as_ref().is_some_and(|(other, _)| other == id) || !self.panes.contains_key(id) {
+            return;
+        }
+        let Some(source) = self.tab_of(id) else { return };
+        if target.is_none() && self.tab(source).is_some_and(|tab| tab.root.panes().len() == 1) {
+            return;
+        }
+        // Out of its tab first; an emptied tab goes away.
+        if let Some(tab) = self.tab_mut(source) {
+            match tab.root.remove(id) {
+                Some(root) => {
+                    if tab.focus == id {
+                        tab.focus = root.panes()[0].clone();
+                    }
+                    tab.zoomed &= root.panes().len() > 1;
+                    tab.root = root;
+                }
+                None => self.drop_tab(source),
+            }
+        }
+        match target {
+            Some((other, side)) => {
+                if let Some(destination) = self.tab_of(&other).and_then(|tab| self.tab_mut(tab)) {
+                    destination.root = destination.root.insert_beside(&other, id, side);
+                    destination.focus = id.to_string();
+                    destination.zoomed = false;
+                    self.active = Some(destination.id);
+                }
+            }
+            None => {
+                let tab = Tab { id: next_counter(&mut self.next_id), root: Node::Pane(id.to_string()), focus: id.to_string(), title: String::new(), broadcast: false, zoomed: false };
+                self.active = Some(tab.id);
+                self.tabs.push(tab);
+            }
+        }
+        self.mark_workspace();
     }
 
     fn panel_visible(&self, panel: dock::Panel) -> bool {

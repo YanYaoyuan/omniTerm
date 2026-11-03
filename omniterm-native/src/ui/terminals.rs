@@ -204,6 +204,17 @@ fn tab_strip(app: &mut App, ui: &mut Ui, rect: Rect, intents: &mut Vec<Intent>) 
     if ui.input(|input| input.pointer.any_released()) {
         ui.ctx().data_mut(|data| data.remove::<u64>(Id::unique("dragged-tab")));
     }
+    // A pane dropped on the tab strip becomes a tab of its own.
+    if let Some(dragged) = app.dragging_pane.clone()
+        && ui.input(|input| input.pointer.hover_pos()).is_some_and(|pointer| rect.contains(pointer))
+    {
+        ui.painter().rect(rect.shrink(2.0), 4.0, alpha(palette.tokens.accent, 0.1), Stroke::new(1.5, alpha(palette.tokens.accent, 0.6)), egui::StrokeKind::Inside);
+        ui.painter().text(rect.center(), Align2::CENTER_CENTER, "放到这里成为新标签", FontId::proportional(11.0), palette.text_soft());
+        if ui.input(|input| input.pointer.any_released()) {
+            intents.push(Intent::MovePane { id: dragged, target: None });
+            app.dragging_pane = None;
+        }
+    }
     let new_tab = Rect::from_center_size(Pos2::new(tabs_rect.right() + 22.0, rect.center().y), Vec2::splat(28.0));
     let response = ui.put(new_tab, egui::Button::new(icon(icons::PLUS, 17.0).color(palette.muted())).frame(false)).on_hover_text(format!("新建终端（{}）", shortcuts::label(Action::NewTab, app.mac)));
     if response.clicked() {
@@ -381,6 +392,33 @@ fn stack(app: &mut App, ui: &mut Ui, area: Rect, intents: &mut Vec<Intent>, moda
     }
     for divider in dividers {
         drag_divider(ui, area, tab_id, divider, intents);
+    }
+    // A dragged pane lands on the nearest edge of the pane under the pointer.
+    if let Some(dragged) = app.dragging_pane.clone() {
+        let pointer = ui.input(|input| input.pointer.hover_pos());
+        let released = ui.input(|input| input.pointer.any_released());
+        ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+        for (id, fraction) in &panes {
+            let rect = pane_rect(area, *fraction);
+            if *id == dragged || !pointer.is_some_and(|pointer| rect.contains(pointer)) {
+                continue;
+            }
+            let pointer = pointer.expect("checked");
+            let side = crate::layout::drop_side((pointer.x - rect.left()) / rect.width(), (pointer.y - rect.top()) / rect.height());
+            let preview = match side {
+                crate::layout::Direction::Left => Rect::from_min_max(rect.min, Pos2::new(rect.center().x, rect.bottom())),
+                crate::layout::Direction::Right => Rect::from_min_max(Pos2::new(rect.center().x, rect.top()), rect.max),
+                crate::layout::Direction::Up => Rect::from_min_max(rect.min, Pos2::new(rect.right(), rect.center().y)),
+                crate::layout::Direction::Down => Rect::from_min_max(Pos2::new(rect.left(), rect.center().y), rect.max),
+            };
+            ui.painter().rect(preview.shrink(4.0), 6.0, alpha(palette.tokens.accent, 0.14), Stroke::new(1.5, alpha(palette.tokens.accent, 0.7)), egui::StrokeKind::Inside);
+            if released {
+                intents.push(Intent::MovePane { id: dragged.clone(), target: Some((id.clone(), side)) });
+            }
+        }
+        if released {
+            app.dragging_pane = None;
+        }
     }
 }
 
@@ -592,6 +630,17 @@ fn pane(app: &mut App, ui: &mut Ui, id: &str, rect: Rect, focused: bool, many: b
     ui.painter().add(egui_wgpu::Callback::new_paint_callback(rect, paint));
     if many && focused {
         ui.painter().rect_stroke(rect, 4.0, Stroke::new(1.0, alpha(palette.tokens.accent, 0.33)), egui::StrokeKind::Inside);
+    }
+    // The grip that moves this pane, shown while the pointer is over it.
+    let grip = Rect::from_min_size(Pos2::new(rect.right() - 26.0, rect.top() + 4.0), Vec2::splat(20.0));
+    let grip_response = ui.interact(grip, widget.with("grip"), Sense::drag());
+    if response.hovered() || grip_response.hovered() || grip_response.dragged() {
+        ui.painter().rect(grip, 4.0, palette.surface(), Stroke::new(1.0, palette.border), egui::StrokeKind::Inside);
+        ui.painter().text(grip.center(), Align2::CENTER_CENTER, icons::DOTS_SIX_VERTICAL, FontId::new(13.0, egui::FontFamily::Name(style::ICONS.into())), palette.muted());
+    }
+    let grip_response = grip_response.on_hover_cursor(CursorIcon::Grab).on_hover_text("拖动以移动这个窗格：放到另一个窗格的边缘，或拖到标签栏成为新标签");
+    if grip_response.drag_started() {
+        app.dragging_pane = Some(id.to_string());
     }
 
     // The input method composes at the cursor; what it composes shows there until committed.

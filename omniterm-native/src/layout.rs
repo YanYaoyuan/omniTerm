@@ -92,6 +92,37 @@ impl Node {
     }
 }
 
+/// Which side of a pane a dropped pane lands on: the edge nearest the pointer.
+pub fn drop_side(x: f32, y: f32) -> Direction {
+    let (left, right, up, down) = (x, 1.0 - x, y, 1.0 - y);
+    let nearest = left.min(right).min(up).min(down);
+    if nearest == left {
+        Direction::Left
+    } else if nearest == right {
+        Direction::Right
+    } else if nearest == up {
+        Direction::Up
+    } else {
+        Direction::Down
+    }
+}
+
+impl Node {
+    /// Puts `new` on `side` of `target`, sharing its space equally.
+    pub fn insert_beside(&self, target: &str, new: &str, side: Direction) -> Self {
+        match self {
+            Self::Pane(id) if id == target => {
+                let row = matches!(side, Direction::Left | Direction::Right);
+                let pane = Self::Pane(new.to_string());
+                let children = if matches!(side, Direction::Left | Direction::Up) { [pane, self.clone()] } else { [self.clone(), pane] };
+                Self::Split { row, ratio: 0.5, children: Box::new(children) }
+            }
+            Self::Pane(_) => self.clone(),
+            Self::Split { row, ratio, children } => Self::Split { row: *row, ratio: *ratio, children: Box::new([children[0].insert_beside(target, new, side), children[1].insert_beside(target, new, side)]) },
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
     Left,
@@ -176,6 +207,16 @@ mod tests {
         assert_eq!(tree.neighbor_in("a", Direction::Left), None);
         let after = tree.remove("c").unwrap();
         assert_eq!(after.neighbor("c", &tree).as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn dropped_panes_land_on_the_nearest_edge() {
+        assert_eq!(drop_side(0.1, 0.5), Direction::Left);
+        assert_eq!(drop_side(0.5, 0.95), Direction::Down);
+        let tree = Node::Pane("a".into()).insert_beside("a", "b", Direction::Up);
+        assert_eq!(tree.panes(), ["b", "a"]);
+        let Node::Split { row, .. } = tree else { panic!() };
+        assert!(!row);
     }
 
     #[test]
