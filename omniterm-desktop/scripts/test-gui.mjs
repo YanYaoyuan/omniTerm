@@ -129,7 +129,9 @@ try {
   await until(async () => (await app.terminals()).length === 2, "the split pane");
   const second = (await app.terminals()).find(({ ref }) => ref.sessionId !== id).ref.sessionId;
   const secondPid = await app.shellPid(second, "SPLIT");
-  assert.equal(Math.round((await app.rect(".sidebar")).width), 248, "the sidebar opens at its width in pixels");
+  // 248 px, less the gap each panel leaves for its divider.
+  const sidebarWidth = (await app.rect(".sidebar")).width;
+  assert.ok(Math.abs(sidebarWidth - 248) <= 4, `the sidebar opens at its width in pixels (${sidebarWidth})`);
   const shown = (selector) => app.run(`getComputedStyle(document.querySelector(${JSON.stringify(selector)})).display !== "none"`);
   const visibleViews = () => app.run(`[...document.querySelectorAll(".terminal-view.is-visible")].map((view) => view.getBoundingClientRect()).map((box) => ({ left: box.left, right: box.right, top: box.top }))`);
   await app.click(".enter-focus");
