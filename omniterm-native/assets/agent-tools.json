@@ -1,0 +1,216 @@
+[
+ {
+  "type": "function",
+  "name": "workspace_list_terminals",
+  "description": "List the open terminals with their type, state, tab position and which are selected for context or as execution targets. Contains no terminal output.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {},
+   "required": [],
+   "additionalProperties": false
+  }
+ },
+ {
+  "type": "function",
+  "name": "terminal_read_context",
+  "description": "Read recent screen output of a terminal selected as context. Pass sinceSeq to read only output after an earlier seqEnd.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "terminal": {
+     "type": "string",
+     "description": "Terminal short ID or full session ID from workspace_list_terminals."
+    },
+    "sinceSeq": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "maxLines": {
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 2000
+    }
+   },
+   "required": [
+    "terminal"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "type": "function",
+  "name": "terminal_search_output",
+  "description": "Search the retained output of a terminal selected as context.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "terminal": {
+     "type": "string",
+     "description": "Terminal short ID or full session ID from workspace_list_terminals."
+    },
+    "query": {
+     "type": "string"
+    },
+    "maxMatches": {
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 50
+    }
+   },
+   "required": [
+    "terminal",
+    "query"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "type": "function",
+  "name": "terminal_propose_command",
+  "description": "Propose a shell command for an execution target. This writes nothing: the user sees a card naming the target and decides. Then call terminal_execute.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "terminal": {
+     "type": "string",
+     "description": "Terminal short ID or full session ID from workspace_list_terminals."
+    },
+    "command": {
+     "type": "string"
+    },
+    "reason": {
+     "type": "string",
+     "description": "One sentence for the approval card."
+    },
+    "timeoutMs": {
+     "type": "integer",
+     "minimum": 1000,
+     "maximum": 900000
+    }
+   },
+   "required": [
+    "terminal",
+    "command",
+    "reason"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "type": "function",
+  "name": "terminal_execute",
+  "description": "Send a proposed command once the user approves it, then wait for its result. Status staged means it was typed into the terminal for the user to submit with Enter, so it has not run yet. A command is never re-sent: if the outcome is unknown, inspect the terminal instead of retrying.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "operationId": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "operationId"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "type": "function",
+  "name": "terminal_propose_program_input",
+  "description": "Propose text for a program already running in an execution target, such as a REPL, editor or another agent. This is not for shell commands: it is refused at a shell prompt. The user sees a separate card and decides whether Enter is pressed. Then call terminal_execute.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "terminal": {
+     "type": "string",
+     "description": "Terminal short ID or full session ID from workspace_list_terminals."
+    },
+    "text": {
+     "type": "string"
+    },
+    "appendEnter": {
+     "type": "boolean",
+     "description": "Whether you suggest pressing Enter. The user makes the final choice."
+    },
+    "reason": {
+     "type": "string",
+     "description": "One sentence for the approval card."
+    }
+   },
+   "required": [
+    "terminal",
+    "text",
+    "appendEnter",
+    "reason"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "type": "function",
+  "name": "monitor_propose",
+  "description": "Propose a persistent monitor of a process, thread, log or shared-memory region on a host. It reads the host directly, not a terminal screen, and keeps sampling without further messages. The user must approve it before anything is collected. It cannot take actions; the user adds those in the monitoring view.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "host": {
+     "type": "string",
+     "description": "\"local\", or the short ID of an SSH terminal."
+    },
+    "label": {
+     "type": "string"
+    },
+    "target": {
+     "type": "object",
+     "description": "{kind:\"process\",pid|name}, {kind:\"thread\",pid,tid}, {kind:\"log\",path}, or {kind:\"sharedMemory\",name,access:\"posix-shm\",layout:[{field,offset,type}]}"
+    },
+    "conditions": {
+     "type": "array",
+     "items": {
+      "type": "object"
+     },
+     "description": "[{field,op,value,forSamples}], with op one of > >= < <= == != contains gone."
+    },
+    "intervalSeconds": {
+     "type": "number"
+    },
+    "durationMinutes": {
+     "type": "number"
+    }
+   },
+   "required": [
+    "host",
+    "target",
+    "conditions"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "type": "function",
+  "name": "monitor_status",
+  "description": "List monitors with their status, latest numeric sample, trigger counts and recent history. Log text is not included.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {},
+   "required": [],
+   "additionalProperties": false
+  }
+ },
+ {
+  "type": "function",
+  "name": "terminal_interrupt",
+  "description": "Cancel an operation of this task. A running command receives Ctrl+C on its original target.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "operationId": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "operationId"
+   ],
+   "additionalProperties": false
+  }
+ }
+]

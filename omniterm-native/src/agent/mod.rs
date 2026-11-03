@@ -3,3 +3,6 @@
 //! terminals and run approved commands through the terminal host's broker.
 
 pub mod engine;
+pub mod providers;
+pub mod runtime;
+pub mod service;

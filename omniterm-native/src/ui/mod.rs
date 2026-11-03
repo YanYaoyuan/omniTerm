@@ -2,6 +2,7 @@
 //! The main window. Drawing code never changes state directly: it records `Intent`s, which
 //! are applied once the frame is laid out, so every change goes through one place.
 
+mod agent_panel;
 mod chrome;
 mod dialogs;
 mod palette;
@@ -172,6 +173,9 @@ pub struct App {
     seen_hosts: HashSet<String>,
     workspace_dirty: Option<Instant>,
     remotes: Arc<crate::remote::manager::Manager>,
+    agent: Arc<crate::agent::service::Service>,
+    agent_state: agent_panel::AgentState,
+    workspace_layout: Option<serde_json::Value>,
     file_panels: HashMap<String, remote_panel::PanelState>,
     sidebar_files: bool,
     watched: Option<String>,
@@ -193,6 +197,7 @@ struct UiState {
     agent_hidden: bool,
     sidebar_width: Option<f32>,
     seen_ssh_hosts: Vec<String>,
+    agent_profile: Option<String>,
 }
 
 fn next_counter(counter: &mut u64) -> u64 {
@@ -209,6 +214,8 @@ impl App {
         let backend = Backend::new(move || context.request_repaint(), crate::remote::control_path);
         let context = cc.egui_ctx.clone();
         let remotes = Arc::new(crate::remote::manager::Manager::new(move || context.request_repaint()));
+        let context = cc.egui_ctx.clone();
+        let agent = crate::agent::service::Service::new(backend.host().clone(), paths::file("agent-home"), move || context.request_repaint());
         let scale = cc.egui_ctx.pixels_per_point();
         let ui_state: UiState = std::fs::read(paths::file(UI_STATE)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
         let store = Store::new(paths::file("profiles.json"));
@@ -246,6 +253,9 @@ impl App {
             seen_hosts: ui_state.seen_ssh_hosts.into_iter().collect(),
             workspace_dirty: None,
             remotes,
+            agent,
+            agent_state: agent_panel::AgentState::with_profile(ui_state.agent_profile.clone()),
+            workspace_layout: None,
             file_panels: HashMap::new(),
             sidebar_files: true,
             watched: None,
@@ -629,7 +639,10 @@ impl App {
                 let selection = self.focused().and_then(|pane| pane.session.terminal.selection_text()).map(|text| text.trim().to_string()).filter(|text| !text.is_empty());
                 match selection {
                     None => self.notify("请先在终端中选择要附加给 Agent 的内容。", true),
-                    Some(_) => {
+                    Some(selection) => {
+                        if let Some(id) = self.focused().map(|pane| pane.id().to_string()) {
+                            self.agent_state.attach(&id, selection);
+                        }
                         self.agent_visible = true;
                         self.notify("已附加选中内容，随下一条消息发送给 omniTerm Agent。", false);
                     }
@@ -843,7 +856,11 @@ impl App {
                         self.mark_workspace();
                     }
                 }
-                Notice::Host(_) => {}
+                Notice::Host(value) => {
+                    if value["event"] == "operation.update" {
+                        self.agent.operation_changed(value["params"].clone());
+                    }
+                }
             }
         }
     }
@@ -897,7 +914,7 @@ impl App {
     }
 
     fn save_ui_state(&self) {
-        let state = UiState { sidebar_hidden: !self.sidebar_visible, agent_hidden: !self.agent_visible, sidebar_width: Some(self.sidebar_width), seen_ssh_hosts: self.seen_hosts.iter().cloned().collect() };
+        let state = UiState { sidebar_hidden: !self.sidebar_visible, agent_hidden: !self.agent_visible, sidebar_width: Some(self.sidebar_width), seen_ssh_hosts: self.seen_hosts.iter().cloned().collect(), agent_profile: self.agent_state.profile.clone() };
         if let Ok(json) = serde_json::to_vec(&state) {
             let _ = paths::write_atomically(&paths::file(UI_STATE), &json);
         }
@@ -925,6 +942,24 @@ impl App {
             remote.watch_metrics(true);
         }
         self.watched = focused;
+    }
+
+    /// The host keeps the live sessions; this tells it where they sit and which has focus,
+    /// so the Agent can name terminals by tab and pane.
+    fn publish_layout(&mut self) {
+        let tabs: Vec<serde_json::Value> = self
+            .tabs
+            .iter()
+            .map(|tab| {
+                let panes: Vec<serde_json::Value> = tab.root.panes().iter().map(|id| serde_json::json!({ "sessionId": id, "title": self.panes.get(id).map(|pane| pane.title.clone()).unwrap_or_default() })).collect();
+                serde_json::json!({ "id": tab.id.to_string(), "title": tab.title, "panes": panes })
+            })
+            .collect();
+        let layout = serde_json::json!({ "windowId": "main", "focusedSessionId": self.focused().map(|pane| pane.id().to_string()), "activeTabId": self.active.map(|id| id.to_string()), "tabs": tabs });
+        if self.workspace_layout.as_ref() != Some(&layout) {
+            let _ = self.backend.request("workspace.update", layout.clone());
+            self.workspace_layout = Some(layout);
+        }
     }
 
     fn scene(&self) -> Scene {
@@ -991,6 +1026,10 @@ impl eframe::App for App {
         if self.sidebar_visible && !self.focus_mode {
             sidebar::show(self, ui, &mut intents);
         }
+        if self.agent_visible && !self.focus_mode {
+            let palette = style::palette(ui);
+            egui::Panel::right("agent").resizable(true).default_size(400.0).size_range(300.0..=760.0).frame(egui::Frame::new().fill(palette.panel_soft).inner_margin(egui::Margin::symmetric(10, 0))).show(ui, |ui| agent_panel::show(self, ui, &mut intents));
+        }
         egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| terminals::show(self, ui, &mut intents, modal));
         dialogs::show(self, &ctx, &mut intents);
         palette::show(self, &ctx, &mut intents);
@@ -1005,9 +1044,11 @@ impl eframe::App for App {
             self.save_workspace(true);
             self.save_ui_state();
             self.remotes.shutdown();
+            self.agent.shutdown();
             self.backend.shutdown();
         }
         self.watch_metrics();
+        self.publish_layout();
         if let Some(smoke) = self.smoke.as_mut() {
             let first = self.tabs.first().and_then(|tab| self.panes.get(&tab.focus)).map(|pane| (pane.session.terminal.clone(), self.render_state.adapter.get_info().backend));
             smoke.tick(&ctx, &self.backend, first, self.fonts.family());
@@ -1021,6 +1062,7 @@ impl eframe::App for App {
         self.save_workspace(true);
         self.save_ui_state();
         self.remotes.shutdown();
+        self.agent.shutdown();
         self.backend.shutdown();
     }
 }

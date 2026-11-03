@@ -20,6 +20,7 @@ arboard = { version = "3", default-features = false }
 bytemuck = { version = "1", features = ["derive"] }
 cosmic-text = "0.19"
 eframe = "0.37"
+keyring = { version = "3.6", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 rfd = "0.17"
 omniterm-terminal-host = { path = "../omniterm-desktop/native/terminal-host" }
