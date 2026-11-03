@@ -24,6 +24,9 @@ export const SHORTCUTS = {
   broadcast: { label: "广播输入到当前标签所有窗格", mac: { code: "KeyI", alt: true }, other: { code: "KeyI", shift: true } },
   sendToAgent: { label: "附加选中内容到 omniTerm Agent", mac: { code: "KeyA", shift: true }, other: { code: "KeyA", shift: true } },
   toggleAgent: { label: "显示 / 隐藏 omniTerm Agent 面板", mac: { code: "KeyJ" }, other: { code: "KeyJ", shift: true } },
+  toggleSidebar: { label: "显示 / 隐藏工作区侧栏", mac: { code: "KeyB" }, other: { code: "KeyB", shift: true } },
+  // The platform's own full-screen key: F11 alone, and Control+Command+F on macOS.
+  toggleFullscreen: { label: "全屏终端（隐藏其他面板）", mac: { code: "KeyF", ctrl: true }, other: { code: "F11", bare: true } },
   fontBigger: { label: "放大字体", mac: { code: "Equal" }, other: { code: "Equal", ctrlOnly: true } },
   fontSmaller: { label: "缩小字体", mac: { code: "Minus" }, other: { code: "Minus", ctrlOnly: true } },
   fontReset: { label: "重置字体大小", mac: { code: "Digit0" }, other: { code: "Digit0", ctrlOnly: true } },
@@ -46,8 +49,9 @@ export function tabNumber(event, platform) {
 
 function matches(binding, event, platform) {
   if (event.code !== binding.code) return false;
+  if (binding.bare) return !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
   if (isMac(platform)) {
-    return event.metaKey && !event.ctrlKey && event.shiftKey === Boolean(binding.shift) && event.altKey === Boolean(binding.alt);
+    return event.metaKey && event.ctrlKey === Boolean(binding.ctrl) && event.shiftKey === Boolean(binding.shift) && event.altKey === Boolean(binding.alt);
   }
   if (event.metaKey || !event.ctrlKey) return false;
   if (binding.ctrlOnly) return event.altKey === Boolean(binding.alt) && (event.shiftKey === Boolean(binding.shift) || binding.code === "Equal");
@@ -74,7 +78,8 @@ export function shortcutLabel(name, platform) {
   if (!definition) return "";
   const binding = isMac(platform) ? definition.mac : definition.other;
   const key = codeLabels[binding.code] || binding.code.replace(/^(Key|Digit)/, "");
-  if (isMac(platform)) return `${binding.alt ? "⌥" : ""}${binding.shift ? "⇧" : ""}⌘${key}`;
+  if (binding.bare) return key;
+  if (isMac(platform)) return `${binding.ctrl ? "⌃" : ""}${binding.alt ? "⌥" : ""}${binding.shift ? "⇧" : ""}⌘${key}`;
   const parts = ["Ctrl"];
   if (binding.alt) parts.push("Alt");
   if (binding.shift || !binding.ctrlOnly) parts.push("Shift");

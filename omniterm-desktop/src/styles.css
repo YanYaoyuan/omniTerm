@@ -53,6 +53,14 @@ svg { flex-shrink: 0; }
 ::-webkit-scrollbar-thumb { background: rgb(var(--ink) / .2); border-radius: 5px; }
 ::-webkit-scrollbar-thumb:hover { background: rgb(var(--ink) / .35); }
 .app-shell { width: 100vw; height: 100dvh; min-width: 850px; min-height: 550px; display: grid; grid-template-rows: 43px minmax(0, 1fr) 27px; overflow: hidden; position: relative; isolation: isolate; }
+/* One veil for every surface: nested bars add nothing, so panels and terminals match. */
+.app-shell.is-clear { --panel: transparent; --panel-soft: transparent; --panel-bg: transparent; }
+.app-shell.is-clear :is(.titlebar, .statusbar, .dock-panel, .terminal-view.is-docked) { background: var(--veil); }
+.app-shell.is-clear .tab.active { background: rgb(var(--ink) / .07); }
+/* Focus: the terminals fill the screen, with only their tabs left above them. */
+.app-shell.is-focus { grid-template-rows: minmax(0, 1fr); }
+.app-shell.is-focus :is(.titlebar, .statusbar, .workspace-toolbar, .terminal-footnote) { display: none; }
+.exit-focus { margin-left: 4px; color: var(--accent); }
 .titlebar { display: flex; align-items: center; border-bottom: 1px solid var(--border); background: var(--panel); -webkit-app-region: drag; position: relative; }
 .platform-win32 .titlebar, .platform-linux .titlebar, .process-titlebar {
   padding-left: env(titlebar-area-x, 0px);

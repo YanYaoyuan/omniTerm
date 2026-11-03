@@ -129,6 +129,19 @@ try {
   await until(async () => (await app.terminals()).length === 2, "the split pane");
   const second = (await app.terminals()).find(({ ref }) => ref.sessionId !== id).ref.sessionId;
   const secondPid = await app.shellPid(second, "SPLIT");
+  assert.equal(Math.round((await app.rect(".sidebar")).width), 248, "the sidebar opens at its width in pixels");
+  const shown = (selector) => app.run(`getComputedStyle(document.querySelector(${JSON.stringify(selector)})).display !== "none"`);
+  const visibleViews = () => app.run(`[...document.querySelectorAll(".terminal-view.is-visible")].map((view) => view.getBoundingClientRect()).map((box) => ({ left: box.left, right: box.right, top: box.top }))`);
+  await app.click(".enter-focus");
+  await until(async () => !(await shown(".sidebar")) && !(await shown(".titlebar")) && !(await shown(".monitor-panel")), "the other panels to step aside");
+  const fullViews = await visibleViews();
+  const windowWidth = await app.run("window.innerWidth");
+  assert.equal(fullViews.length, 2, "both panes stay on screen together");
+  assert.ok(Math.min(...fullViews.map(({ left }) => left)) < 4 && Math.max(...fullViews.map(({ right }) => right)) > windowWidth - 4, "the panes span the whole window");
+  await app.screenshot("1b-full-screen-terminals");
+  await app.click(".exit-focus");
+  await until(async () => (await shown(".sidebar")) && (await shown(".titlebar")), "the panels to return");
+  step("full-screen terminals hide every other panel, keep all panes, and give them back");
 
   await app.click(".agent-scope .scope-chip");
   await until(() => app.run(`Boolean(document.querySelector(".terminal-picker"))`), "the terminal picker");

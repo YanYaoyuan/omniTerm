@@ -124,6 +124,11 @@ const providerState = () => ({
 
 function registerHandlers() {
   const handlers = {
+    "set-full-screen": (enabled) => {
+      if (!window || window.isDestroyed()) return false;
+      window.setFullScreen(enabled === true);
+      return window.isFullScreen();
+    },
     "set-window-theme": (id) => {
       chromeTheme = windowTheme(id);
       nativeTheme.themeSource = chromeTheme.dark ? "dark" : "light";
@@ -311,6 +316,8 @@ function createWindow() {
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event, url) => { if (url !== rendererUrl) event.preventDefault(); });
   window.webContents.on("will-redirect", (event) => event.preventDefault());
+  window.on("enter-full-screen", () => send("omniterm:full-screen", true));
+  window.on("leave-full-screen", () => send("omniterm:full-screen", false));
   window.webContents.on("will-attach-webview", (event) => event.preventDefault());
   const allowClipboard = (contents, permission, details) => contents === window?.webContents && details.isMainFrame === true && details.requestingUrl === rendererUrl && ["clipboard-read", "clipboard-sanitized-write"].includes(permission);
   window.webContents.session.setPermissionRequestHandler((contents, permission, callback, details) => callback(allowClipboard(contents, permission, details)));

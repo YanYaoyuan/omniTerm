@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld("omniterm", Object.freeze({
   getAppInfo: () => invoke("omniterm:get-app-info"),
   setWindowTheme: (id) => invoke("omniterm:set-window-theme", id),
   onWindowTheme: (callback) => subscribe("omniterm:window-theme", callback),
+  setFullScreen: (enabled) => invoke("omniterm:set-full-screen", enabled === true),
+  onFullScreen: (callback) => subscribe("omniterm:full-screen", callback),
   chooseDirectory: () => invoke("omniterm:choose-directory"),
   createSession: (request) => invoke("omniterm:create-session", request),
   startSession: (id) => invoke("omniterm:start-session", id),

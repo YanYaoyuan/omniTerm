@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
-  ArrowDown, ArrowUp, ArrowsLeftRight, ArrowsOut, ArrowsIn, Broadcast, CaretRight, Check, Circle,
+  ArrowDown, ArrowUp, ArrowsLeftRight, ArrowsOut, ArrowsIn, CornersOut, Broadcast, CaretRight, Check, Circle,
   CircleNotch, Command, Copy, Cpu, DotsSixVertical, DotsThree, FolderOpen, FolderSimple,
   GearSix, HardDrives, MagnifyingGlass, Monitor, PaperPlaneTilt, Palette, PencilSimple,
   PlugsConnected, Plus, Robot, SidebarSimple, Stack, SquareSplitHorizontal, SquareSplitVertical, TerminalWindow, Trash, X,
@@ -14,7 +14,7 @@ import { CommandPalette } from "./CommandPalette.jsx";
 import { MetricsBar, SftpPanel } from "./RemotePanels.jsx";
 import { createRemoteStore } from "./remote-utils.js";
 import { isTerminalReply } from "./terminal-utils.js";
-import { DOCK_KEY, computeLayout, defaultDock, dockedTerminal, dockedTerminals, dropSide, equalize, insertPane, moveDockPanel, movePaneInTabs, neighborPane, pane, paneIds, parseDock, pruneDock, removePane, setRatio, splitPane, storableDock, takePaneFromTabs, visibleDock } from "./layout.js";
+import { DOCK_KEY, computeLayout, pinPanels, resizeSplit, defaultDock, dockedTerminal, dockedTerminals, dropSide, equalize, insertPane, moveDockPanel, movePaneInTabs, neighborPane, pane, paneIds, parseDock, pruneDock, removePane, setRatio, splitPane, storableDock, takePaneFromTabs, visibleDock } from "./layout.js";
 import { SHORTCUTS, matchShortcut, shortcutLabel, tabCycle, tabNumber } from "./shortcuts.js";
 import { THEMES, backdrop, themeFor, themeTokens } from "./themes.js";
 import { WORKSPACE_KEY, parseWorkspace, restoreTree, serializeWorkspace } from "./workspace.js";
@@ -26,7 +26,7 @@ const ignoreRemote = () => () => {};
 export const defaults = {
   fontSize: 13, fontFamily: "system", lineHeight: 1.22, scrollback: 10000, cursorBlink: true, cursorStyle: "bar",
   theme: "midnight", gpu: true, copyOnSelect: false, optionAsMeta: false, dimInactive: true, restoreWorkspace: true, remotePanels: true,
-  sshConfigPrompt: true, backgroundMode: "opaque", backgroundOpacity: 0.8, backgroundImage: null, backgroundImageOpacity: 0.3, backgroundImageFit: "cover",
+  sshConfigPrompt: true, backgroundMode: "opaque", backgroundOpacity: 0.8, backgroundImage: null, backgroundImageOpacity: 0.3, backgroundImageFit: "cover", surfaceOpacity: 0.5,
 };
 const backgroundModes = { opaque: "不透明", translucent: "半透明", transparent: "透明" };
 const backgroundFits = { cover: { label: "铺满", size: "cover", repeat: "no-repeat" }, contain: { label: "适应", size: "contain", repeat: "no-repeat" }, tile: { label: "平铺", size: "auto", repeat: "repeat" } };
@@ -46,6 +46,7 @@ function readSettings() {
 }
 
 const MONITOR_VISIBLE_KEY = "omniterm-monitor-panel";
+const SIDEBAR_VISIBLE_KEY = "omniterm-sidebar-visible";
 
 // The same placement in pixels, within a measured box of the dock.
 function paneBoxStyle(rect, box) {
@@ -140,6 +141,7 @@ function SettingsDialog({ settings, setSettings, info, notify, onImportSsh, onCl
       </div>
       <div className="setting-row"><div><strong>窗口背景</strong><span>半透明和透明会透出桌面；Linux 需要桌面合成器</span></div><div className="segmented" role="radiogroup" aria-label="窗口背景">{Object.entries(backgroundModes).map(([id, label]) => <button key={id} role="radio" aria-checked={settings.backgroundMode === id} className={settings.backgroundMode === id ? "active" : ""} onClick={() => update("backgroundMode")(id)}>{label}</button>)}</div></div>
       {settings.backgroundMode === "translucent" && <div className="setting-row"><div><strong>背景不透明度</strong><span>数值越低，透出的桌面越多</span></div><Slider label="背景不透明度" value={settings.backgroundOpacity} minimum={10} maximum={95} onChange={update("backgroundOpacity")} /></div>}
+      {(settings.backgroundMode !== "opaque" || settings.backgroundImage) && <div className="setting-row"><div><strong>面板与终端不透明度</strong><span>所有面板和终端使用同一层底色，透明程度一致</span></div><Slider label="面板与终端不透明度" value={settings.surfaceOpacity ?? 0.5} minimum={0} maximum={95} onChange={update("surfaceOpacity")} /></div>}
       {needsRestart && <div className="setting-notice"><span>切换{settings.backgroundMode === "opaque" ? "回不透明窗口" : "到透明窗口"}需要重启应用，当前会话会结束。</span><button className="button secondary" onClick={() => api.relaunch()}>立即重启</button></div>}
       <div className="setting-row"><div><strong>背景图片</strong><span>{settings.backgroundImage?.name || "支持 PNG、JPEG、WebP、GIF、AVIF、BMP，最大 32 MB"}</span></div><div className="setting-buttons"><button className="button secondary" onClick={chooseImage}>选择图片…</button>{settings.backgroundImage && <button className="button ghost" onClick={clearImage}>移除</button>}</div></div>
       {settings.backgroundImage && <>
@@ -221,6 +223,18 @@ export function App() {
   const [dock, setDock] = useState(readDock);
   const [draggedPanel, setDraggedPanel] = useState(null);
   const [monitorVisible, setMonitorVisible] = useState(() => localStorage.getItem(MONITOR_VISIBLE_KEY) === "1");
+  const [sidebarVisible, setSidebarVisible] = useState(() => localStorage.getItem(SIDEBAR_VISIBLE_KEY) !== "0");
+  const [focusMode, setFocusMode] = useState(false);
+  const [dockSize, setDockSize] = useState(null);
+  const focusModeRef = useRef(false);
+  focusModeRef.current = focusMode;
+  // Only a window that really went full screen can leave it. Where the window manager
+  // refuses full screen, the panels stay hidden until the user toggles back.
+  const fullScreenSeen = useRef(false);
+  useEffect(() => api.onFullScreen?.((enabled) => {
+    if (enabled) fullScreenSeen.current = true;
+    else if (fullScreenSeen.current) { fullScreenSeen.current = false; setFocusMode(false); }
+  }), []);
   const [stackBox, setStackBox] = useState(null);
   const dockRef = useRef(null);
   const [sidebarView, setSidebarView] = useState("files");
@@ -443,7 +457,7 @@ export function App() {
   }, [tabs, sessions, dock, focusedId, activeTabId]);
 
   useEffect(() => {
-    try { localStorage.setItem(DOCK_KEY, JSON.stringify(storableDock(dock))); localStorage.setItem(MONITOR_VISIBLE_KEY, monitorVisible ? "1" : "0"); }
+    try { localStorage.setItem(DOCK_KEY, JSON.stringify(storableDock(dock))); localStorage.setItem(MONITOR_VISIBLE_KEY, monitorVisible ? "1" : "0"); localStorage.setItem(SIDEBAR_VISIBLE_KEY, sidebarVisible ? "1" : "0"); }
     catch { /* The arrangement still applies for this session. */ }
   }, [dock, monitorVisible]);
 
@@ -467,10 +481,10 @@ export function App() {
   useLayoutEffect(() => {
     const root = document.documentElement;
     for (const [name, value] of Object.entries(tokens)) root.style.setProperty(name, value);
-    root.style.setProperty("--panel-alpha", `${Math.round(scene.panelAlpha * 100)}%`);
+    root.style.setProperty("--panel-alpha", "100%");
     root.style.setProperty("background", windowTransparent ? "transparent" : "var(--bg)");
     document.querySelector('meta[name="color-scheme"]')?.setAttribute("content", tokens["color-scheme"]);
-  }, [settings.theme, scene.panelAlpha, windowTransparent]);
+  }, [settings.theme, windowTransparent]);
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
   const activeSession = sessions.find((session) => session.id === activeTab?.focus);
@@ -603,6 +617,15 @@ export function App() {
   const fontSize = (delta) => setSettings((previous) => ({ ...previous, fontSize: delta ? Math.min(28, Math.max(9, previous.fontSize + delta)) : defaults.fontSize }));
   const safely = (task) => Promise.resolve().then(task).catch((error) => notify(error.message || String(error)));
 
+  // Full-screen terminals: the window goes full screen and every other panel steps aside, so a
+  // single terminal or a whole grid of panes fills the display. Leaving full screen in any way,
+  // including the system's own controls, brings the panels back.
+  const toggleFocus = () => {
+    const next = !focusModeRef.current;
+    setFocusMode(next);
+    Promise.resolve(api.setFullScreen?.(next)).catch((error) => notify(error.message || String(error)));
+    if (selectedSession) focusLater(selectedSession.id);
+  };
   const actions = {
     newTab: () => safely(() => addTab()),
     closePane: () => selectedSession && closePane(selectedSession.id),
@@ -621,6 +644,8 @@ export function App() {
     broadcast: toggleBroadcast,
     sendToAgent: sendSelectionToAgent,
     toggleAgent: () => setAgentVisible((visible) => !visible),
+    toggleSidebar: () => setSidebarVisible((visible) => !visible),
+    toggleFullscreen: () => toggleFocus(),
     fontBigger: () => fontSize(1),
     fontSmaller: () => fontSize(-1),
     fontReset: () => fontSize(0),
@@ -664,6 +689,8 @@ export function App() {
       { id: "agent-send", group: "omniTerm Agent", label: "附加选中内容到 omniTerm Agent", icon: PaperPlaneTilt, shortcut: key("sendToAgent"), run: actions.sendToAgent },
       { id: "agent-toggle", group: "omniTerm Agent", label: agentVisible ? "隐藏 omniTerm Agent 面板" : "显示 omniTerm Agent 面板", icon: SidebarSimple, shortcut: key("toggleAgent"), run: actions.toggleAgent },
       { id: "process-window", group: "工作区", label: "打开进程监视窗口", keywords: "process monitor top ps 进程", icon: Cpu, run: () => safely(() => api.openProcessWindow(activeSession?.kind === "ssh" && activeSession.remote ? activeSession.id : "local")) },
+      { id: "fullscreen", group: "窗格", label: focusMode ? "退出全屏终端" : "全屏终端（隐藏其他面板，所有窗格一起全屏）", keywords: "fullscreen focus zoom 全屏 专注", icon: focusMode ? ArrowsIn : ArrowsOut, shortcut: key("toggleFullscreen"), run: actions.toggleFullscreen },
+      { id: "sidebar-toggle", group: "工作区", label: sidebarVisible ? "隐藏工作区侧栏" : "显示工作区侧栏", icon: SidebarSimple, shortcut: key("toggleSidebar"), run: actions.toggleSidebar },
       { id: "reset-dock", group: "外观", label: "重置面板布局", keywords: "dock layout panel", icon: SidebarSimple, run: () => setDock(defaultDock()) },
       { id: "font-bigger", group: "外观", label: "放大字体", icon: TextAa, shortcut: key("fontBigger"), run: actions.fontBigger },
       { id: "font-smaller", group: "外观", label: "缩小字体", icon: TextAa, shortcut: key("fontSmaller"), run: actions.fontSmaller },
@@ -684,10 +711,24 @@ export function App() {
   const paneCount = activeTab ? paneIds(activeTab.root).length : 0;
 
   const layouts = useMemo(() => new Map(tabs.map((tab) => [tab.id, computeLayout(tab.root)])), [tabs]);
-  const hiddenPanels = [...(agentVisible ? [] : ["agent"]), ...(monitorVisible ? [] : ["monitor"])];
-  const dockLayout = computeLayout(visibleDock(dock, hiddenPanels));
+  const hiddenPanels = focusMode ? ["sidebar", "agent", "monitor"] : [...(sidebarVisible ? [] : ["sidebar"]), ...(agentVisible ? [] : ["agent"]), ...(monitorVisible ? [] : ["monitor"])];
+  const dockLayout = computeLayout(visibleDock(dock, hiddenPanels), undefined, undefined, undefined, dockSize);
   const dockPlacement = new Map(dockLayout.panes.map(({ sessionId, rect }) => [sessionId, paneStyle(rect)]));
   const dockStyle = (panel) => dockPlacement.get(panel) ?? { display: "none" };
+  useLayoutEffect(() => {
+    const root = dockRef.current;
+    if (!root) return undefined;
+    const measure = () => {
+      const { width, height } = root.getBoundingClientRect();
+      if (width > 0 && height > 0) setDockSize((previous) => previous?.width === width && previous?.height === height ? previous : { width, height });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(root);
+    return () => observer.disconnect();
+  }, [info]);
+  // A layout from before panels kept their pixel size gets the sizes it has right now.
+  useEffect(() => { if (dockSize) setDock((previous) => pinPanels(previous, dockSize)); }, [dock, dockSize]);
   // Every terminal is drawn at the top of the dock, wherever it sits, so moving one between a tab
   // and the dock changes its position and never its parent, which would restart the terminal.
   useLayoutEffect(() => {
@@ -729,7 +770,7 @@ export function App() {
       const row = divider.direction === "row";
       const fraction = row ? (moveEvent.clientX - stack.left) / stack.width : (moveEvent.clientY - stack.top) / stack.height;
       const ratio = row ? (fraction - divider.parent.x) / divider.parent.w : (fraction - divider.parent.y) / divider.parent.h;
-      update(ratio);
+      update(ratio, row ? divider.parent.w * stack.width : divider.parent.h * stack.height);
     };
     const stop = () => { target.removeEventListener("pointermove", move); target.removeEventListener("pointerup", stop); target.removeEventListener("pointercancel", stop); };
     target.addEventListener("pointermove", move);
@@ -749,7 +790,7 @@ export function App() {
   const fit = backgroundFits[settings.backgroundImageFit] || backgroundFits.cover;
   const shownCwd = activeSession?.liveCwd || activeSession?.cwd || cwd;
 
-  return <div className={`app-shell platform-${info.platform}`} style={{ "--term-bg": scene.clear ? "transparent" : theme.chrome }}>
+  return <div className={`app-shell platform-${info.platform} ${scene.clear ? "is-clear" : ""} ${focusMode ? "is-focus" : ""}`} style={{ "--term-bg": scene.clear ? "transparent" : theme.chrome, "--veil": `color-mix(in srgb, var(--bg) ${Math.round(scene.panelAlpha * 100)}%, transparent)` }}>
     <div className="app-backdrop" aria-hidden="true" style={{ background: scene.base < 1 ? `color-mix(in srgb, var(--bg) ${Math.round(scene.base * 100)}%, transparent)` : "var(--bg)" }}>{scene.image && <div className="app-backdrop-image" style={{ backgroundImage: `url("${scene.image}")`, backgroundSize: fit.size, backgroundRepeat: fit.repeat, opacity: scene.imageOpacity }} />}</div>
     <header className="titlebar">
       <div className="window-brand"><TerminalWindow size={19} weight="duotone" /><strong>omniTerm</strong></div>
@@ -802,13 +843,14 @@ export function App() {
                 </button>
                 <IconButton label={`关闭 ${tabLabel(tab)}`} onClick={() => closeTab(tab.id)}><X size={12} /></IconButton>
               </div>;
-            })}</div><IconButton className="new-tab" label={`新建终端（${key("newTab")}）；也可以把窗格拖到这里变成新标签`} onClick={() => safely(() => addTab())} onDragOver={(event) => { if (draggedPane) event.preventDefault(); }} onDrop={(event) => { event.preventDefault(); if (draggedPane) dropPane({}); }}><Plus size={17} /></IconButton></div>
+            })}</div>{focusMode && <IconButton className="exit-focus" label={`退出全屏（${key("toggleFullscreen")}）`} onClick={toggleFocus}><ArrowsIn size={16} /></IconButton>}<IconButton className="new-tab" label={`新建终端（${key("newTab")}）；也可以把窗格拖到这里变成新标签`} onClick={() => safely(() => addTab())} onDragOver={(event) => { if (draggedPane) event.preventDefault(); }} onDrop={(event) => { event.preventDefault(); if (draggedPane) dropPane({}); }}><Plus size={17} /></IconButton></div>
             <div className="terminal-toolbar">
               <div className="session-detail">{activeSession ? <><span className={`status-dot ${activeSession.status === "running" ? "" : "muted"}`} /><span>{activeSession.kind === "shell" ? "本地 Shell" : connectionLabels[activeSession.kind]}</span><span className="toolbar-dot">·</span><span>{activeSession.status === "exited" ? "会话已结束" : activeSession.status === "error" ? "启动失败" : activeSession.status === "running" ? "已连接" : "正在连接"}</span>{paneCount > 1 && <><span className="toolbar-dot">·</span><span>{paneCount} 个窗格{activeTab.zoomed ? "（已最大化）" : ""}</span></>}{activeTab?.broadcast && <span className="broadcast-pill"><Broadcast size={12} />广播输入</span>}</> : <span>终端</span>}</div>
               <div className="terminal-actions">
                 <IconButton label={`向右分屏（${key("splitRight")}）`} onClick={actions.splitRight} disabled={!activeTab}><SquareSplitHorizontal size={15} /></IconButton>
                 <IconButton label={`向下分屏（${key("splitDown")}）`} onClick={actions.splitDown} disabled={!activeTab}><SquareSplitVertical size={15} /></IconButton>
                 <IconButton label={`${activeTab?.zoomed ? "还原" : "最大化"}窗格（${key("maximizePane")}）`} onClick={toggleZoom} disabled={paneCount < 2}>{activeTab?.zoomed ? <ArrowsIn size={15} /> : <ArrowsOut size={15} />}</IconButton>
+                <IconButton className="enter-focus" label={`全屏终端：隐藏其他面板，当前标签的所有窗格一起全屏（${key("toggleFullscreen")}）`} onClick={toggleFocus} disabled={!activeTab}><CornersOut size={15} /></IconButton>
                 <IconButton className={activeTab?.broadcast ? "is-active" : ""} label={`广播输入到所有窗格（${key("broadcast")}）`} onClick={toggleBroadcast} disabled={!activeTab}><Broadcast size={15} /></IconButton>
                 <span className="toolbar-separator" />
                 <IconButton label={`搜索终端（${key("find")}）`} onClick={showSearch} disabled={!selectedSession}><MagnifyingGlass size={15} /></IconButton>
@@ -852,7 +894,7 @@ export function App() {
         const visible = docked || (place.tab.id === activeTabId && !place.hidden);
         const multiple = !docked && paneIds(place.tab.root).length > 1 && !place.tab.zoomed;
         const isFocused = docked ? focusedId === session.id : multiple && place.tab.focus === session.id;
-        return <TerminalView key={session.id} session={session} visible={visible} selected={docked ? focusedId === session.id : visible && place.tab.focus === session.id} focused={isFocused} dimmed={multiple && settings.dimInactive && place.tab.focus !== session.id} style={place.style} onFocus={focusPane} onPaneDragStart={startPaneDrag} onPaneDragEnd={endPaneDrag} {...viewProps} />;
+        return <TerminalView key={session.id} session={session} visible={visible} docked={docked} selected={docked ? focusedId === session.id : visible && place.tab.focus === session.id} focused={isFocused} dimmed={multiple && settings.dimInactive && place.tab.focus !== session.id} style={place.style} onFocus={focusPane} onPaneDragStart={startPaneDrag} onPaneDragEnd={endPaneDrag} {...viewProps} />;
       })}
       <section className="monitor-panel dock-panel" style={dockStyle("monitor")} aria-label="监控面板">
         <div className="agent-heading">{panelGrip("monitor", "监控面板")}<Stack size={17} /><strong>监控</strong><div className="agent-heading-actions"><IconButton label="隐藏监控面板" onClick={() => setMonitorVisible(false)}><X size={15} /></IconButton></div></div>
@@ -864,7 +906,7 @@ export function App() {
         const style = row
           ? { left: `calc(${divider.position * 100}% - ${DIVIDER / 2}px)`, top: `${divider.parent.y * 100}%`, width: DIVIDER, height: `${divider.parent.h * 100}%` }
           : { top: `calc(${divider.position * 100}% - ${DIVIDER / 2}px)`, left: `${divider.parent.x * 100}%`, height: DIVIDER, width: `${divider.parent.w * 100}%` };
-        return <div key={divider.path.join("-") || "root"} className={`pane-divider dock-divider ${row ? "row" : "column"}`} style={style} role="separator" aria-orientation={row ? "vertical" : "horizontal"} title="拖动调整面板大小" onPointerDown={(event) => startDividerDrag(event, dockRef, divider, (ratio) => setDock((previous) => setRatio(previous, divider.path, ratio)))} />;
+        return <div key={divider.path.join("-") || "root"} className={`pane-divider dock-divider ${row ? "row" : "column"}`} style={style} role="separator" aria-orientation={row ? "vertical" : "horizontal"} title="拖动调整面板大小" onPointerDown={(event) => startDividerDrag(event, dockRef, divider, (ratio, total) => setDock((previous) => resizeSplit(previous, divider.path, ratio, total)))} />;
       })}
       {/* Panels swallow drag events, so targets sit above them during a drag. */}
       {(draggedPanel || draggedPane) && dockLayout.panes.filter(({ sessionId }) => sessionId !== draggedPanel && sessionId !== (draggedPane && dockedTerminal(draggedPane)) && !(draggedPane && sessionId === "terminals")).map(({ sessionId }) => {

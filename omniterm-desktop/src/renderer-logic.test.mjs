@@ -4,7 +4,7 @@ import { monitorRequest, processRows, pushTrends, summarize } from "./process/pr
 import { buildMonitorRequest, emptyMonitorForm, kindNote, monitorMetrics, monitorReducer, sparkline, targetSummary } from "./agent/monitor-logic.js";
 import { citationParts, conversationReducer, emptyConversation, executable, mentionMatches, mentionQuery, operationReason, pruneSelection, refsFor, scopeSummary } from "./agent/agent-logic.js";
 import assert from "node:assert/strict";
-import { DOCK_PANELS, computeLayout, defaultDock, dockedTerminal, dockedTerminals, dropSide, equalize, insertPane, MIN_RATIO, moveDockPanel, movePaneInTabs, neighborPane, pane, paneIds, parseDock, pruneDock, removePane, setRatio, splitPane, storableDock, takePaneFromTabs, visibleDock } from "./layout.js";
+import { DOCK_PANELS, MIN_PANEL_PX, computeLayout, pinPanels, pinnedChild, resizeSplit, defaultDock, dockedTerminal, dockedTerminals, dropSide, equalize, insertPane, MIN_RATIO, moveDockPanel, movePaneInTabs, neighborPane, pane, paneIds, parseDock, pruneDock, removePane, setRatio, splitPane, storableDock, takePaneFromTabs, visibleDock } from "./layout.js";
 import { isAppShortcut, matchShortcut, shortcutLabel, tabCycle, tabNumber } from "./shortcuts.js";
 import { createRemoteStore, formatBytes, formatUptime, joinRemote, nextSelection, parentRemote, percent, sortEntries, validEntryName } from "./remote-utils.js";
 import { cwdFromOsc7, fuzzyScore, isTerminalReply, quotePath } from "./terminal-utils.js";
@@ -251,9 +251,16 @@ test("the backdrop stays opaque unless something can show through it", () => {
   assert.equal(backdrop({ ...settings, backgroundMode: "translucent" }, true).base, 0.8);
   assert.equal(backdrop({ ...settings, backgroundMode: "translucent", backgroundOpacity: 5 }, true).base, 0.95);
   const transparent = backdrop({ ...settings, backgroundMode: "transparent" }, true);
-  assert.deepEqual([transparent.base, transparent.clear, transparent.panelAlpha], [0, true, 0.6]);
+  assert.deepEqual([transparent.base, transparent.clear, transparent.panelAlpha], [0, true, 0.5]);
   const image = backdrop({ ...settings, backgroundImage: { url: "file:///a.png", name: "a.png" } }, false);
-  assert.deepEqual([image.base, image.image, image.clear, image.panelAlpha], [1, "file:///a.png", true, 0.85]);
+  assert.deepEqual([image.base, image.image, image.clear, image.panelAlpha], [1, "file:///a.png", true, 0.5]);
+});
+
+test("panels and terminals share one veil that the user sets, whatever the window background", () => {
+  const settings = { backgroundMode: "translucent", backgroundOpacity: 0.3, backgroundImage: null, backgroundImageOpacity: 0.3 };
+  for (const surfaceOpacity of [0, 0.35, 0.8]) assert.equal(backdrop({ ...settings, surfaceOpacity }, true).panelAlpha, surfaceOpacity);
+  assert.equal(backdrop({ ...settings, surfaceOpacity: 2 }, true).panelAlpha, 0.95);
+  assert.equal(backdrop({ ...settings, backgroundMode: "opaque", surfaceOpacity: 0.2 }, true).panelAlpha, 1);
 });
 
 test("a clear terminal keeps its background color at zero alpha", () => {
@@ -556,4 +563,58 @@ test("hiding the monitoring panel returns its space to the Agent panel", () => {
   const { panes } = computeLayout(visibleDock(defaultDock(), ["monitor"]));
   assert.deepEqual(panes.map(({ sessionId }) => sessionId), ["sidebar", "terminals", "agent"]);
   assert.equal(panes.find(({ sessionId }) => sessionId === "agent").rect.h, 1);
+});
+
+test("side panels keep their width in pixels and the terminal area takes the rest", () => {
+  const dock = defaultDock();
+  const width = (px) => {
+    const { panes } = computeLayout(dock, undefined, undefined, undefined, { width: px, height: 900 });
+    return Object.fromEntries(panes.map(({ sessionId, rect }) => [sessionId, Math.round(rect.w * px)]));
+  };
+  for (const px of [1200, 1920, 3840]) {
+    const sizes = width(px);
+    assert.equal(sizes.sidebar, 248, `sidebar at ${px}`);
+    assert.equal(sizes.agent, 400, `agent at ${px}`);
+    assert.equal(sizes.terminals, px - 648, `terminals at ${px}`);
+  }
+  // A window too small for both still leaves the terminals their minimum.
+  assert.ok(width(700).terminals >= 320 - 1);
+  assert.equal(pinnedChild(dock), 0);
+  assert.equal(pinnedChild(dock.children[1]), 1);
+  assert.equal(pinnedChild(dock.children[1].children[1]), -1, "agent above monitor has no terminals beside it");
+});
+
+test("dragging a side panel's divider records its new pixel width", () => {
+  const dock = defaultDock();
+  const wider = resizeSplit(dock, [], 0.25, 1600);
+  assert.equal(wider.pinned, 400);
+  const agent = resizeSplit(dock, [1], 0.5, 1200);
+  assert.equal(agent.children[1].pinned, 600);
+  assert.equal(resizeSplit(dock, [], 0.01, 1600).pinned, MIN_PANEL_PX);
+  // Splits without the terminal area beside them stay proportional.
+  assert.equal(resizeSplit(dock, [1, 1], 0.3, 900).children[1].children[1].pinned, undefined);
+});
+
+test("a layout saved before pixel widths gets them at the current size, and keeps them when stored", () => {
+  const old = { type: "split", direction: "row", ratio: 0.25, children: [pane("sidebar"), { type: "split", direction: "row", ratio: 0.75, children: [pane("terminals"), pane("agent")] }] };
+  const pinned = pinPanels(parseDock(JSON.stringify(old)), { width: 2000, height: 1000 });
+  assert.equal(pinned.pinned, 500);
+  assert.equal(pinned.children[1].pinned, 375);
+  assert.equal(pinPanels(pinned, { width: 900, height: 600 }), pinned, "existing sizes are left alone");
+  assert.equal(parseDock(JSON.stringify(storableDock(pinned))).pinned, 500);
+  assert.equal(parseDock(JSON.stringify({ ...pinned, pinned: 99999 })).pinned, 1600);
+});
+
+test("full screen and the sidebar have their own keys, and F11 reaches the app before the terminal", () => {
+  const key = (code, extra = {}) => ({ type: "keydown", code, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...extra });
+  assert.equal(matchShortcut(key("F11"), "linux"), "toggleFullscreen");
+  assert.equal(matchShortcut(key("F11"), "win32"), "toggleFullscreen");
+  assert.equal(matchShortcut(key("F11", { shiftKey: true }), "linux"), null);
+  assert.equal(matchShortcut(key("KeyF", { metaKey: true, ctrlKey: true }), "darwin"), "toggleFullscreen");
+  assert.equal(matchShortcut(key("KeyF", { metaKey: true }), "darwin"), "find");
+  assert.equal(matchShortcut(key("KeyB", { ctrlKey: true, shiftKey: true }), "linux"), "toggleSidebar");
+  assert.equal(matchShortcut(key("KeyB", { ctrlKey: true }), "linux"), null, "Ctrl+B stays with tmux and readline");
+  assert.equal(isAppShortcut(key("F11"), "linux"), true);
+  assert.equal(shortcutLabel("toggleFullscreen", "linux"), "F11");
+  assert.equal(shortcutLabel("toggleFullscreen", "darwin"), "⌃⌘F");
 });
