@@ -323,6 +323,42 @@ mod tests {
         assert!(!plan.host["args"].as_array().unwrap().iter().any(|arg| arg.as_str().is_some_and(|arg| arg.contains("X11"))));
     }
 
+    /// Runs in CI against a loopback sshd and Xvfb (`OMNITERM_E2E_SSH=user@127.0.0.1`): the
+    /// exact command a session would run, with a remote X client, in both modes.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "needs a loopback sshd and an X server"]
+    fn x11_forwarding_end_to_end() {
+        let target = std::env::var("OMNITERM_E2E_SSH").expect("OMNITERM_E2E_SSH names the loopback SSH target");
+        let cwd = std::env::current_dir().unwrap();
+        let shell = LocalShell::default();
+        for mode in [X11::Restricted, X11::Trusted] {
+            let profile = Profile { kind: Some(Kind::Ssh), host: Some(target.clone()), x11: mode, ..Profile::default() };
+            let request = Request { kind: Kind::Ssh, cwd: cwd.to_str().unwrap(), profile: Some(&profile), companion: false, local_shell: &shell };
+            let plan = build(&request, || None).unwrap();
+            assert!(plan.warning.is_none(), "{:?}", plan.warning);
+            let mut args: Vec<String> = plan.host["args"].as_array().unwrap().iter().map(|arg| arg.as_str().unwrap().to_string()).collect();
+            let destination = args.pop().unwrap();
+            args.extend(["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new"].map(String::from));
+            args.push(destination);
+            args.push("echo \"remote-display=$DISPLAY\"; xdpyinfo | grep -m1 'name of display'".into());
+            let env = plan.host["env"].as_object().unwrap();
+            let output = Command::new(plan.host["executable"].as_str().unwrap())
+                .args(&args)
+                .env_clear()
+                .envs(env.iter().map(|(key, value)| (key, value.as_str().unwrap_or_default())))
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("remote-display=localhost:") && stdout.contains("name of display"),
+                "{mode:?}: {stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
     #[test]
     fn a_missing_directory_is_refused_before_anything_starts() {
         let request = Request { kind: Kind::Shell, cwd: "/definitely/not/here", profile: None, companion: false, local_shell: &LocalShell::default() };

@@ -131,7 +131,7 @@ mod windows {
         }
         let program = installed_server().ok_or("X11 转发需要本机 X 服务器：请安装 VcXsrv（或 Xming），omniTerm 会自动启动它；也可以先运行任意 X 服务器。")?;
         if xauth.is_none() {
-            return Err("无法为 ssh 提供 X11 授权（omniTerm 的安装路径无法转成短路径）。请把 omniTerm 安装到不含空格的目录，或自行运行 X 服务器。".into());
+            return Err("无法为 ssh 提供 X11 授权（omniTerm 的安装路径无法转成短路径）。请把 omniTerm 安装到路径不含括号等特殊字符的目录，或自行运行 X 服务器。".into());
         }
         let number = 0;
         let mut cookie = [0u8; 16];
@@ -183,15 +183,17 @@ mod windows {
         candidates.into_iter().find(|path| path.is_file()).or_else(|| paths::find_executable("vcxsrv.exe")).or_else(|| paths::find_executable("Xming.exe"))
     }
 
-    /// omniTerm's own path for ssh's `XAuthLocation`. ssh runs it through a command line
-    /// without quotes, so a path with spaces becomes its 8.3 short form.
+    /// omniTerm's own path for ssh's `XAuthLocation`. Win32-OpenSSH quotes it and runs the
+    /// line through `cmd /c`, which keeps those quotes only when no cmd metacharacter sits
+    /// between them (`Program Files (x86)` has two); such a path becomes its 8.3 short form.
     fn shim_path() -> Option<String> {
         let path = std::env::current_exe().ok()?;
+        let safe = |text: &str| !text.contains(['(', ')', '&', '^', '@', '|', '<', '>', '%', '"']);
         let text = path.to_string_lossy().into_owned();
-        if !text.contains(' ') {
+        if safe(&text) {
             return Some(text);
         }
-        short_path(&path).filter(|short| !short.contains(' '))
+        short_path(&path).filter(|short| safe(short))
     }
 
     fn short_path(path: &Path) -> Option<String> {
