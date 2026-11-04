@@ -202,6 +202,24 @@ enum Member {
     Terminal(String),
 }
 
+fn edge_panel<R>(ui: &mut Ui, edge: Edge, size: f32, contents: impl FnOnce(&mut Ui, Rect) -> R) -> egui::InnerResponse<R> {
+    let id = format!("dock-{edge:?}");
+    let builder = match edge {
+        Edge::Left => egui::Panel::left(id),
+        Edge::Right => egui::Panel::right(id),
+        Edge::Top => egui::Panel::top(id),
+        Edge::Bottom => egui::Panel::bottom(id),
+    };
+    let range = if matches!(edge, Edge::Left | Edge::Right) { 180.0..=900.0 } else { 120.0..=700.0 };
+    builder.resizable(true).default_size(size).size_range(range).frame(egui::Frame::new().fill(Color32::TRANSPARENT)).show(ui, |ui| {
+        let rect = ui.max_rect();
+        // Painted/scoped members need not fill the layout. Reserve the requested size so
+        // egui stores it instead of shrinking the panel back to its contents after a drag.
+        ui.set_min_size(rect.size());
+        contents(ui, rect)
+    })
+}
+
 /// Lays out the docked panels and terminals around the central area, in a fixed order per
 /// edge. Full-screen terminals keep docked terminals and hide the panels.
 pub fn show(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>, terminals_only: bool) {
@@ -213,17 +231,8 @@ pub fn show(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>, terminals_onl
             continue;
         }
         let palette = style::palette(ui);
-        let id = format!("dock-{edge:?}");
         let size = app.dock.size(edge);
-        let builder = match edge {
-            Edge::Left => egui::Panel::left(id),
-            Edge::Right => egui::Panel::right(id),
-            Edge::Top => egui::Panel::top(id),
-            Edge::Bottom => egui::Panel::bottom(id),
-        };
-        let range = if matches!(edge, Edge::Left | Edge::Right) { 180.0..=900.0 } else { 120.0..=700.0 };
-        let response = builder.resizable(true).default_size(size).size_range(range).frame(egui::Frame::new().fill(Color32::TRANSPARENT)).show(ui, |ui| {
-            let rect = ui.max_rect();
+        let response = edge_panel(ui, edge, size, |ui, rect| {
             if members.len() == 1 {
                 member(app, ui, &members[0], rect, intents);
                 return;
@@ -285,4 +294,56 @@ fn member(app: &mut App, ui: &mut Ui, member: &Member, rect: Rect, intents: &mut
     });
     let edge_line = rect.x_range();
     ui.painter().hline(edge_line, rect.bottom() - 0.5, Stroke::new(1.0, palette.border));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::{Event, Modifiers, PointerButton, Pos2, RawInput};
+
+    fn draw(ctx: &egui::Context, edge: Edge, size: &mut f32, events: Vec<Event>) -> Rect {
+        let mut panel_rect = Rect::NOTHING;
+        ctx.run_ui(RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1440.0, 940.0))), events, ..Default::default() }, |ui| {
+            let response = edge_panel(ui, edge, *size, |ui, rect| {
+                // Like a docked terminal, painting alone does not reserve layout space.
+                ui.painter().rect_filled(rect, 0.0, Color32::BLACK);
+            });
+            panel_rect = response.response.rect;
+            *size = if matches!(edge, Edge::Left | Edge::Right) { panel_rect.width() } else { panel_rect.height() };
+            egui::CentralPanel::default().show(ui, |_| {});
+        }).drop_without_applying_deltas();
+        panel_rect
+    }
+
+    #[test]
+    fn dock_sizes_survive_drag_release_and_idle_frames_on_every_edge() {
+        for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
+            let ctx = egui::Context::default();
+            let mut size = 300.0;
+            let rect = draw(&ctx, edge, &mut size, Vec::new());
+            assert_eq!(size, 300.0, "initial size on {edge:?}");
+            let from = match edge {
+                Edge::Left => rect.right_center(),
+                Edge::Right => rect.left_center(),
+                Edge::Top => rect.center_bottom(),
+                Edge::Bottom => rect.center_top(),
+            };
+            draw(&ctx, edge, &mut size, vec![Event::PointerMoved(from)]);
+            draw(&ctx, edge, &mut size, vec![Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE }]);
+            let movement = match edge {
+                Edge::Left => Vec2::new(120.0, 0.0),
+                Edge::Right => Vec2::new(-120.0, 0.0),
+                Edge::Top => Vec2::new(0.0, 120.0),
+                Edge::Bottom => Vec2::new(0.0, -120.0),
+            };
+            let to = from + movement;
+            draw(&ctx, edge, &mut size, vec![Event::PointerMoved(to)]);
+            assert_eq!(size, 420.0, "dragged size on {edge:?}");
+            draw(&ctx, edge, &mut size, vec![Event::PointerButton { pos: to, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE }]);
+            for _ in 0..20 {
+                draw(&ctx, edge, &mut size, Vec::new());
+                assert_eq!(size, 420.0, "released size on {edge:?}");
+            }
+        }
+    }
 }
