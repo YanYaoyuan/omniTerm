@@ -9,8 +9,6 @@
 //!   `xauth`, so ssh is pointed at omniTerm itself, which answers `xauth list` with that
 //!   cookie (see `xauth_shim`); the server never runs without access control.
 
-use std::path::PathBuf;
-
 /// Where ssh forwards X11 connections, and the `xauth` it should use, if not its default.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Display {
@@ -22,11 +20,11 @@ pub struct Display {
 pub fn resolve() -> Result<Display, String> {
     let display = std::env::var("DISPLAY").ok().filter(|display| !display.trim().is_empty());
     if cfg!(target_os = "macos") {
-        let xauth = PathBuf::from("/opt/X11/bin/xauth");
+        let xauth = std::path::Path::new("/opt/X11/bin/xauth");
         let xauth = xauth.is_file().then(|| xauth.to_string_lossy().into_owned());
         return match display {
             Some(display) => Ok(Display { display, xauth }),
-            None if PathBuf::from("/opt/X11/bin/Xquartz").exists() => Err("XQuartz 已安装但还没有提供显示。请先打开 XQuartz；刚安装的需要注销并重新登录一次。".into()),
+            None if std::path::Path::new("/opt/X11/bin/Xquartz").exists() => Err("XQuartz 已安装但还没有提供显示。请先打开 XQuartz；刚安装的需要注销并重新登录一次。".into()),
             None => Err("X11 转发需要 X 服务器：请安装 XQuartz（xquartz.org）后注销并重新登录。".into()),
         };
     }
@@ -180,7 +178,7 @@ mod windows {
     }
 
     fn installed_server() -> Option<PathBuf> {
-        let roots = ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"].into_iter().filter_map(|name| std::env::var_os(name)).map(PathBuf::from);
+        let roots = ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"].into_iter().filter_map(std::env::var_os).map(PathBuf::from);
         let candidates = roots.flat_map(|root| [root.join("VcXsrv").join("vcxsrv.exe"), root.join("Xming").join("Xming.exe")]);
         candidates.into_iter().find(|path| path.is_file()).or_else(|| paths::find_executable("vcxsrv.exe")).or_else(|| paths::find_executable("Xming.exe"))
     }
