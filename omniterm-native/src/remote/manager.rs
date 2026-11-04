@@ -203,9 +203,15 @@ pub fn safe_local_name(name: &str) -> bool {
 /// A new directory under `parent` that only this user can read.
 fn private_directory(parent: &Path, prefix: &str) -> Result<PathBuf, String> {
     let directory = parent.join(format!("{prefix}{}", uuid::Uuid::new_v4().simple()));
-    let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    let builder = {
+        let mut builder = std::fs::DirBuilder::new();
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder
+    };
+    // Directories under the user's own temporary folder are private to them on Windows.
+    #[cfg(not(unix))]
+    let builder = std::fs::DirBuilder::new();
     builder.create(&directory).map_err(|error| format!("无法创建临时目录：{error}"))?;
     Ok(directory)
 }
