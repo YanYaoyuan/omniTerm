@@ -38,6 +38,10 @@ fn app_icon() -> Option<egui::IconData> {
 
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // ssh runs omniTerm as its `xauth` for X11 forwarding on Windows; answer and leave.
+    if let Some(code) = core::x11::xauth_shim(&args) {
+        std::process::exit(code);
+    }
     if args.first().map(String::as_str) == Some("--bench") {
         let megabytes = args.get(1).and_then(|value| value.parse().ok()).unwrap_or(32);
         println!("{}", bench::run(megabytes));
@@ -65,5 +69,6 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions { viewport, renderer: eframe::Renderer::Wgpu, ..Default::default() };
     let result = eframe::run_native("omniTerm", options, Box::new(move |cc| Ok(Box::new(ui::App::new(cc, settings, transparent, smoke)))));
     remote::cleanup();
+    core::x11::shutdown();
     result
 }

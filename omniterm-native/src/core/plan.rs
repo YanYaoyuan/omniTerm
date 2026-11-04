@@ -4,7 +4,7 @@
 //! Arguments are always a list, never a shell string, so a profile value cannot become syntax.
 
 use super::paths::find_executable;
-use super::profile::{Forward, Kind, Profile};
+use super::profile::{Forward, Kind, Profile, X11};
 use super::settings::LocalShell;
 use serde_json::{Value, json};
 use std::path::Path;
@@ -38,6 +38,9 @@ pub struct Plan {
     pub host: Value,
     pub title: String,
     pub powershell: bool,
+    /// Something the user should know although the session starts, such as X11 forwarding
+    /// left off for want of an X server.
+    pub warning: Option<String>,
     pub companion: Option<Companion>,
 }
 
@@ -171,6 +174,8 @@ pub fn build(request: &Request, control_path: impl FnOnce() -> Option<String>) -
         None => return Err("这种连接需要连接配置。".into()),
     };
     let mut powershell = false;
+    let mut warning = None;
+    let mut display = None;
     let mut companion = None;
     let mut connection = json!({});
     let (executable, args) = match request.kind {
@@ -217,6 +222,21 @@ pub fn build(request: &Request, control_path: impl FnOnce() -> Option<String>) -
                 common.extend(["-o".to_string(), format!("ProxyJump={jump}")]);
             }
             args.extend(common.iter().cloned());
+            // Only the interactive session forwards X11; the shared login's other channels never do.
+            if request.kind == Kind::Ssh && profile.x11 != X11::Off {
+                match super::x11::resolve() {
+                    Ok(found) => {
+                        // Windows has no xauth to make an untrusted cookie, so ssh needs -Y there.
+                        let trusted = profile.x11 == X11::Trusted || cfg!(windows);
+                        args.extend(["-o".to_string(), "ForwardX11=yes".to_string(), "-o".to_string(), format!("ForwardX11Trusted={}", if trusted { "yes" } else { "no" })]);
+                        if let Some(xauth) = &found.xauth {
+                            args.extend(["-o".to_string(), format!("XAuthLocation={xauth}")]);
+                        }
+                        display = Some(found.display);
+                    }
+                    Err(error) => warning = Some(format!("X11 转发未启用：{error}")),
+                }
+            }
             if request.kind == Kind::Tunnel {
                 let forward = profile.forward_type.unwrap_or(Forward::L);
                 let mut spec = format!("127.0.0.1:{}", profile.bind_port.unwrap_or_default());
@@ -251,8 +271,12 @@ pub fn build(request: &Request, control_path: impl FnOnce() -> Option<String>) -
         Kind::Tunnel => format!("隧道 · {}", profile.host.as_deref().unwrap_or_default()),
     });
     let kind = serde_json::to_value(request.kind).map_err(|error| error.to_string())?;
-    let host = json!({ "executable": executable, "args": args, "cwd": cwd, "env": session_env(), "kind": kind, "title": title, "connection": connection });
-    Ok(Plan { host, title, powershell, companion })
+    let mut env = session_env();
+    if let Some(display) = display {
+        env.insert("DISPLAY".into(), Value::String(display));
+    }
+    let host = json!({ "executable": executable, "args": args, "cwd": cwd, "env": env, "kind": kind, "title": title, "connection": connection });
+    Ok(Plan { host, title, powershell, warning, companion })
 }
 
 #[cfg(test)]
@@ -266,6 +290,37 @@ mod tests {
         assert_eq!(destination(&profile, Kind::Ssh), "me@::1");
         let named = Profile { username: Some("ops".into()), host: Some("box".into()), ..Profile::default() };
         assert_eq!(destination(&named, Kind::Ssh), "ops@box");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn x11_forwarding_reaches_only_the_interactive_ssh_session() {
+        if find_executable("ssh").is_none() {
+            return;
+        }
+        let cwd = std::env::current_dir().unwrap();
+        let shell = LocalShell::default();
+        let profile = Profile { kind: Some(Kind::Ssh), host: Some("box".into()), x11: X11::Restricted, ..Profile::default() };
+        let request = Request { kind: Kind::Ssh, cwd: cwd.to_str().unwrap(), profile: Some(&profile), companion: true, local_shell: &shell };
+        let plan = build(&request, || Some("/tmp/omniterm-test.sock".into())).unwrap();
+        let args: Vec<&str> = plan.host["args"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+        match super::super::x11::resolve() {
+            Ok(display) => {
+                assert!(args.windows(2).any(|pair| pair == ["-o", "ForwardX11=yes"]), "{args:?}");
+                assert!(args.contains(&"ForwardX11Trusted=no"));
+                assert_eq!(plan.host["env"]["DISPLAY"], display.display);
+                assert!(plan.warning.is_none());
+            }
+            Err(_) => {
+                assert!(!args.iter().any(|arg| arg.starts_with("ForwardX11")));
+                assert!(plan.warning.unwrap().contains("X11"));
+            }
+        }
+        assert!(plan.companion.unwrap().args.iter().all(|arg| !arg.contains("X11")), "the file panel's channels never forward X11");
+        let off = Profile { x11: X11::Off, ..profile.clone() };
+        let request = Request { profile: Some(&off), ..request };
+        let plan = build(&request, || None).unwrap();
+        assert!(!plan.host["args"].as_array().unwrap().iter().any(|arg| arg.as_str().is_some_and(|arg| arg.contains("X11"))));
     }
 
     #[test]

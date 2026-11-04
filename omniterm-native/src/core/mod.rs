@@ -9,3 +9,4 @@ pub mod settings;
 pub mod ssh_config;
 pub mod text;
 pub mod workspace;
+pub mod x11;

@@ -72,6 +72,7 @@ cargo run --release -- --smoke out.png # 打开窗口，在真实 Shell 里执�
 - 停靠：面板和单个终端窗格都可以拖到窗口的上、下、左、右边缘，与同一边缘的面板并排并可调整分割；停靠的窗格拖回标签栏或其他窗格即可还原。
 - 就绪标记：Agent 的终端选择器里对未知交互状态的 SSH 或本地 Shell 提供“启用就绪标记”，需要握手的终端可勾选“自动执行”，与桌面版一致。
 - SFTP 拖出：与桌面版一样，第一次拖动文件把它下载到私有临时目录（最大 2 GiB），行尾显示“可拖出”后再次拖动即可放到系统文件管理器；临时目录在 SSH 标签关闭时删除。Windows 用 OLE，macOS 用 NSDraggingSession；Linux 的 X11 会话用自带的 XDND 拖放来源（独立连接、根窗口指针抓取），Wayland 会话在 winit 的连接上用 `wl_data_device` 发起拖动，都以 `text/uri-list` 提供文件。
+- X11 转发（桌面版没有，原生版新增，参照 MobaXterm）：SSH 连接可选“关闭 / 受限（-X）/ 信任（-Y）”，远程图形程序显示在本机。Linux 用当前 `DISPLAY`（X11 或 XWayland）；macOS 用 XQuartz 并指定它的 xauth；Windows 先找 127.0.0.1:6000+N 上已运行的 X 服务器，没有就带新生成的 MIT-MAGIC-COOKIE-1 自动启动已安装的 VcXsrv 或 Xming（不关闭访问控制），并让 ssh 把 omniTerm 自身当作 `xauth` 取得这个授权；Windows 上总是信任模式（没有可生成受限授权的 xauth）。找不到 X 服务器时照常连接，并提示如何安装。这个选项保存在 `native-profile-x11.json`，不写进与桌面版共用的 `profiles.json`（桌面版会拒绝未知字段）。
 - 连字不合并；程序通过 OSC 52 写剪贴板不支持（桌面版同样不支持）。
 - 非 macOS 平台上 Ctrl+V 是粘贴，不会把 ^V 发给程序。
 - 打包：`node omniterm-native/scripts/package.mjs` 在 `dist/release-native` 生成安装包，发布流程把源码构建的 Agent 一起打进去；CI 用 `--without-agent` 只打包应用本身。和桌面版一样不做 Developer ID 签名、公证或自动更新。

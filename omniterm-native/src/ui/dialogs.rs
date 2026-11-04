@@ -3,7 +3,7 @@
 
 use super::style::{self, icon, icon_button, percent_slider, segmented, toggle};
 use super::{App, Dialog, Intent};
-use crate::core::profile::{Forward, Kind, Profile};
+use crate::core::profile::{Forward, Kind, Profile, X11};
 use crate::core::settings::{BackgroundMode, CursorStyle, FontFamily, ImageFit, LINE_HEIGHTS, LocalShell, MAX_FONT, MIN_FONT, SCROLLBACKS, Settings};
 use crate::core::ssh_config::Host;
 use crate::icons;
@@ -24,6 +24,7 @@ pub struct ConnectionForm {
     pub device: String,
     pub baud: String,
     pub forward: Forward,
+    pub x11: X11,
     pub bind_port: String,
     pub target_host: String,
     pub target_port: String,
@@ -47,6 +48,7 @@ impl ConnectionForm {
             device: value(&p.device),
             baud: p.baud.unwrap_or(115_200).to_string(),
             forward: p.forward_type.unwrap_or(Forward::L),
+            x11: p.x11,
             bind_port: number(p.bind_port),
             target_host: p.target_host.clone().unwrap_or_else(|| "localhost".into()),
             target_port: number(p.target_port),
@@ -82,6 +84,7 @@ impl ConnectionForm {
             profile.username = optional(&self.username);
             profile.key_path = optional(&self.key_path);
             profile.proxy_jump = optional(&self.proxy_jump);
+            profile.x11 = self.x11;
             // The imported label describes the host it came from.
             if self.editing.as_ref().is_some_and(|old| old.host == profile.host) {
                 profile.summary = self.editing.as_ref().and_then(|old| old.summary.clone());
@@ -469,6 +472,19 @@ fn connection(form: &mut ConnectionForm, ctx: &egui::Context, intents: &mut Vec<
             ui.label(RichText::new("也可以使用系统 SSH 配置和 SSH Agent。").size(10.0).color(palette.faint()));
             field(ui, "跳板机（可选）", &mut form.proxy_jump, "例如 root@192.168.10.222 或 ~/.ssh/config 中的别名", full);
             ui.label(RichText::new("对应 ProxyJump，多级跳板用逗号分隔。留空时沿用 ~/.ssh/config 中的设置。").size(10.0).color(palette.faint()));
+            if form.kind == Kind::Ssh {
+                ui.add_space(4.0);
+                ui.label(RichText::new("X11 转发").size(11.0).color(palette.muted()));
+                segmented(ui, &mut form.x11, &[(X11::Off, "关闭"), (X11::Restricted, "受限（-X）"), (X11::Trusted, "信任（-Y）")]);
+                let hint = if cfg!(windows) {
+                    "远程图形程序在本机显示。需要 VcXsrv 或 Xming（omniTerm 会带授权自动启动），或已运行的 X 服务器；Windows 上总是以信任模式转发。"
+                } else if cfg!(target_os = "macos") {
+                    "远程图形程序在本机显示，需要 XQuartz。受限模式更安全；个别程序需要信任模式。"
+                } else {
+                    "远程图形程序在本机显示（X11 或 XWayland）。受限模式更安全；个别程序需要信任模式。"
+                };
+                ui.add(egui::Label::new(RichText::new(hint).size(10.0).color(palette.faint())).wrap());
+            }
         }
         if form.kind == Kind::Tunnel {
             ui.separator();

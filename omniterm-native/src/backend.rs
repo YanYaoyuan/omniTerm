@@ -41,6 +41,8 @@ pub struct Session {
     pub companion: Option<Companion>,
     /// Marks the host trusts from this shell carry this nonce; see `shell_integration`.
     pub nonce: String,
+    /// Shown once the session is open; see `plan::Plan::warning`.
+    pub warning: Option<String>,
 }
 
 /// The readiness marks script for bash 4.4+ and zsh, from the desktop app's
@@ -262,5 +264,5 @@ fn open_session(
         let _ = host.handle("session.close", json!({ "id": id }));
         return Err(error);
     }
-    Ok(Session { terminal, kind: open.kind, title: plan.title, cwd: open.cwd.clone(), powershell: plan.powershell, profile: open.profile.clone(), companion: plan.companion, nonce })
+    Ok(Session { terminal, kind: open.kind, title: plan.title, cwd: open.cwd.clone(), powershell: plan.powershell, profile: open.profile.clone(), companion: plan.companion, nonce, warning: plan.warning })
 }

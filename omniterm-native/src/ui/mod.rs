@@ -447,6 +447,9 @@ impl App {
                 return;
             }
         };
+        if let Some(warning) = &session.warning {
+            self.notify(warning.clone(), true);
+        }
         let id = self.attach(*session);
         match placement {
             Placement::Split { tab, target, row } => {

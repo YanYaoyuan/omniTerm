@@ -33,6 +33,18 @@ pub enum Forward {
     D,
 }
 
+/// X11 forwarding for an SSH session, as ssh's `-X` and `-Y`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum X11 {
+    #[default]
+    Off,
+    /// `-X`: the remote program gets an untrusted connection, kept out of other windows.
+    Restricted,
+    /// `-Y`: full access to the display, which some programs need.
+    Trusted,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Profile {
@@ -66,6 +78,10 @@ pub struct Profile {
     pub target_host: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_port: Option<u16>,
+    /// Kept out of `profiles.json`, which the desktop app shares and rejects unknown fields
+    /// in; the store keeps it beside, by profile id.
+    #[serde(skip)]
+    pub x11: X11,
 }
 
 fn text(value: &Option<String>, label: &str, maximum: usize) -> Result<Option<String>, String> {
@@ -144,6 +160,7 @@ impl Profile {
         out.baud = self.baud;
         out.target_host = text(&self.target_host, "目标主机", 255)?.map(|value| host(&value, "目标主机", false)).transpose()?;
         out.forward_type = self.forward_type;
+        out.x11 = if kind == Kind::Ssh { self.x11 } else { X11::Off };
         if complete {
             if matches!(kind, Kind::Ssh | Kind::Sftp | Kind::Tunnel) && out.host.is_none() {
                 return Err("需要填写主机或 SSH 别名。".into());
@@ -174,11 +191,18 @@ impl Profile {
 
 pub struct Store {
     path: PathBuf,
+    /// X11 forwarding per profile id, which `profiles.json` cannot hold.
+    extras: PathBuf,
 }
 
 impl Store {
     pub fn new(path: PathBuf) -> Self {
-        Self { path }
+        let extras = path.with_file_name("native-profile-x11.json");
+        Self { path, extras }
+    }
+
+    fn x11_modes(&self) -> std::collections::HashMap<String, X11> {
+        std::fs::read(&self.extras).ok().filter(|contents| contents.len() <= 1 << 20).and_then(|contents| serde_json::from_slice(&contents).ok()).unwrap_or_default()
     }
 
     pub fn list(&self) -> Result<Vec<Profile>, String> {
@@ -195,10 +219,14 @@ impl Store {
             return Err("保存的连接文件无效。".into());
         }
         let mut ids = std::collections::HashSet::new();
+        let modes = self.x11_modes();
         profiles
             .iter()
             .map(|profile| {
-                let valid = profile.validate(true)?;
+                let mut valid = profile.validate(true)?;
+                if valid.kind == Some(Kind::Ssh) {
+                    valid.x11 = valid.id.as_ref().and_then(|id| modes.get(id)).copied().unwrap_or_default();
+                }
                 match &valid.id {
                     Some(id) if ids.insert(id.clone()) => Ok(valid),
                     _ => Err("保存的连接文件里有无效或重复的连接。".to_string()),
@@ -210,7 +238,11 @@ impl Store {
     fn write(&self, profiles: &[Profile]) -> Result<(), String> {
         let mut json = serde_json::to_vec_pretty(profiles).map_err(|error| error.to_string())?;
         json.push(b'\n');
-        super::paths::write_atomically(&self.path, &json).map_err(|error| format!("无法保存连接：{error}"))
+        super::paths::write_atomically(&self.path, &json).map_err(|error| format!("无法保存连接：{error}"))?;
+        let modes: std::collections::BTreeMap<&str, X11> = profiles.iter().filter(|profile| profile.x11 != X11::Off).filter_map(|profile| Some((profile.id.as_deref()?, profile.x11))).collect();
+        let mut json = serde_json::to_vec_pretty(&modes).map_err(|error| error.to_string())?;
+        json.push(b'\n');
+        super::paths::write_atomically(&self.extras, &json).map_err(|error| format!("无法保存连接：{error}"))
     }
 
     pub fn save(&self, input: &Profile) -> Result<Vec<Profile>, String> {
@@ -264,6 +296,22 @@ mod tests {
 
     fn ssh(host: &str) -> Profile {
         Profile { kind: Some(Kind::Ssh), host: Some(host.into()), ..Profile::default() }
+    }
+
+    #[test]
+    fn x11_forwarding_stays_out_of_the_shared_profiles_file() {
+        let directory = std::env::temp_dir().join(format!("omniterm-profiles-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let store = Store::new(directory.join("profiles.json"));
+        let saved = store.save(&Profile { x11: X11::Trusted, ..ssh("box") }).unwrap();
+        let shared = std::fs::read_to_string(directory.join("profiles.json")).unwrap();
+        assert!(!shared.contains("x11") && !shared.contains("trusted"), "{shared}");
+        assert_eq!(store.list().unwrap()[0].x11, X11::Trusted);
+        assert_eq!(Profile { kind: Some(Kind::Tunnel), bind_port: Some(1), forward_type: Some(Forward::D), x11: X11::Trusted, ..ssh("box") }.validate(true).unwrap().x11, X11::Off);
+        let id = saved[0].id.clone().unwrap();
+        store.save(&Profile { id: Some(id), x11: X11::Off, ..ssh("box") }).unwrap();
+        assert_eq!(store.list().unwrap()[0].x11, X11::Off);
+        std::fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]

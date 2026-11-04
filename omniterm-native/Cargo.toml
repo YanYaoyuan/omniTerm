@@ -34,6 +34,10 @@ uuid = { version = "1", features = ["v4"] }
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 drag = "2.1"
 
+# X11 forwarding: the short path of omniTerm itself, which ssh runs as its xauth.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 raw-window-handle = "0.6"
 wayland-backend = { version = "0.3", features = ["client_system"] }

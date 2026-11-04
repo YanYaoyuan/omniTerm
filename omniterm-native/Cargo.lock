@@ -3225,6 +3225,7 @@ dependencies = [
  "uuid",
  "wayland-backend",
  "wayland-client",
+ "windows-sys 0.61.2",
  "x11-dl",
  "x11rb",
 ]
