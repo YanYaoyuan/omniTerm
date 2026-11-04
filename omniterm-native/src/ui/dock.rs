@@ -278,8 +278,7 @@ fn member(app: &mut App, ui: &mut Ui, member: &Member, rect: Rect, intents: &mut
     };
     ui.painter().rect_filled(rect, 0.0, if panel == Panel::Sidebar { palette.panel } else { palette.panel_soft });
     let inner = rect.shrink2(if panel == Panel::Sidebar { Vec2::new(12.0, 0.0) } else { Vec2::new(10.0, 0.0) });
-    ui.scope_builder(egui::UiBuilder::new().max_rect(inner).id_salt(("dock-member", panel as u8)), |ui| {
-        ui.set_clip_rect(rect);
+    member_ui(ui, Id::unique(("dock-member", panel as u8)), inner, |ui| {
         match panel {
             Panel::Sidebar => {
                 ui.horizontal(|ui| {
@@ -294,6 +293,14 @@ fn member(app: &mut App, ui: &mut Ui, member: &Member, rect: Rect, intents: &mut
     });
     let edge_line = rect.x_range();
     ui.painter().hline(edge_line, rect.bottom() - 0.5, Stroke::new(1.0, palette.border));
+}
+
+fn member_ui<R>(parent: &mut Ui, id: Id, rect: Rect, contents: impl FnOnce(&mut Ui) -> R) -> R {
+    // Members are positioned by the dock, not by their contents. A scoped UI would
+    // propagate overflowing form/text sizes back into the edge and its neighbors.
+    let mut ui = parent.new_child(egui::UiBuilder::new().max_rect(rect).id_salt(id));
+    ui.shrink_clip_rect(rect);
+    contents(&mut ui)
 }
 
 #[cfg(test)]
@@ -343,6 +350,30 @@ mod tests {
             for _ in 0..20 {
                 draw(&ctx, edge, &mut size, Vec::new());
                 assert_eq!(size, 420.0, "released size on {edge:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn overflowing_members_cannot_expand_the_dock_or_paint_over_neighbors() {
+        for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
+            let ctx = egui::Context::default();
+            for _ in 0..3 {
+                ctx.run_ui(RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1440.0, 940.0))), ..Default::default() }, |ui| {
+                    let response = edge_panel(ui, edge, 400.0, |ui, rect| {
+                        let halves = if matches!(edge, Edge::Left | Edge::Right) { rect.split_top_bottom_at_fraction(0.6) } else { rect.split_left_right_at_fraction(0.6) };
+                        for (index, area) in [halves.0, halves.1].into_iter().enumerate() {
+                            let clip = ui.clip_rect().intersect(area);
+                            member_ui(ui, Id::unique(("overflow-member", index)), area, |ui| {
+                                assert_eq!(ui.clip_rect(), clip);
+                                ui.allocate_exact_size(Vec2::new(2000.0, 1400.0), Sense::hover());
+                            });
+                        }
+                    });
+                    let rect = response.response.rect;
+                    assert_eq!(if matches!(edge, Edge::Left | Edge::Right) { rect.width() } else { rect.height() }, 400.0, "{edge:?}");
+                    egui::CentralPanel::default().show(ui, |_| {});
+                }).drop_without_applying_deltas();
             }
         }
     }

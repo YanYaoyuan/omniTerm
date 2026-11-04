@@ -155,9 +155,11 @@ fn card(app: &App, ui: &mut Ui, monitor: &Monitor, intents: &mut Vec<Intent>) {
     let palette = style::palette(ui);
     egui::Frame::new().fill(palette.panel_soft).stroke(Stroke::new(1.0, palette.border_strong)).corner_radius(6).inner_margin(8).show(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.label(RichText::new(if monitor.label.is_empty() { summary(&monitor.target) } else { monitor.label.clone() }).strong().size(11.5));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(RichText::new(monitor.status.label()).size(10.0).color(palette.accent()));
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    ui.add(egui::Label::new(RichText::new(if monitor.label.is_empty() { summary(&monitor.target) } else { monitor.label.clone() }).strong().size(11.5)).truncate());
+                });
             });
         });
         let note = |ui: &mut Ui, text: String| {
@@ -170,19 +172,19 @@ fn card(app: &App, ui: &mut Ui, monitor: &Monitor, intents: &mut Vec<Intent>) {
         if let Some(action) = &monitor.action {
             note(ui, format!("{}（最多 {} 次，已执行 {} 次）", if monitor.status == Status::Pending { "批准后可自动执行：" } else { "自动操作：" }, action.max_runs, monitor.action_runs));
             egui::Frame::new().fill(palette.surface()).corner_radius(4).inner_margin(4).show(ui, |ui| {
-                ui.label(RichText::new(&action.command).monospace().size(10.5));
+                ui.add(egui::Label::new(RichText::new(&action.command).monospace().size(10.5)).wrap().selectable(true));
             });
         }
         let values = metrics(monitor);
         if monitor.last_sample.as_ref().and_then(|sample| sample.get("exists")) == Some(&Value::Bool(false)) {
             note(ui, "目标 不存在".into());
         } else if !values.is_empty() {
-            ui.label(RichText::new(values.iter().map(|(key, value)| format!("{key} {}", (value * 100.0).round() / 100.0)).collect::<Vec<_>>().join(" · ")).monospace().size(10.5));
+            ui.add(egui::Label::new(RichText::new(values.iter().map(|(key, value)| format!("{key} {}", (value * 100.0).round() / 100.0)).collect::<Vec<_>>().join(" · ")).monospace().size(10.5)).wrap());
             sparkline(ui, monitor, &values[0].0);
         }
         egui::CollapsingHeader::new(RichText::new(format!("操作记录（{}）", monitor.history.len())).size(10.0)).id_salt(("history", &monitor.id)).show(ui, |ui| {
             for entry in monitor.history.iter().rev().take(12) {
-                ui.label(RichText::new(&entry.message).size(10.0).color(palette.muted()));
+                ui.add(egui::Label::new(RichText::new(&entry.message).size(10.0).color(palette.muted())).wrap());
             }
         });
         let live = matches!(monitor.status, Status::Running | Status::Paused);
@@ -233,7 +235,7 @@ fn form(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
         label(ui, "主机");
         let hosts: Vec<&Value> = terminals.iter().filter(|terminal| terminal["kind"].as_str() == Some("ssh")).collect();
         let host_name = if form.host == "local" { "本机".to_string() } else { hosts.iter().find(|t| t["ref"]["sessionId"].as_str() == Some(&form.host)).and_then(|t| t["label"].as_str()).unwrap_or("SSH").to_string() };
-        egui::ComboBox::from_id_salt("monitor-host").width(ui.available_width()).selected_text(host_name).show_ui(ui, |ui| {
+        egui::ComboBox::from_id_salt("monitor-host").width(ui.available_width()).truncate().selected_text(host_name).show_ui(ui, |ui| {
             ui.selectable_value(&mut form.host, "local".into(), "本机");
             for terminal in &hosts {
                 let id = terminal["ref"]["sessionId"].as_str().unwrap_or_default().to_string();
@@ -286,17 +288,14 @@ fn form(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
             let text = if form.field == "text" { "包含文本" } else { "大于" };
             field(ui, text, &mut form.value, "");
         }
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| field(ui, "采样间隔（秒）", &mut form.interval, "5"));
-            ui.vertical(|ui| field(ui, "时长（分钟）", &mut form.duration, "60"));
-        });
+        timing_fields(ui, form);
         ui.checkbox(&mut form.with_action, "条件满足时自动执行一条命令");
         if form.with_action {
             field(ui, "命令（固定不变，Agent 不能修改）", &mut form.command, "");
             label(ui, "目标终端");
             let targets: Vec<&Value> = terminals.iter().filter(|t| matches!(t["kind"].as_str(), Some("shell" | "ssh")) && t["status"].as_str() == Some("running")).collect();
             let selected = targets.iter().find(|t| t["ref"]["sessionId"].as_str() == Some(&form.terminal)).map(|t| format!("{} · {}", t["label"].as_str().unwrap_or_default(), t["shortId"].as_str().unwrap_or_default())).unwrap_or_else(|| "请选择".into());
-            egui::ComboBox::from_id_salt("monitor-terminal").width(ui.available_width()).selected_text(selected).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt("monitor-terminal").width(ui.available_width()).truncate().selected_text(selected).show_ui(ui, |ui| {
                 for terminal in targets {
                     let id = terminal["ref"]["sessionId"].as_str().unwrap_or_default().to_string();
                     ui.selectable_value(&mut form.terminal, id, format!("{} · {}", terminal["label"].as_str().unwrap_or_default(), terminal["shortId"].as_str().unwrap_or_default()));
@@ -322,6 +321,24 @@ fn form(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
     }
 }
 
+fn timing_fields(ui: &mut Ui, form: &mut Form) {
+    let palette = style::palette(ui);
+    let mut field = |ui: &mut Ui, index: usize| {
+        let (label, value, hint) = if index == 0 { ("采样间隔（秒）", &mut form.interval, "5") } else { ("时长（分钟）", &mut form.duration, "60") };
+        ui.add(egui::Label::new(RichText::new(label).size(10.5).color(palette.muted())).wrap());
+        ui.add(egui::TextEdit::singleline(value).hint_text(hint).desired_width(ui.available_width()));
+    };
+    if ui.available_width() < 240.0 {
+        field(ui, 0);
+        field(ui, 1);
+    } else {
+        ui.columns(2, |columns| {
+            field(&mut columns[0], 0);
+            field(&mut columns[1], 1);
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,5 +350,19 @@ mod tests {
         assert_eq!(built["target"], json!({ "kind": "process", "name": "nginx" }));
         assert_eq!(built["conditions"][0]["op"], json!(">"));
         assert!(request(&Form { with_action: true, ..form }, &[]).unwrap_err().contains("目标终端"));
+    }
+
+    #[test]
+    fn timing_inputs_fit_narrow_and_wide_panels() {
+        for width in [140.0, 180.0, 240.0, 380.0, 860.0] {
+            let ctx = egui::Context::default();
+            let mut form = Form::default();
+            ctx.run_ui(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(width, 700.0))), ..Default::default() }, |ui| {
+                let before = ui.max_rect();
+                timing_fields(ui, &mut form);
+                assert!(ui.min_rect().right() <= before.right() + 0.5, "timing fields exceed {width}px: {:?}", ui.min_rect());
+            }).drop_without_applying_deltas();
+            assert_eq!((&*form.interval, &*form.duration), ("5", "60"));
+        }
     }
 }

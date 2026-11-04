@@ -248,7 +248,6 @@ pub fn show(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
         ui.set_height(41.0);
         super::dock::grip(app, ui, super::dock::Panel::Agent);
         ui.label(icon(icons::ROBOT, 17.0).color(palette.accent()));
-        ui.label(RichText::new("omniTerm Agent").strong().size(12.5).color(palette.text()));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if icon_button(ui, icons::X, "隐藏 omniTerm Agent 面板（对话继续运行）", true).clicked() {
                 intents.push(Intent::Action(super::shortcuts::Action::ToggleAgent));
@@ -263,7 +262,8 @@ pub fn show(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
             let state = &mut app.agent_state;
             if !state.providers.is_empty() {
                 let current = profile.as_ref().map(|profile| profile.name.clone()).unwrap_or_default();
-                egui::ComboBox::from_id_salt("agent-profile").width(120.0).selected_text(RichText::new(current).size(11.0)).show_ui(ui, |ui| {
+                let width = ui.available_width().clamp(0.0, 120.0);
+                egui::ComboBox::from_id_salt("agent-profile").width(width).truncate().selected_text(RichText::new(current).size(11.0)).show_ui(ui, |ui| {
                     for item in &state.providers {
                         if ui.selectable_label(Some(&item.id) == profile.as_ref().map(|p| &p.id), &item.name).clicked() {
                             state.profile = Some(item.id.clone());
@@ -271,6 +271,9 @@ pub fn show(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
                     }
                 });
             }
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.add(egui::Label::new(RichText::new("omniTerm Agent").strong().size(12.5).color(palette.text())).truncate());
+            });
         });
     });
     ui.separator();
@@ -520,7 +523,7 @@ fn composer(app: &mut App, ui: &mut Ui, profile: Option<&Profile>, intents: &mut
     ui.separator();
     // Scope: which terminals are shared, and which one may run commands.
     let summary = format!("上下文：{} · 执行：{}", state.scope(&state.context), if state.targets.is_empty() { "只读".into() } else { state.scope(&state.targets) });
-    if ui.add(egui::Button::new(RichText::new(format!("{}  {summary}  {}", icons::STACK, if state.picker { icons::CARET_DOWN } else { icons::CARET_RIGHT })).size(10.5).color(palette.muted())).frame(false)).clicked() {
+    if ui.add(egui::Button::new(RichText::new(format!("{}  {summary}  {}", icons::STACK, if state.picker { icons::CARET_DOWN } else { icons::CARET_RIGHT })).size(10.5).color(palette.muted())).frame(false).truncate()).on_hover_text(&summary).clicked() {
         state.picker = !state.picker;
     }
     if state.picker {

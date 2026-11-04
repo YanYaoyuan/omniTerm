@@ -15,6 +15,26 @@ use std::time::{Duration, Instant};
 const INTERVAL: Duration = Duration::from_secs(2);
 const TREND: usize = 60;
 
+fn column_rects(row: egui::Rect) -> [egui::Rect; 5] {
+    let scale = (row.width() / 368.0).clamp(0.0, 1.0);
+    let widths = [76.0 * scale, (row.width() - 368.0).max(0.0), 96.0 * scale, 116.0 * scale, 80.0 * scale];
+    let mut left = row.left();
+    widths.map(|width| {
+        let rect = egui::Rect::from_min_size(egui::pos2(left, row.top()), Vec2::new(width, row.height()));
+        left += width;
+        rect
+    })
+}
+
+fn cell_text(ui: &egui::Ui, rect: egui::Rect, text: String) {
+    let color = style::palette(ui).text_soft();
+    let mut job = egui::text::LayoutJob::simple_singleline(text, egui::FontId::monospace(11.0), color);
+    job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - 8.0).max(0.0));
+    let painter = ui.painter_at(rect);
+    let galley = painter.layout_job(job);
+    painter.galley(egui::pos2(rect.left() + 4.0, rect.center().y - galley.size().y / 2.0), galley, color);
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Sort {
     Cpu,
@@ -134,7 +154,7 @@ pub fn show(window: &mut ProcessWindow, ctx: &egui::Context, remotes: &Arc<crate
                 ui.add_space(12.0);
                 let current = window.host.as_ref().and_then(|id| hosts.iter().find(|(host, _)| host == id)).map(|(_, label)| label.clone()).unwrap_or_else(|| "本机".into());
                 let mut chosen = window.host.clone();
-                egui::ComboBox::from_id_salt("process-host").selected_text(current).show_ui(ui, |ui| {
+                egui::ComboBox::from_id_salt("process-host").width(120.0).truncate().selected_text(current).show_ui(ui, |ui| {
                     ui.selectable_value(&mut chosen, None, "本机");
                     for (id, label) in hosts {
                         ui.selectable_value(&mut chosen, Some(id.clone()), label);
@@ -159,15 +179,17 @@ pub fn show(window: &mut ProcessWindow, ctx: &egui::Context, remotes: &Arc<crate
                 Sort::Name => list.sort_by_key(|process| process.command.to_lowercase()),
             }
             let detail_height = if window.selected.is_some() { 120.0 } else { 0.0 };
-            ui.horizontal(|ui| {
-                for (sort, label, width) in [(Sort::Pid, "PID", 70.0), (Sort::Name, "名称", 300.0), (Sort::Cpu, "CPU %", 90.0), (Sort::Memory, "内存", 110.0)] {
-                    let text = if window.sort == sort { format!("{label} ↓") } else { label.to_string() };
-                    if ui.add_sized([width, 22.0], egui::Button::new(RichText::new(text).size(11.0).strong()).frame(false)).clicked() {
-                        window.sort = sort;
+            let (header, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 22.0), Sense::hover());
+            for (index, rect) in column_rects(header).into_iter().enumerate() {
+                if let Some((sort, label)) = [(Sort::Pid, "PID"), (Sort::Name, "名称"), (Sort::Cpu, "CPU %"), (Sort::Memory, "内存")].get(index) {
+                    let text = if window.sort == *sort { format!("{label} ↓") } else { label.to_string() };
+                    if ui.put(rect, egui::Button::new(RichText::new(text).size(11.0).strong()).frame(false).truncate()).clicked() {
+                        window.sort = *sort;
                     }
+                } else {
+                    ui.put(rect, egui::Label::new(RichText::new("父进程").size(11.0).strong()).truncate());
                 }
-                ui.label(RichText::new("父进程").size(11.0).strong());
-            });
+            }
             ui.separator();
             egui::ScrollArea::vertical().max_height(ui.available_height() - detail_height).auto_shrink([false, false]).show_rows(ui, 22.0, list.len(), |ui, rows| {
                 for process in &list[rows] {
@@ -178,10 +200,11 @@ pub fn show(window: &mut ProcessWindow, ctx: &egui::Context, remotes: &Arc<crate
                     } else if response.hovered() {
                         ui.painter().rect_filled(rect, 3.0, palette.hover());
                     }
-                    let cells = [(process.pid.to_string(), 0.0), (process.command.clone(), 76.0), (format!("{:.1}", process.cpu), 382.0), (crate::ui::remote_panel::format_bytes(process.memory_kb as f64 * 1024.0), 478.0), (process.ppid.to_string(), 594.0)];
-                    for (text, x) in cells {
-                        ui.painter().text(rect.left_center() + Vec2::new(x + 4.0, 0.0), egui::Align2::LEFT_CENTER, text, egui::FontId::monospace(11.0), palette.text_soft());
+                    let cells = [process.pid.to_string(), process.command.clone(), format!("{:.1}", process.cpu), crate::ui::remote_panel::format_bytes(process.memory_kb as f64 * 1024.0), process.ppid.to_string()];
+                    for (column, text) in column_rects(rect).into_iter().zip(cells) {
+                        cell_text(ui, column, text);
                     }
+                    let response = response.on_hover_text(&process.command);
                     if response.clicked() {
                         window.selected = Some(process.pid);
                     }
@@ -193,11 +216,13 @@ pub fn show(window: &mut ProcessWindow, ctx: &egui::Context, remotes: &Arc<crate
                 ui.separator();
                 ui.horizontal(|ui| {
                     ui.label(icon(icons::CPU, 16.0).color(palette.accent()));
-                    ui.label(RichText::new(format!("{} · PID {}", process.command, process.pid)).strong());
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if style::primary_button(ui, &format!("{}  监控此进程", icons::STACK)).on_hover_text("创建只读监控：不会执行任何操作").clicked() {
                             start(window.host.clone(), process.pid, process.command.clone());
                         }
+                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                            ui.add(egui::Label::new(RichText::new(format!("{} · PID {}", process.command, process.pid)).strong()).truncate()).on_hover_text(&process.command);
+                        });
                     });
                 });
                 if let Some(trend) = snapshot.trends.get(&pid).filter(|trend| trend.len() > 1) {
@@ -210,4 +235,36 @@ pub fn show(window: &mut ProcessWindow, ctx: &egui::Context, remotes: &Arc<crate
             }
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn long_process_names_fit_their_column_at_minimum_window_size() {
+        for width in [612.0, 952.0] {
+            let ctx = egui::Context::default();
+            let row = egui::Rect::from_min_size(egui::pos2(12.0, 12.0), Vec2::new(width, 22.0));
+            let columns = column_rects(row);
+            assert_eq!(columns[0].left(), row.left());
+            assert_eq!(columns[4].right(), row.right());
+            for pair in columns.windows(2) {
+                assert_eq!(pair[0].right(), pair[1].left());
+            }
+            let output = ctx.run_ui(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(width + 24.0, 300.0))), ..Default::default() }, |ui| {
+                cell_text(ui, columns[1], "very-long-process-name-".repeat(30));
+            });
+            let mut text_shapes = 0;
+            for clipped in &output.shapes {
+                if let egui::Shape::Text(text) = &clipped.shape {
+                    text_shapes += 1;
+                    assert!(columns[1].contains_rect(clipped.clip_rect));
+                    assert!(text.pos.x + text.galley.size().x <= columns[1].right());
+                }
+            }
+            assert!(text_shapes > 0);
+            output.drop_without_applying_deltas();
+        }
+    }
 }
