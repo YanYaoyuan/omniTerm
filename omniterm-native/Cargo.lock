@@ -3218,10 +3218,15 @@ dependencies = [
  "image",
  "keyring",
  "omniterm-terminal-host",
+ "raw-window-handle",
  "rfd",
  "serde",
  "serde_json",
  "uuid",
+ "wayland-backend",
+ "wayland-client",
+ "x11-dl",
+ "x11rb",
 ]
 
 [[package]]

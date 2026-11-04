@@ -1236,6 +1236,7 @@ impl eframe::App for App {
         }
         // The OS takes the pointer over from here, and on Windows keeps it until the drop,
         // so egui's own drag of the row ends now rather than on a release it never sees.
+        crate::drag_out::pump(frame, &ctx);
         if let Some(file) = self.drag_out.take() {
             ctx.stop_dragging();
             if let Err(error) = crate::drag_out::start(frame, &file) {

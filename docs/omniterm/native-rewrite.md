@@ -71,7 +71,7 @@ cargo run --release -- --smoke out.png # 打开窗口，在真实 Shell 里执�
 
 - 停靠：面板和单个终端窗格都可以拖到窗口的上、下、左、右边缘，与同一边缘的面板并排并可调整分割；停靠的窗格拖回标签栏或其他窗格即可还原。
 - 就绪标记：Agent 的终端选择器里对未知交互状态的 SSH 或本地 Shell 提供“启用就绪标记”，需要握手的终端可勾选“自动执行”，与桌面版一致。
-- SFTP 拖出：与桌面版一样，第一次拖动文件把它下载到私有临时目录（最大 2 GiB），行尾显示“可拖出”后再次拖动即可放到系统文件管理器；临时目录在 SSH 标签关闭时删除。支持 Windows 和 macOS；Linux 上 winit 窗口没有可用的拖放来源，请用“下载”。
+- SFTP 拖出：与桌面版一样，第一次拖动文件把它下载到私有临时目录（最大 2 GiB），行尾显示“可拖出”后再次拖动即可放到系统文件管理器；临时目录在 SSH 标签关闭时删除。Windows 用 OLE，macOS 用 NSDraggingSession；Linux 的 X11 会话用自带的 XDND 拖放来源（独立连接、根窗口指针抓取），Wayland 会话在 winit 的连接上用 `wl_data_device` 发起拖动，都以 `text/uri-list` 提供文件。
 - 连字不合并；程序通过 OSC 52 写剪贴板不支持（桌面版同样不支持）。
 - 非 macOS 平台上 Ctrl+V 是粘贴，不会把 ^V 发给程序。
 - 打包：`node omniterm-native/scripts/package.mjs` 在 `dist/release-native` 生成安装包，发布流程把源码构建的 Agent 一起打进去；CI 用 `--without-agent` 只打包应用本身。和桌面版一样不做 Developer ID 签名、公证或自动更新。
