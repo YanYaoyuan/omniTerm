@@ -5,6 +5,7 @@
 
 use super::paths::find_executable;
 use super::profile::{Forward, Kind, Profile};
+use super::settings::LocalShell;
 use serde_json::{Value, json};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -19,6 +20,7 @@ pub struct Request<'a> {
     pub profile: Option<&'a Profile>,
     /// Whether an SSH session shares its login with the file panel and metrics.
     pub companion: bool,
+    pub local_shell: &'a LocalShell,
 }
 
 /// What the file panel and metrics need to reach the same host.
@@ -57,6 +59,28 @@ pub fn local_shell() -> Result<(String, Vec<String>, bool), String> {
         }
     }
     Err("找不到本地 Shell。请设置 SHELL（Unix），或安装 PowerShell / 设置 COMSPEC（Windows）。".into())
+}
+
+impl LocalShell {
+    pub fn resolve(&self) -> Result<(String, Vec<String>, bool), String> {
+        let program = self.program.trim();
+        if program.len() > 4096 || program.chars().any(char::is_control) {
+            return Err("Shell 程序路径过长或含有控制字符。".into());
+        }
+        if self.args.len() > 64 || self.args.iter().any(|arg| arg.len() > 8192 || arg.contains('\0')) {
+            return Err("Shell 最多支持 64 个启动参数，每项最多 8192 字节且不能包含空字符。".into());
+        }
+        if program.is_empty() {
+            let (program, defaults, powershell) = local_shell()?;
+            return Ok((program, if self.args.is_empty() { defaults } else { self.args.clone() }, powershell));
+        }
+        let path = find_executable(program).ok_or_else(|| format!("找不到或无法执行自定义 Shell：{program}。请在设置中选择可执行程序，或清空程序以使用系统默认。"))?;
+        // Resolve relative paths before the PTY changes into the terminal's directory.
+        let path = std::path::absolute(path).map_err(|error| format!("无法解析 Shell 程序路径：{error}"))?;
+        let program = path.to_string_lossy().into_owned();
+        let powershell = is_powershell(&program);
+        Ok((program, self.args.clone(), powershell))
+    }
 }
 
 fn is_powershell(path: &str) -> bool {
@@ -151,7 +175,7 @@ pub fn build(request: &Request, control_path: impl FnOnce() -> Option<String>) -
     let mut connection = json!({});
     let (executable, args) = match request.kind {
         Kind::Shell => {
-            let (shell, args, is_powershell) = local_shell()?;
+            let (shell, args, is_powershell) = request.local_shell.resolve()?;
             powershell = is_powershell;
             (shell, args)
         }
@@ -246,7 +270,33 @@ mod tests {
 
     #[test]
     fn a_missing_directory_is_refused_before_anything_starts() {
-        let request = Request { kind: Kind::Shell, cwd: "/definitely/not/here", profile: None, companion: false };
+        let request = Request { kind: Kind::Shell, cwd: "/definitely/not/here", profile: None, companion: false, local_shell: &LocalShell::default() };
         assert!(build(&request, || None).unwrap_err().contains("工作目录"));
+    }
+
+    #[test]
+    fn custom_shell_arguments_are_passed_verbatim() {
+        let (program, _, _) = local_shell().unwrap();
+        let args = vec!["argument with spaces".into(), "$(literal); & | >".into(), String::new()];
+        let shell = LocalShell { program: program.clone(), args: args.clone() };
+        let cwd = std::env::current_dir().unwrap();
+        let request = Request { kind: Kind::Shell, cwd: cwd.to_str().unwrap(), profile: None, companion: false, local_shell: &shell };
+        let plan = build(&request, || None).unwrap();
+        assert_eq!(plan.host["executable"], program);
+        assert_eq!(plan.host["args"], json!(args));
+    }
+
+    #[test]
+    fn missing_custom_shell_is_reported_instead_of_falling_back() {
+        let shell = LocalShell { program: "/omniterm-missing-shell/program".into(), args: vec![] };
+        assert!(shell.resolve().unwrap_err().contains("自定义 Shell"));
+        assert!(LocalShell { args: vec!["bad\0argument".into()], ..LocalShell::default() }.resolve().is_err());
+    }
+
+    #[test]
+    fn empty_shell_configuration_preserves_automatic_discovery() {
+        assert_eq!(LocalShell::default().resolve().unwrap(), local_shell().unwrap());
+        let shell = LocalShell { program: String::new(), args: vec!["--custom-argument".into()] };
+        assert_eq!(shell.resolve().unwrap().1, shell.args);
     }
 }

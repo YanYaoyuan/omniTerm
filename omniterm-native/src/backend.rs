@@ -6,6 +6,7 @@
 
 use crate::core::plan::{self, Companion};
 use crate::core::profile::{Kind, Profile};
+use crate::core::settings::LocalShell;
 use crate::terminal::{Options, Request, Size, Terminal};
 use omniterm_terminal_host::host::Host;
 use omniterm_terminal_host::protocol::{Frame, Outbox};
@@ -23,6 +24,7 @@ pub struct Open {
     pub cwd: String,
     pub profile: Option<Profile>,
     pub companion: bool,
+    pub local_shell: LocalShell,
     pub size: Size,
     pub options: Options,
 }
@@ -245,7 +247,7 @@ fn open_session(
     open: &Open,
     control_path: &dyn Fn() -> Option<String>,
 ) -> Result<Session, String> {
-    let request = plan::Request { kind: open.kind, cwd: &open.cwd, profile: open.profile.as_ref(), companion: open.companion };
+    let request = plan::Request { kind: open.kind, cwd: &open.cwd, profile: open.profile.as_ref(), companion: open.companion, local_shell: &open.local_shell };
     let plan = plan::build(&request, control_path)?;
     let created = host.handle("session.create", plan.host)?;
     let id = created["id"].as_str().ok_or("终端主机没有返回会话 id。")?.to_string();

@@ -98,9 +98,18 @@ pub const SCROLLBACKS: [usize; 5] = [1_000, 5_000, 10_000, 50_000, 100_000];
 pub const MIN_FONT: f32 = 9.0;
 pub const MAX_FONT: f32 = 28.0;
 
+/// An empty program keeps automatic discovery. Arguments are passed verbatim, in order.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LocalShell {
+    pub program: String,
+    pub args: Vec<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
+    pub local_shell: LocalShell,
     pub font_size: f32,
     pub font_family: FontFamily,
     pub line_height: f32,
@@ -126,6 +135,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            local_shell: LocalShell::default(),
             font_size: 13.0,
             font_family: FontFamily::System,
             line_height: 1.22,
@@ -226,6 +236,14 @@ mod tests {
         assert_eq!(settings.line_height, 1.22);
         assert_eq!(settings.scrollback, 10_000);
         assert_eq!(settings.theme, "nord");
+        assert_eq!(settings.local_shell, LocalShell::default(), "older configurations keep automatic shell discovery");
+    }
+
+    #[test]
+    fn shell_settings_round_trip_without_reinterpreting_arguments() {
+        let settings = Settings { local_shell: LocalShell { program: "a shell with spaces".into(), args: vec!["-c".into(), "argument with spaces; $(literal)".into(), String::new()] }, ..Settings::default() };
+        let restored: Settings = serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
+        assert_eq!(restored.local_shell, settings.local_shell);
     }
 
     #[test]

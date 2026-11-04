@@ -7,6 +7,7 @@ mod chrome;
 mod dialogs;
 mod dock;
 mod monitor_view;
+mod opening;
 mod process_window;
 mod palette;
 mod remote_panel;
@@ -30,6 +31,7 @@ use alacritty_terminal::vte::ansi::CursorShape;
 use eframe::egui::{self, ViewportCommand};
 use eframe::egui_wgpu;
 use shortcuts::Action;
+use opening::{Pending, Placement};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -83,12 +85,6 @@ pub struct Tab {
     pub title: String,
     pub broadcast: bool,
     pub zoomed: bool,
-}
-
-/// Where a session that is still opening will go.
-enum Placement {
-    NewTab,
-    Split { tab: u64, target: String, row: bool },
 }
 
 pub enum Dialog {
@@ -169,7 +165,7 @@ pub struct App {
     tabs: Vec<Tab>,
     active: Option<u64>,
     next_id: u64,
-    pending: HashMap<u64, Placement>,
+    pending: Pending,
     profiles: Vec<Profile>,
     store: Store,
     cwd: String,
@@ -267,7 +263,7 @@ impl App {
             tabs: Vec::new(),
             active: None,
             next_id: 0,
-            pending: HashMap::new(),
+            pending: Pending::default(),
             profiles: Vec::new(),
             store,
             cwd,
@@ -398,6 +394,7 @@ impl App {
             cwd: cwd.unwrap_or_else(|| self.cwd.clone()),
             profile,
             companion: kind.remote() && self.settings.remote_panels,
+            local_shell: self.settings.local_shell.clone(),
             size: self.likely_size(),
             options: self.terminal_options(),
         }
@@ -442,9 +439,9 @@ impl App {
     }
 
     fn opened(&mut self, token: u64, result: Result<Box<Session>, String>) {
-        let placement = self.pending.remove(&token);
-        let session = match result {
-            Ok(session) => session,
+        let (placement, session) = match self.pending.complete(token, result, &self.tabs, &self.backend) {
+            Ok(Some(completed)) => completed,
+            Ok(None) => return,
             Err(error) => {
                 self.notify(error, true);
                 return;
@@ -452,13 +449,13 @@ impl App {
         };
         let id = self.attach(*session);
         match placement {
-            Some(Placement::Split { tab, target, row }) if self.tab(tab).is_some_and(|tab| tab.root.panes().contains(&target)) => {
+            Placement::Split { tab, target, row } => {
                 let tab = self.tab_mut(tab).expect("checked");
                 tab.root = tab.root.split(&target, &id, row);
                 tab.focus = id;
                 tab.zoomed = false;
             }
-            _ => {
+            Placement::NewTab => {
                 let tab = Tab { id: next_counter(&mut self.next_id), root: Node::Pane(id.clone()), focus: id, title: String::new(), broadcast: false, zoomed: false };
                 self.active = Some(tab.id);
                 self.tabs.push(tab);
@@ -548,6 +545,7 @@ impl App {
     }
 
     fn close_pane(&mut self, id: &str) {
+        self.pending.cancel_pane(id);
         self.docked.retain(|(docked, _)| docked != id);
         if self.docked_focus.as_deref() == Some(id) {
             self.docked_focus = None;
@@ -599,6 +597,7 @@ impl App {
 
     /// Removes a tab whose sessions are already closed and moves focus to a neighbor.
     fn drop_tab(&mut self, tab: u64) {
+        self.pending.cancel_tab(tab);
         let Some(index) = self.tabs.iter().position(|item| item.id == tab) else { return };
         self.tabs.remove(index);
         if self.active == Some(tab) {

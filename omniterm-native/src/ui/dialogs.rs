@@ -4,7 +4,7 @@
 use super::style::{self, icon, icon_button, percent_slider, segmented, toggle};
 use super::{App, Dialog, Intent};
 use crate::core::profile::{Forward, Kind, Profile};
-use crate::core::settings::{BackgroundMode, CursorStyle, FontFamily, ImageFit, LINE_HEIGHTS, MAX_FONT, MIN_FONT, SCROLLBACKS, Settings};
+use crate::core::settings::{BackgroundMode, CursorStyle, FontFamily, ImageFit, LINE_HEIGHTS, LocalShell, MAX_FONT, MIN_FONT, SCROLLBACKS, Settings};
 use crate::core::ssh_config::Host;
 use crate::icons;
 use crate::theme::THEMES;
@@ -160,6 +160,39 @@ fn section(ui: &mut Ui, title: &str) {
     ui.add_space(4.0);
 }
 
+fn shell_settings(ui: &mut Ui, shell: &mut LocalShell) {
+    let palette = style::palette(ui);
+    section(ui, "本地 Shell");
+    ui.add(egui::Label::new(RichText::new("用于新建、分屏及恢复的本地终端；修改后已打开的会话继续运行。").size(10.5).color(palette.muted())).wrap());
+    ui.label(RichText::new("程序名称或完整路径（不加外层引号）").size(11.0));
+    ui.add(egui::TextEdit::singleline(&mut shell.program).hint_text(if cfg!(windows) { "留空自动选择；例如 pwsh.exe、cmd.exe、wsl.exe" } else { "留空使用系统默认；例如 /bin/zsh、/bin/bash" }).desired_width(ui.available_width()));
+    ui.add_space(4.0);
+    ui.label(RichText::new("启动参数（按顺序，每行是一个完整参数）").size(11.0));
+    let mut remove = None;
+    for (index, arg) in shell.args.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            let width = (ui.available_width() - 60.0).max(40.0);
+            ui.add(egui::TextEdit::singleline(arg).id_salt(("shell-argument", index)).desired_width(width).hint_text("例如 -l；含空格的参数无需再加引号"));
+            if style::ghost_button(ui, "移除").clicked() {
+                remove = Some(index);
+            }
+        });
+    }
+    if let Some(index) = remove {
+        shell.args.remove(index);
+    }
+    ui.horizontal(|ui| {
+        if ui.add_enabled(shell.args.len() < 64, egui::Button::new("添加参数")).clicked() {
+            shell.args.push(String::new());
+        }
+        if style::ghost_button(ui, "恢复系统默认").clicked() {
+            *shell = LocalShell::default();
+        }
+    });
+    ui.add(egui::Label::new(RichText::new("程序和参数都留空时沿用系统默认；添加参数后替换默认参数。参数按原样传给程序，不会拼成命令行。").size(10.5).color(palette.muted())).wrap());
+    ui.add_space(6.0);
+}
+
 pub fn show(app: &mut App, ctx: &egui::Context, intents: &mut Vec<Intent>) {
     let Some(dialog) = app.dialog.as_mut() else { return };
     let close = match dialog {
@@ -181,6 +214,7 @@ fn settings(app: &mut App, ctx: &egui::Context, intents: &mut Vec<Intent>) -> bo
     let mut done = false;
     let closed = modal(ctx, "settings", 560.0, icons::SLIDERS_HORIZONTAL, "终端设置", "让工作区更适合你的习惯", |ui| {
         egui::ScrollArea::vertical().max_height(ctx.content_rect().height() * 0.7).show(ui, |ui| {
+            shell_settings(ui, &mut settings.local_shell);
             section(ui, "外观");
             egui::Grid::new("themes").spacing(Vec2::splat(8.0)).show(ui, |ui| {
                 for (index, theme) in THEMES.iter().enumerate() {
@@ -562,4 +596,23 @@ fn import(state: &mut ImportState, ctx: &egui::Context, intents: &mut Vec<Intent
             });
         });
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_settings_fit_without_changing_paths_or_arguments() {
+        for width in [320.0, 560.0] {
+            let ctx = egui::Context::default();
+            let mut shell = LocalShell { program: "a very long program path with spaces/".repeat(12), args: vec!["literal argument with spaces; $(not executed)".repeat(12)] };
+            let original = shell.clone();
+            ctx.run_ui(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(width, 800.0))), ..Default::default() }, |ui| {
+                shell_settings(ui, &mut shell);
+                assert!(ui.min_rect().right() <= width + 0.5, "shell form overflowed {width}px");
+            }).drop_without_applying_deltas();
+            assert_eq!(shell, original);
+        }
+    }
 }
