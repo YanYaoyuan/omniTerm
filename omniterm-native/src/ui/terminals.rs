@@ -376,19 +376,12 @@ fn stack(app: &mut App, ui: &mut Ui, area: Rect, intents: &mut Vec<Intent>, moda
         tab.root.layout(whole, &mut Vec::new(), &mut panes, &mut dividers);
     }
     let many = panes.len() > 1;
-    let uploads: Arc<Mutex<Vec<Upload>>> = Arc::default();
-    let epoch = app.fonts.epoch;
+    let uploads = app.frame_uploads.clone();
+    let tab_has_keyboard = app.docked_focus.is_none();
     for (id, fraction) in &panes {
         let rect = pane_rect(area, *fraction);
-        let focused = *id == focus;
+        let focused = *id == focus && tab_has_keyboard;
         pane(app, ui, id, rect, focused, many, &uploads, intents, modal);
-    }
-    // Glyphs first seen while building go up before any pane is drawn: every callback
-    // prepares only after the whole frame is laid out. If the atlas started over meanwhile,
-    // the panes built before that point are rebuilt next frame.
-    uploads.lock().unwrap_or_else(|p| p.into_inner()).append(&mut app.fonts.uploads);
-    if app.fonts.epoch != epoch {
-        ui.ctx().request_repaint();
     }
     for divider in dividers {
         drag_divider(ui, area, tab_id, divider, intents);
@@ -398,9 +391,10 @@ fn stack(app: &mut App, ui: &mut Ui, area: Rect, intents: &mut Vec<Intent>, moda
         let pointer = ui.input(|input| input.pointer.hover_pos());
         let released = ui.input(|input| input.pointer.any_released());
         ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+        let docking = super::dock::edge_band(ui.ctx(), pointer).is_some();
         for (id, fraction) in &panes {
             let rect = pane_rect(area, *fraction);
-            if *id == dragged || !pointer.is_some_and(|pointer| rect.contains(pointer)) {
+            if docking || *id == dragged || !pointer.is_some_and(|pointer| rect.contains(pointer)) {
                 continue;
             }
             let pointer = pointer.expect("checked");
@@ -420,6 +414,14 @@ fn stack(app: &mut App, ui: &mut Ui, area: Rect, intents: &mut Vec<Intent>, moda
             app.dragging_pane = None;
         }
     }
+}
+
+/// A terminal docked on a window edge, drawn and driven like any pane.
+pub fn docked(app: &mut App, ui: &mut Ui, id: &str, rect: Rect, intents: &mut Vec<Intent>) {
+    let focused = app.docked_focus.as_deref() == Some(id);
+    let modal = app.dialog.is_some() || app.palette.is_some();
+    let uploads = app.frame_uploads.clone();
+    pane(app, ui, id, rect.shrink(3.0), focused, true, &uploads, intents, modal);
 }
 
 /// A pane's place, with a gutter between neighbors and none at the edges.

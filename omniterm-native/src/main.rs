@@ -28,6 +28,13 @@ mod ui;
 
 use eframe::egui;
 
+/// The desktop app's icon, for the window and the task bar.
+fn app_icon() -> Option<egui::IconData> {
+    let image = image::load_from_memory(include_bytes!("../../omniterm-desktop/assets/icon.png")).ok()?.to_rgba8();
+    let (width, height) = image.dimensions();
+    Some(egui::IconData { rgba: image.into_raw(), width, height })
+}
+
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("--bench") {
@@ -51,6 +58,9 @@ fn main() -> eframe::Result {
     } else {
         viewport.with_decorations(false)
     };
+    if let Some(icon) = app_icon() {
+        viewport = viewport.with_icon(icon);
+    }
     let options = eframe::NativeOptions { viewport, renderer: eframe::Renderer::Wgpu, ..Default::default() };
     let result = eframe::run_native("omniTerm", options, Box::new(move |cc| Ok(Box::new(ui::App::new(cc, settings, transparent, smoke)))));
     remote::cleanup();

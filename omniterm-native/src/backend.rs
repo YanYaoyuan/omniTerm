@@ -37,6 +37,16 @@ pub struct Session {
     pub powershell: bool,
     pub profile: Option<Profile>,
     pub companion: Option<Companion>,
+    /// Marks the host trusts from this shell carry this nonce; see `shell_integration`.
+    pub nonce: String,
+}
+
+/// The readiness marks script for bash 4.4+ and zsh, from the desktop app's
+/// `shell-integration.mjs`, for the user to submit in a shell they chose.
+pub fn shell_integration(nonce: &str) -> Option<String> {
+    const PLACEHOLDER: &str = "f00df00df00df00df00df00df00df00d";
+    let valid = nonce.len() == 32 && nonce.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    valid.then(|| include_str!("../assets/shell-integration.txt").replace(PLACEHOLDER, nonce))
 }
 
 /// What the UI hears about, apart from output.
@@ -239,6 +249,7 @@ fn open_session(
     let plan = plan::build(&request, control_path)?;
     let created = host.handle("session.create", plan.host)?;
     let id = created["id"].as_str().ok_or("终端主机没有返回会话 id。")?.to_string();
+    let nonce = created["shellNonce"].as_str().unwrap_or_default().to_string();
     let terminal = Terminal::new(id.clone(), open.size, open.options, requests.clone());
     lock(terminals).insert(id.clone(), terminal.clone());
     let started = host
@@ -249,5 +260,5 @@ fn open_session(
         let _ = host.handle("session.close", json!({ "id": id }));
         return Err(error);
     }
-    Ok(Session { terminal, kind: open.kind, title: plan.title, cwd: open.cwd.clone(), powershell: plan.powershell, profile: open.profile.clone(), companion: plan.companion })
+    Ok(Session { terminal, kind: open.kind, title: plan.title, cwd: open.cwd.clone(), powershell: plan.powershell, profile: open.profile.clone(), companion: plan.companion, nonce })
 }

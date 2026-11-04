@@ -109,6 +109,58 @@ pub fn grip(app: &mut App, ui: &mut Ui, panel: Panel) {
     }
 }
 
+/// While a pane is dragged, the thin bands along the window edges dock it there. They are
+/// narrow so the panes of the active tab stay the targets everywhere else.
+pub fn edge_band(ctx: &egui::Context, pointer: Option<egui::Pos2>) -> Option<Edge> {
+    let pointer = pointer?;
+    let screen = ctx.content_rect();
+    let band = Vec2::new((screen.width() * 0.06).max(40.0), (screen.height() * 0.07).max(36.0));
+    if pointer.x < screen.left() + band.x {
+        Some(Edge::Left)
+    } else if pointer.x > screen.right() - band.x {
+        Some(Edge::Right)
+    } else if pointer.y < screen.top() + band.y {
+        Some(Edge::Top)
+    } else if pointer.y > screen.bottom() - band.y {
+        Some(Edge::Bottom)
+    } else {
+        None
+    }
+}
+
+fn band_rect(screen: Rect, edge: Edge) -> Rect {
+    let band = Vec2::new((screen.width() * 0.06).max(40.0), (screen.height() * 0.07).max(36.0));
+    match edge {
+        Edge::Left => Rect::from_min_size(screen.min, Vec2::new(band.x, screen.height())),
+        Edge::Right => Rect::from_min_max(egui::pos2(screen.right() - band.x, screen.top()), screen.max),
+        Edge::Top => Rect::from_min_size(screen.min, Vec2::new(screen.width(), band.y)),
+        Edge::Bottom => Rect::from_min_max(egui::pos2(screen.left(), screen.bottom() - band.y), screen.max),
+    }
+}
+
+/// Shows the docking bands for a dragged pane and docks it on release over one.
+pub fn pane_overlay(app: &mut App, ctx: &egui::Context, intents: &mut Vec<Intent>) {
+    let Some(id) = app.dragging_pane.clone() else { return };
+    let palette = style::palette_of(ctx);
+    let screen = ctx.content_rect();
+    let pointer = ctx.input(|input| input.pointer.hover_pos());
+    let target = edge_band(ctx, pointer);
+    egui::Area::new(Id::unique("pane-dock-overlay")).order(egui::Order::Foreground).fixed_pos(screen.min).interactable(false).show(ctx, |ui| {
+        for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
+            let hot = Some(edge) == target;
+            ui.painter().rect(band_rect(screen, edge).shrink(4.0), 6.0, style::alpha(palette.tokens.accent, if hot { 0.24 } else { 0.05 }), Stroke::new(if hot { 2.0 } else { 1.0 }, style::alpha(palette.tokens.accent, if hot { 0.85 } else { 0.25 })), egui::StrokeKind::Inside);
+        }
+        if let (Some(pointer), Some(_)) = (pointer, target) {
+            ui.painter().text(pointer + Vec2::new(14.0, 14.0), Align2::LEFT_TOP, "停靠到窗口边缘", FontId::proportional(12.0), palette.text());
+        }
+    });
+    // Released anywhere else, the tab panes and the tab strip take the drop.
+    if let Some(edge) = target.filter(|_| ctx.input(|input| input.pointer.any_released())) {
+        intents.push(Intent::DockPane { id, edge });
+        app.dragging_pane = None;
+    }
+}
+
 fn drop_zones(screen: Rect) -> [(Edge, Rect); 4] {
     let band = Vec2::new(screen.width() * 0.22, screen.height() * 0.22);
     [
@@ -144,10 +196,19 @@ pub fn drag_overlay(app: &mut App, ctx: &egui::Context) {
     }
 }
 
-/// Lays out the docked panels around the central area, in a fixed order per edge.
-pub fn show(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
+#[derive(Clone, PartialEq)]
+enum Member {
+    Panel(Panel),
+    Terminal(String),
+}
+
+/// Lays out the docked panels and terminals around the central area, in a fixed order per
+/// edge. Full-screen terminals keep docked terminals and hide the panels.
+pub fn show(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>, terminals_only: bool) {
     for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
-        let members: Vec<Panel> = Panel::ALL.into_iter().filter(|panel| app.dock.edge(*panel) == edge && app.panel_visible(*panel)).collect();
+        let panels = Panel::ALL.into_iter().filter(|panel| !terminals_only && app.dock.edge(*panel) == edge && app.panel_visible(*panel)).map(Member::Panel);
+        let terminals = app.docked.iter().filter(|(_, docked)| *docked == edge).map(|(id, _)| Member::Terminal(id.clone()));
+        let members: Vec<Member> = panels.chain(terminals).collect();
         if members.is_empty() {
             continue;
         }
@@ -164,7 +225,7 @@ pub fn show(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
         let response = builder.resizable(true).default_size(size).size_range(range).frame(egui::Frame::new().fill(Color32::TRANSPARENT)).show(ui, |ui| {
             let rect = ui.max_rect();
             if members.len() == 1 {
-                member(app, ui, members[0], rect, intents);
+                member(app, ui, &members[0], rect, intents);
                 return;
             }
             // Two or three panels share the edge, split along it.
@@ -177,7 +238,7 @@ pub fn show(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
             for (index, panel) in members.iter().enumerate() {
                 let span = if index == 0 { first } else { rest };
                 let area = if vertical { Rect::from_min_size(rect.min + Vec2::new(0.0, offset), Vec2::new(rect.width(), span)) } else { Rect::from_min_size(rect.min + Vec2::new(offset, 0.0), Vec2::new(span, rect.height())) };
-                member(app, ui, *panel, area.shrink2(if vertical { Vec2::new(0.0, 1.5) } else { Vec2::new(1.5, 0.0) }), intents);
+                member(app, ui, panel, area.shrink2(if vertical { Vec2::new(0.0, 1.5) } else { Vec2::new(1.5, 0.0) }), intents);
                 offset += span;
             }
             // The divider after the first panel moves the split.
@@ -197,8 +258,15 @@ pub fn show(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
     }
 }
 
-fn member(app: &mut App, ui: &mut Ui, panel: Panel, rect: Rect, intents: &mut Vec<Intent>) {
+fn member(app: &mut App, ui: &mut Ui, member: &Member, rect: Rect, intents: &mut Vec<Intent>) {
     let palette = style::palette(ui);
+    let panel = match member {
+        Member::Panel(panel) => *panel,
+        Member::Terminal(id) => {
+            super::terminals::docked(app, ui, id, rect, intents);
+            return;
+        }
+    };
     ui.painter().rect_filled(rect, 0.0, if panel == Panel::Sidebar { palette.panel } else { palette.panel_soft });
     let inner = rect.shrink2(if panel == Panel::Sidebar { Vec2::new(12.0, 0.0) } else { Vec2::new(10.0, 0.0) });
     ui.scope_builder(egui::UiBuilder::new().max_rect(inner).id_salt(("dock-member", panel as u8)), |ui| {

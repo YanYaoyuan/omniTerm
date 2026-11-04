@@ -170,6 +170,8 @@ jobs:
       - name: Open the window and run a command in a real shell (Windows)
         if: runner.os == 'Windows'
         run: target/release/omniterm-app.exe --smoke "$PWD/smoke-Windows.png"
+      - name: Package the app alone (the release adds the Agent)
+        run: node scripts/package.mjs --without-agent
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -179,6 +181,7 @@ jobs:
             omniterm-native/bench-*.json
             omniterm-native/target/release/omniterm-app
             omniterm-native/target/release/omniterm-app.exe
+            dist/release-native/*
           if-no-files-found: ignore
 
   engine:

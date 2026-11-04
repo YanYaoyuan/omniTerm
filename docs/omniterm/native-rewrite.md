@@ -23,8 +23,8 @@
 | 1 | 标题栏与窗口控件、侧栏、命令面板、全部快捷键、设置（13 个主题、字体、光标、透明窗口、背景图）、工作区恢复、搜索、链接、鼠标上报、文件拖放、广播输入、标签重命名与排序 | 已完成 |
 | 2 | 保存的连接（与桌面版共用 profiles.json）、SSH 配置导入、SSH / SFTP / 串口 / 隧道会话、SFTP 文件面板与传输、远程主机指标 | 已完成 |
 | 3 | omniTerm Agent：模型服务（共用 model-providers.json，密钥在系统钥匙串）、Agent 引擎、上下文、审批卡片、工具 | 已完成 |
-| 4 | 监控面板与进程窗口、停靠工作区（拖动面板到窗口任一边缘） | 已完成 |
-| 5 | 三平台安装包与签名、自动更新 | 待做：CI 目前上传三平台可执行文件 |
+| 4 | 监控面板与进程窗口、停靠工作区（拖动面板或单个终端窗格到窗口任一边缘）、就绪标记与 SSH 自动执行 | 已完成 |
+| 5 | 三平台安装包：macOS `omniTerm.app`（ZIP，ad hoc 签名）、Windows 便携 ZIP、Linux `.deb` 与 tar.gz，附 SHA-256 与清单 | 已完成（与桌面版一样不签名、无自动更新） |
 
 ## 功能对照（Electron → 原生）
 
@@ -34,13 +34,13 @@
 | `session-manager.mjs`、`terminal-host.mjs` | `backend.rs`（直接链接主机） | 0 |
 | `layout.js` 窗格部分 | `layout.rs` | 0 |
 | `shortcuts.js` | `app.rs` 快捷键 | 0 / 1 |
-| `themes.js` | `theme.rs`（目前 3 个主题） | 0 / 1 |
-| `command-plan.mjs`、`shell-integration.mjs` | 本地 Shell 已有，其余待移植 | 0 / 1 |
-| `workspace.js`、设置 | 待移植 | 1 |
-| `ssh-config.mjs`、`profile-store.mjs`、`remote-manager.mjs`、`sftp-client.mjs`、`remote-metrics.mjs` | 待移植 | 2 |
-| `agent-*.mjs`、`provider-store.mjs`、`AgentPanel.jsx` | 待移植 | 3 |
-| `monitor-*.mjs`、`local-probe.mjs`、`ProcessWindow.jsx`、停靠布局 | 待移植 | 4 |
-| `package*.mjs`、`window-chrome.mjs` | 待移植 | 5 |
+| `themes.js` | `theme.rs`（13 个主题） | 0 / 1 |
+| `command-plan.mjs`、`shell-integration.mjs` | `core/plan.rs`、`backend.rs`、`assets/shell-integration.txt` | 0 / 1 |
+| `workspace.js`、设置 | `core/workspace.rs`、`core/settings.rs` | 1 |
+| `ssh-config.mjs`、`profile-store.mjs`、`remote-manager.mjs`、`sftp-client.mjs`、`remote-metrics.mjs` | `core/ssh_config.rs`、`core/profile.rs`、`remote/` | 2 |
+| `agent-*.mjs`、`provider-store.mjs`、`AgentPanel.jsx` | `agent/`、`ui/agent_panel.rs` | 3 |
+| `monitor-*.mjs`、`local-probe.mjs`、`ProcessWindow.jsx`、停靠布局 | `monitor/`、`ui/monitor_view.rs`、`ui/process_window.rs`、`ui/dock.rs` | 4 |
+| `package*.mjs`、`window-chrome.mjs` | `scripts/package.mjs`、`ui/chrome.rs` | 5 |
 
 ## 运行
 
@@ -55,9 +55,10 @@ cargo run --release -- --smoke out.png # 打开窗口，在真实 Shell 里执�
 
 ## 与桌面版的差异
 
-- 停靠：面板拖到窗口的上、下、左、右边缘，同一边缘的面板可调整分割；终端窗格可以拖到其他窗格的边缘或标签栏，但还不能单独停靠到侧栏、Agent 或监控面板旁边。
+- 停靠：面板和单个终端窗格都可以拖到窗口的上、下、左、右边缘，与同一边缘的面板并排并可调整分割；停靠的窗格拖回标签栏或其他窗格即可还原。
+- 就绪标记：Agent 的终端选择器里对未知交互状态的 SSH 或本地 Shell 提供“启用就绪标记”，需要握手的终端可勾选“自动执行”，与桌面版一致。
 - SFTP 文件不能直接拖出到系统文件管理器，请用“下载”。
 - 连字不合并；程序通过 OSC 52 写剪贴板不支持（桌面版同样不支持）。
 - 非 macOS 平台上 Ctrl+V 是粘贴，不会把 ^V 发给程序。
-- 安装包、签名与自动更新尚未接入，CI 上传三平台可执行文件。
+- 打包：`node omniterm-native/scripts/package.mjs` 在 `dist/release-native` 生成安装包，发布流程把源码构建的 Agent 一起打进去；CI 用 `--without-agent` 只打包应用本身。和桌面版一样不做 Developer ID 签名、公证或自动更新。
 - macOS 的 CI 只构建、单测和基准测试，不开真实窗口；Linux（lavapipe 软件 Vulkan）和 Windows（WARP）在 CI 里开真实窗口做冒烟测试。

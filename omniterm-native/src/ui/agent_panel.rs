@@ -288,7 +288,7 @@ pub fn show(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
         });
     } else {
         conversation(app, ui, intents);
-        composer(app, ui, profile.as_ref());
+        composer(app, ui, profile.as_ref(), intents);
     }
     providers_dialog(app, ui.ctx());
 }
@@ -481,9 +481,15 @@ fn card(ui: &mut Ui, operation: &Value, terminals: &[Value], decisions: &mut Vec
                 let manual = if interaction == "fullscreen" {
                     "全屏程序不是 shell，shell 命令无法执行。如需向这个程序输入，请让 Agent 使用“发送给运行中的程序”。"
                 } else if target.is_some_and(|terminal| terminal["autoSubmit"].as_bool() == Some(false)) {
-                    "该终端的命令需要你检查后手动按回车提交。"
-                } else {
+                    if target.is_some_and(|terminal| terminal["autoSubmitOptIn"].as_bool() == Some(true)) {
+                        "该终端已允许自动执行，但远端还不能确认就绪（需要启用就绪标记、zsh 或 bash 4.4+ 和 emacs 键位）。批准后只输入到终端，由你按回车。"
+                    } else {
+                        "SSH 终端默认不自动提交：批准后命令只输入到终端，由你检查后按回车。可以在终端列表中为这个终端开启“自动执行”。"
+                    }
+                } else if can_run {
                     ""
+                } else {
+                    "无法确认空闲，只能输入后由你手动回车。"
                 };
                 ui.label(RichText::new(format!("终端状态：{}{}", interaction_label(interaction), if manual.is_empty() { String::new() } else { format!("。{manual}") })).size(10.5).color(palette.muted()));
                 ui.horizontal_wrapped(|ui| {
@@ -507,7 +513,7 @@ fn card(ui: &mut Ui, operation: &Value, terminals: &[Value], decisions: &mut Vec
     });
 }
 
-fn composer(app: &mut App, ui: &mut Ui, profile: Option<&Profile>) {
+fn composer(app: &mut App, ui: &mut Ui, profile: Option<&Profile>, intents: &mut Vec<Intent>) {
     let palette = style::palette(ui);
     let cwd = app.focused().map(|pane| pane.cwd().to_string()).unwrap_or_else(|| app.cwd.clone());
     let state = &mut app.agent_state;
@@ -527,13 +533,31 @@ fn composer(app: &mut App, ui: &mut Ui, profile: Option<&Profile>) {
                     ui.label(RichText::new("上下文").size(10.0).color(palette.faint()));
                 });
             });
+            let mut state_refresh = false;
             egui::ScrollArea::vertical().id_salt("picker").max_height(150.0).show(ui, |ui| {
                 for terminal in state.terminals.clone() {
                     let Some(id) = terminal["ref"]["sessionId"].as_str().map(String::from) else { continue };
                     ui.horizontal(|ui| {
                         let glyph = if terminal["kind"].as_str() == Some("shell") { icons::TERMINAL_WINDOW } else { icons::HARD_DRIVES };
                         ui.label(icon(glyph, 14.0).color(palette.muted()));
-                        ui.label(RichText::new(terminal_name(&terminal)).size(11.0));
+                        let place = terminal["connection"]["configured"]["host"].as_str().map(String::from).or_else(|| terminal["cwd"]["value"].as_str().filter(|cwd| !cwd.is_empty()).map(String::from)).unwrap_or_else(|| "目录未知".into());
+                        let readiness = interaction_label(terminal["interaction"]["state"].as_str().unwrap_or("unknown"));
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new(terminal_name(&terminal)).size(11.0));
+                            ui.label(RichText::new(format!("{place} · {readiness}{}", if terminal["focused"].as_bool() == Some(true) { " · 当前焦点" } else { "" })).size(9.5).color(palette.faint()));
+                        });
+                        let kind = terminal["kind"].as_str().unwrap_or_default();
+                        // Readiness marks: a script the user submits, so busy and unfinished input can be told apart.
+                        if terminal["interaction"]["state"].as_str() == Some("unknown") && (kind == "ssh" || (kind == "shell" && !cfg!(windows))) && ui.link(RichText::new("启用就绪标记").size(10.0)).on_hover_text("向该终端输入一段启用就绪标记的脚本（zsh 或 bash 4.4+），由你按回车确认。启用后可以识别忙碌和未完成的输入；本地 shell 中已批准的命令才能自动提交，SSH 始终由你按回车。").clicked() {
+                            intents.push(Intent::StageIntegration(id.clone()));
+                        }
+                        if terminal["requiresHandshake"].as_bool() == Some(true) {
+                            let mut enabled = terminal["autoSubmitOptIn"].as_bool() == Some(true);
+                            if ui.checkbox(&mut enabled, RichText::new("自动执行").size(10.0)).on_hover_text("开启后，批准执行的命令在远端行编辑器确认提示符为空后自动提交；无法确认时不会提交。需要先启用就绪标记（zsh 或 bash 4.4+，emacs 键位）。").changed() {
+                                intents.push(Intent::AllowAutoSubmit { id: id.clone(), enabled });
+                                state_refresh = true;
+                            }
+                        }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             let mut target = state.targets.contains(&id);
                             if ui.add_enabled(executable(&terminal), egui::RadioButton::new(target, "")).clicked() {
@@ -554,6 +578,9 @@ fn composer(app: &mut App, ui: &mut Ui, profile: Option<&Profile>) {
                     });
                 }
             });
+            if state_refresh {
+                state.polled = None;
+            }
             ui.horizontal(|ui| {
                 if ui.link(RichText::new("选择全部当前终端").size(10.5)).clicked() {
                     state.context_touched = true;
@@ -799,6 +826,14 @@ mod tests {
         assert_eq!(parts.len(), 3);
         assert_eq!(parts[1], Err(("0123abcd".to_string(), "0123abcd-full".to_string())));
         assert_eq!(parts[2], Ok(" and deadbeef.".to_string()));
+    }
+
+    #[test]
+    fn the_readiness_script_carries_only_a_valid_nonce() {
+        let nonce = "0123456789abcdef0123456789abcdef";
+        let script = crate::backend::shell_integration(nonce).unwrap();
+        assert!(script.contains(&format!("k={nonce}")) && !script.contains("f00df00d"));
+        assert!(crate::backend::shell_integration("not-a-nonce").is_none());
     }
 
     #[test]

@@ -146,7 +146,11 @@ pub enum Intent {
     SetTheme(&'static str),
     /// A pane dragged onto a side of another pane, or onto the tab strip (`None`) for a tab.
     MovePane { id: String, target: Option<(String, crate::layout::Direction)> },
+    DockPane { id: String, edge: dock::Edge },
     OpenProcesses,
+    /// Types the readiness marks script into a terminal; the user submits it with Enter.
+    StageIntegration(String),
+    AllowAutoSubmit { id: String, enabled: bool },
     ResetDock,
 }
 
@@ -190,6 +194,12 @@ pub struct App {
     dock: dock::Dock,
     dragging_panel: Option<dock::Panel>,
     dragging_pane: Option<String>,
+    /// Terminal panes docked on a window edge, beside the panels, outside every tab.
+    docked: Vec<(String, dock::Edge)>,
+    /// The docked pane with the keyboard, when one has it rather than the active tab.
+    docked_focus: Option<String>,
+    /// Glyphs rasterized this frame, uploaded by whichever pane's callback prepares first.
+    frame_uploads: Arc<std::sync::Mutex<Vec<crate::glyphs::Upload>>>,
     agent_state: agent_panel::AgentState,
     workspace_layout: Option<serde_json::Value>,
     file_panels: HashMap<String, remote_panel::PanelState>,
@@ -280,6 +290,9 @@ impl App {
             dock: ui_state.dock.clone().unwrap_or_default(),
             dragging_panel: None,
             dragging_pane: None,
+            docked: Vec::new(),
+            docked_focus: None,
+            frame_uploads: Arc::default(),
             agent_state: agent_panel::AgentState::with_profile(ui_state.agent_profile.clone()),
             workspace_layout: None,
             file_panels: HashMap::new(),
@@ -462,7 +475,43 @@ impl App {
     }
 
     pub fn focused(&self) -> Option<&Pane> {
+        if let Some(pane) = self.docked_focus.as_ref().and_then(|id| self.panes.get(id)) {
+            return Some(pane);
+        }
         self.active_tab().and_then(|tab| self.panes.get(&tab.focus))
+    }
+
+    pub fn is_docked(&self, id: &str) -> bool {
+        self.docked.iter().any(|(docked, _)| docked == id)
+    }
+
+    /// Takes a pane out of whatever tab holds it; an emptied tab goes away.
+    fn take_from_tabs(&mut self, id: &str) {
+        let Some(source) = self.tab_of(id) else { return };
+        if let Some(tab) = self.tab_mut(source) {
+            match tab.root.remove(id) {
+                Some(root) => {
+                    if tab.focus == id {
+                        tab.focus = root.panes()[0].clone();
+                    }
+                    tab.zoomed &= root.panes().len() > 1;
+                    tab.root = root;
+                }
+                None => self.drop_tab(source),
+            }
+        }
+    }
+
+    /// Docks a pane on a window edge, keeping its live session and view.
+    fn dock_pane(&mut self, id: &str, edge: dock::Edge) {
+        if !self.panes.contains_key(id) {
+            return;
+        }
+        self.take_from_tabs(id);
+        self.docked.retain(|(docked, _)| docked != id);
+        self.docked.push((id.to_string(), edge));
+        self.docked_focus = Some(id.to_string());
+        self.mark_workspace();
     }
 
     fn tab_of(&self, pane: &str) -> Option<u64> {
@@ -494,6 +543,10 @@ impl App {
     }
 
     fn close_pane(&mut self, id: &str) {
+        self.docked.retain(|(docked, _)| docked != id);
+        if self.docked_focus.as_deref() == Some(id) {
+            self.docked_focus = None;
+        }
         self.remotes.detach(id);
         self.file_panels.remove(id);
         self.backend.close(id);
@@ -549,6 +602,11 @@ impl App {
     }
 
     fn focus_pane(&mut self, id: &str) {
+        if self.is_docked(id) {
+            self.docked_focus = Some(id.to_string());
+            return;
+        }
+        self.docked_focus = None;
         if let Some(tab) = self.tab_of(id) {
             self.active = Some(tab);
             // A zoomed tab shows its focused pane, so the zoom follows the focus.
@@ -576,6 +634,14 @@ impl App {
     /// Writes typed input to the focused pane, or to every live pane of the tab while
     /// broadcasting. Replies the emulator generates go only to their own pane (see backend).
     fn type_text(&mut self, data: String) {
+        if let Some(id) = self.docked_focus.clone().filter(|id| self.panes.contains_key(id)) {
+            if let Some(pane) = self.panes.get(&id) {
+                pane.session.terminal.clear_selection();
+                pane.session.terminal.scroll_to_bottom();
+            }
+            self.backend.write(&id, data);
+            return;
+        }
         let Some(tab) = self.active_tab() else { return };
         let targets: Vec<String> = if tab.broadcast { tab.root.panes().into_iter().filter(|id| self.panes.get(id).is_some_and(|pane| pane.running() || *id == tab.focus)).collect() } else { vec![tab.focus.clone()] };
         for id in targets {
@@ -825,7 +891,21 @@ impl App {
             Intent::Window(command) => ctx.send_viewport_cmd(command),
             Intent::SetTheme(id) => self.settings.theme = id.to_string(),
             Intent::OpenProcesses => self.open_processes(),
+            Intent::StageIntegration(id) => match self.panes.get(&id).and_then(|pane| crate::backend::shell_integration(&pane.session.nonce)) {
+                Some(script) => {
+                    self.backend.write(&id, script);
+                    self.focus_pane(&id);
+                    self.notify("脚本已输入到该终端，确认后按回车启用。", false);
+                }
+                None => self.notify("这个终端没有可用的就绪标记。", true),
+            },
+            Intent::AllowAutoSubmit { id, enabled } => {
+                if let Err(error) = self.backend.request("session.allowAutoSubmit", serde_json::json!({ "id": id, "enabled": enabled })) {
+                    self.notify(error, true);
+                }
+            }
             Intent::MovePane { id, target } => self.move_pane(&id, target),
+            Intent::DockPane { id, edge } => self.dock_pane(&id, edge),
             Intent::ResetDock => self.dock = dock::Dock::default(),
         }
     }
@@ -932,7 +1012,9 @@ impl App {
         let cwd_of = |id: &str| self.panes.get(id).filter(|pane| pane.session.kind == Kind::Shell).map(|pane| pane.cwd().to_string());
         let mut tabs = Vec::new();
         let mut active = 0;
-        for tab in &self.tabs {
+        // A docked pane comes back as a tab: its dock place belongs to a session that won't return.
+        let docked: Vec<Tab> = self.docked.iter().map(|(id, _)| Tab { id: 0, root: Node::Pane(id.clone()), focus: id.clone(), title: String::new(), broadcast: false, zoomed: false }).collect();
+        for tab in self.tabs.iter().chain(&docked) {
             if let Some(root) = workspace::snapshot(&tab.root, &cwd_of) {
                 if Some(tab.id) == self.active {
                     active = tabs.len();
@@ -955,23 +1037,17 @@ impl App {
         if target.as_ref().is_some_and(|(other, _)| other == id) || !self.panes.contains_key(id) {
             return;
         }
-        let Some(source) = self.tab_of(id) else { return };
-        if target.is_none() && self.tab(source).is_some_and(|tab| tab.root.panes().len() == 1) {
+        let docked = self.is_docked(id);
+        // A pane that is already its tab's only pane has nowhere new to go on the tab strip.
+        if !docked && target.is_none() && self.tab_of(id).and_then(|tab| self.tab(tab)).is_some_and(|tab| tab.root.panes().len() == 1) {
             return;
         }
-        // Out of its tab first; an emptied tab goes away.
-        if let Some(tab) = self.tab_mut(source) {
-            match tab.root.remove(id) {
-                Some(root) => {
-                    if tab.focus == id {
-                        tab.focus = root.panes()[0].clone();
-                    }
-                    tab.zoomed &= root.panes().len() > 1;
-                    tab.root = root;
-                }
-                None => self.drop_tab(source),
-            }
+        // Out of its tab or the dock first; an emptied tab goes away.
+        self.docked.retain(|(other, _)| other != id);
+        if self.docked_focus.as_deref() == Some(id) {
+            self.docked_focus = None;
         }
+        self.take_from_tabs(id);
         match target {
             Some((other, side)) => {
                 if let Some(destination) = self.tab_of(&other).and_then(|tab| self.tab_mut(tab)) {
@@ -1038,6 +1114,11 @@ impl App {
                 serde_json::json!({ "id": tab.id.to_string(), "title": tab.title, "panes": panes })
             })
             .collect();
+        let mut tabs = tabs;
+        if !self.docked.is_empty() {
+            let panes: Vec<serde_json::Value> = self.docked.iter().map(|(id, _)| serde_json::json!({ "sessionId": id, "title": self.panes.get(id).map(|pane| pane.title.clone()).unwrap_or_default() })).collect();
+            tabs.push(serde_json::json!({ "id": "docked", "title": "已停靠", "panes": panes }));
+        }
         let layout = serde_json::json!({ "windowId": "main", "focusedSessionId": self.focused().map(|pane| pane.id().to_string()), "activeTabId": self.active.map(|id| id.to_string()), "tabs": tabs });
         if self.workspace_layout.as_ref() != Some(&layout) {
             let _ = self.backend.request("workspace.update", layout.clone());
@@ -1096,6 +1177,8 @@ impl eframe::App for App {
             style::apply_visuals(&ctx, &palette);
         }
         let modal = self.dialog.is_some() || self.palette.is_some();
+        self.frame_uploads = Arc::default();
+        let epoch = self.fonts.epoch;
         if !modal {
             self.global_keys(&ctx);
         }
@@ -1112,10 +1195,9 @@ impl eframe::App for App {
             self.monitor_visible = true;
             self.pending_seen.extend(pending);
         }
-        if !self.focus_mode {
-            dock::show(self, ui, &mut intents);
-        }
+        dock::show(self, ui, &mut intents, self.focus_mode);
         dock::drag_overlay(self, &ctx);
+        dock::pane_overlay(self, &ctx, &mut intents);
         egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| terminals::show(self, ui, &mut intents, modal));
         dialogs::show(self, &ctx, &mut intents);
         palette::show(self, &ctx, &mut intents);
@@ -1143,7 +1225,18 @@ impl eframe::App for App {
         for intent in intents {
             self.apply(&ctx, intent);
         }
+        // A drag released over nothing that takes it simply ends.
+        if ctx.input(|input| input.pointer.any_released()) {
+            self.dragging_pane = None;
+        }
 
+        // Every pane has been built by now and no callback has prepared yet, so glyphs first
+        // seen anywhere this frame go up before anything is drawn. If the atlas started over
+        // meanwhile, the panes built before that point are rebuilt next frame.
+        self.frame_uploads.lock().unwrap_or_else(|p| p.into_inner()).append(&mut self.fonts.uploads);
+        if self.fonts.epoch != epoch {
+            ctx.request_repaint();
+        }
         self.sync_settings();
         self.save_workspace(false);
         if ctx.input(|input| input.viewport().close_requested()) {
