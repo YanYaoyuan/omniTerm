@@ -356,6 +356,8 @@ mod tests {
                 "{mode:?}: {stdout}\n{}",
                 String::from_utf8_lossy(&output.stderr)
             );
+            // Evidence in the CI log that each mode really ran end to end.
+            println!("x11-e2e {mode:?} ok: {}", stdout.trim().replace('\n', " | "));
         }
     }
 
