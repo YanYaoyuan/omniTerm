@@ -4,7 +4,7 @@
 use super::style::{self, alpha, icon, icon_button};
 use super::{App, Intent};
 use crate::icons;
-use crate::remote::manager::{FileEntry, Phase, Remote, Snapshot, TransferStatus, join, parent};
+use crate::remote::manager::{DragFile, FileEntry, Phase, Remote, Snapshot, TransferStatus, join, parent};
 use crate::remote::metrics::Sample;
 use eframe::egui::{self, Align, Key, Layout, RichText, Sense, Stroke, Ui, Vec2};
 use std::collections::BTreeSet;
@@ -23,6 +23,8 @@ pub struct PanelState {
     confirm: Option<Confirm>,
     uploads_seen: u64,
     started: bool,
+    /// Dragged items already announced as ready, so each is announced once.
+    drags_announced: BTreeSet<String>,
 }
 
 enum Editing {
@@ -151,6 +153,13 @@ pub fn file_panel(app: &mut App, ui: &mut Ui, remote: &Arc<Remote>, intents: &mu
         state.started = true;
         remote.list(state.shown_path.clone().unwrap_or_else(|| current.clone()));
     }
+    // Tell the user once when a dragged item can be dragged out.
+    state.drags_announced.retain(|path| snapshot.drags.contains_key(path));
+    for (path, drag) in &snapshot.drags {
+        if matches!(drag, DragFile::Ready(_)) && state.drags_announced.insert(path.clone()) {
+            intents.push(Intent::Notify(format!("{} 已准备好，再次拖动即可拖到本地文件夹。", path.rsplit('/').next().unwrap_or(path)), false));
+        }
+    }
     if snapshot.uploads_done != state.uploads_seen {
         state.uploads_seen = snapshot.uploads_done;
         remote.list(current.clone());
@@ -245,7 +254,10 @@ pub fn file_panel(app: &mut App, ui: &mut Ui, remote: &Arc<Remote>, intents: &mu
                 continue;
             }
             let selected = state.selection.contains(&entry.name);
-            let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
+            let sense = if crate::drag_out::SUPPORTED { Sense::click_and_drag() } else { Sense::click() };
+            let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), sense);
+            let path = join(&current, &entry.name);
+            let drag = snapshot.drags.get(&path);
             if selected {
                 ui.painter().rect_filled(rect, 4.0, alpha(palette.tokens.accent, 0.16));
             } else if response.hovered() {
@@ -263,7 +275,29 @@ pub fn file_panel(app: &mut App, ui: &mut Ui, remote: &Arc<Remote>, intents: &mu
             if entry.symlink {
                 ui.painter().text(rect.left_center() + Vec2::new(18.0, 5.0), egui::Align2::LEFT_CENTER, icons::LINK, egui::FontId::new(9.0, egui::FontFamily::Name(style::ICONS.into())), palette.faint());
             }
-            ui.painter().text(rect.right_center() - Vec2::new(6.0, 0.0), egui::Align2::RIGHT_CENTER, size, egui::FontId::proportional(10.0), palette.faint());
+            match drag {
+                Some(DragFile::Preparing) => {
+                    ui.painter().text(rect.right_center() - Vec2::new(8.0, 0.0), egui::Align2::RIGHT_CENTER, icons::CIRCLE_NOTCH, egui::FontId::new(12.0, egui::FontFamily::Name(style::ICONS.into())), palette.muted());
+                }
+                Some(DragFile::Ready(_)) => {
+                    ui.painter().text(rect.right_center() - Vec2::new(6.0, 0.0), egui::Align2::RIGHT_CENTER, "可拖出", egui::FontId::proportional(10.0), palette.accent());
+                }
+                None => {
+                    ui.painter().text(rect.right_center() - Vec2::new(6.0, 0.0), egui::Align2::RIGHT_CENTER, size, egui::FontId::proportional(10.0), palette.faint());
+                }
+            }
+            // The OS drags only finished local files: the first drag fetches the item, the
+            // next one from the same row hands it to the system.
+            if response.drag_started() {
+                match drag {
+                    Some(DragFile::Ready(file)) if file.exists() => intents.push(Intent::DragOut(file.clone())),
+                    Some(DragFile::Preparing) => {}
+                    _ => match remote.prepare_drag(path.clone()) {
+                        Ok(()) => intents.push(Intent::Notify(format!("正在准备 {}，完成后再拖动一次即可拖出。", entry.name), false)),
+                        Err(error) => intents.push(Intent::Notify(error, true)),
+                    },
+                }
+            }
             let response = response.on_hover_text(format!("{}\n{} · {} · {:03o}", entry.name, if entry.directory { "文件夹".into() } else { format_bytes(entry.size as f64) }, format_time(entry.mtime), entry.mode & 0o777));
             if response.double_clicked() {
                 if entry.directory {

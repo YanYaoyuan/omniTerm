@@ -22,6 +22,8 @@ const MAX_STDERR: usize = 4096;
 const MAX_METRICS_BUFFER: usize = 256 * 1024;
 const MAX_DEPTH: usize = 64;
 const MAX_FINISHED: usize = 20;
+/// The most a dragged item may hold: the OS drag needs the whole thing on disk first.
+const MAX_DRAG_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reason {
@@ -97,6 +99,14 @@ impl Transfer {
     }
 }
 
+/// A remote item fetched for a drag out of the window: the OS can only drag a finished
+/// local file, so the first drag downloads it and the next one hands it over.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DragFile {
+    Preparing,
+    Ready(PathBuf),
+}
+
 /// What the UI shows for one remote.
 #[derive(Clone, Debug)]
 pub struct Snapshot {
@@ -107,6 +117,8 @@ pub struct Snapshot {
     pub metrics: Option<Sample>,
     pub metrics_available: bool,
     pub uploads_done: u64,
+    /// Dragged items by remote path.
+    pub drags: HashMap<String, DragFile>,
 }
 
 /// A transfer's work: given the remote and the transfer ID, the number of items skipped.
@@ -132,6 +144,9 @@ struct State {
     queue: VecDeque<Job>,
     running: usize,
     uploads_done: u64,
+    drags: HashMap<String, DragFile>,
+    /// A private directory for dragged items, removed when the remote closes.
+    drag_directory: Option<PathBuf>,
 }
 
 pub struct Remote {
@@ -185,6 +200,16 @@ pub fn safe_local_name(name: &str) -> bool {
     true
 }
 
+/// A new directory under `parent` that only this user can read.
+fn private_directory(parent: &Path, prefix: &str) -> Result<PathBuf, String> {
+    let directory = parent.join(format!("{prefix}{}", uuid::Uuid::new_v4().simple()));
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(&directory).map_err(|error| format!("无法创建临时目录：{error}"))?;
+    Ok(directory)
+}
+
 pub fn join(directory: &str, name: &str) -> String {
     if directory.ends_with('/') { format!("{directory}{name}") } else { format!("{directory}/{name}") }
 }
@@ -227,6 +252,7 @@ impl Remote {
             metrics: state.metrics.clone(),
             metrics_available: state.metrics_available,
             uploads_done: state.uploads_done,
+            drags: state.drags.clone(),
         }
     }
 
@@ -503,8 +529,54 @@ impl Remote {
         for source in paths {
             let name = basename(&source).to_string();
             let target = directory.join(&name);
-            self.enqueue(false, name, Box::new(move |remote, id| remote.run_download(id, &source, &target)));
+            self.enqueue(false, name, Box::new(move |remote, id| remote.run_download(id, &source, &target, None)));
         }
+        Ok(())
+    }
+
+    /// Fetches a remote item into a private temporary directory for a drag out of the
+    /// window; the snapshot's `drags` follows it from preparing to ready.
+    pub fn prepare_drag(self: &Arc<Self>, source: String) -> Result<(), String> {
+        let name = basename(&source).to_string();
+        if !safe_local_name(&name) {
+            return Err(format!("拒绝下载不安全的文件名：{name:?}"));
+        }
+        let target = {
+            let mut state = lock(&self.state);
+            // Already fetched or on its way; a fetched file someone has since removed is fetched again.
+            match state.drags.get(&source) {
+                Some(DragFile::Preparing) => return Ok(()),
+                Some(DragFile::Ready(file)) if file.is_file() || file.is_dir() => return Ok(()),
+                _ => {}
+            }
+            let root = match &state.drag_directory {
+                Some(root) => root.clone(),
+                None => {
+                    let root = private_directory(&std::env::temp_dir(), "omniterm-drag-")?;
+                    state.drag_directory = Some(root.clone());
+                    root
+                }
+            };
+            // One directory per item, so two files of the same name never collide.
+            let target = private_directory(&root, "")?.join(&name);
+            state.drags.insert(source.clone(), DragFile::Preparing);
+            target
+        };
+        self.enqueue(
+            false,
+            name,
+            Box::new(move |remote, id| {
+                let result = remote.run_download(id, &source, &target, Some(MAX_DRAG_BYTES));
+                remote.publish(|state| {
+                    if result.is_ok() {
+                        state.drags.insert(source, DragFile::Ready(target));
+                    } else {
+                        state.drags.remove(&source);
+                    }
+                });
+                result
+            }),
+        );
         Ok(())
     }
 
@@ -658,7 +730,7 @@ impl Remote {
         Ok(skipped)
     }
 
-    fn run_download(&self, id: u64, source: &str, target: &Path) -> Result<usize, String> {
+    fn run_download(&self, id: u64, source: &str, target: &Path, limit: Option<u64>) -> Result<usize, String> {
         let client = self.client()?;
         let canceled = self.canceled(id);
         enum Step {
@@ -667,6 +739,7 @@ impl Remote {
         }
         let mut plan = Vec::new();
         let mut skipped = 0;
+        let mut total = 0u64;
         let top = client.stat(source).map_err(|error| error.to_string())?;
         let mut stack = vec![(source.to_string(), target.to_path_buf(), top, 0usize)];
         while let Some((remote, local, attributes, depth)) = stack.pop() {
@@ -684,7 +757,14 @@ impl Remote {
                     stack.push((join(&remote, &entry.name), local.join(&entry.name), entry.attributes, depth + 1));
                 }
             } else if attributes.file() {
-                self.add_total(id, attributes.size.unwrap_or(0));
+                let size = attributes.size.unwrap_or(0);
+                total = total.saturating_add(size);
+                if let Some(limit) = limit
+                    && total > limit
+                {
+                    return Err(format!("超过 {} GiB 的项目不能拖出，请用“下载”。", limit >> 30));
+                }
+                self.add_total(id, size);
                 plan.push(Step::File(remote, local, attributes.mode.unwrap_or(0o644) & 0o777));
             } else {
                 skipped += 1;
@@ -727,6 +807,10 @@ impl Remote {
             transfer.canceled.store(true, Ordering::Relaxed);
         }
         state.client = None;
+        state.drags.clear();
+        if let Some(directory) = state.drag_directory.take() {
+            let _ = std::fs::remove_dir_all(directory);
+        }
         for child in [state.sftp_child.take(), state.metrics_child.take()].into_iter().flatten() {
             let _ = lock(&child).kill();
         }
@@ -768,6 +852,8 @@ impl Manager {
                 queue: VecDeque::new(),
                 running: 0,
                 uploads_done: 0,
+                drags: HashMap::new(),
+                drag_directory: None,
             }),
             closed: AtomicBool::new(false),
             wake: self.wake.clone(),
@@ -816,6 +902,21 @@ impl Remote {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dragged_items_land_in_fresh_directories_only_this_user_reads() {
+        let parent = std::env::temp_dir();
+        let first = private_directory(&parent, "omniterm-test-").expect("create");
+        let second = private_directory(&first, "").expect("create nested");
+        assert_ne!(first, second);
+        assert!(first.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with("omniterm-test-")));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&second).expect("stat").permissions().mode() & 0o777, 0o700);
+        }
+        std::fs::remove_dir_all(&first).expect("clean up");
+    }
 
     #[test]
     fn server_names_never_escape_the_destination() {

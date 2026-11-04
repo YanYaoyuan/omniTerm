@@ -152,6 +152,8 @@ pub enum Intent {
     StageIntegration(String),
     AllowAutoSubmit { id: String, enabled: bool },
     ResetDock,
+    /// Hands a downloaded file to the OS as a drag out of the window.
+    DragOut(std::path::PathBuf),
 }
 
 pub struct App {
@@ -194,6 +196,8 @@ pub struct App {
     dock: dock::Dock,
     dragging_panel: Option<dock::Panel>,
     dragging_pane: Option<String>,
+    /// A file to drag out of the window once this frame's intents are applied.
+    drag_out: Option<std::path::PathBuf>,
     /// Terminal panes docked on a window edge, beside the panels, outside every tab.
     docked: Vec<(String, dock::Edge)>,
     /// The docked pane with the keyboard, when one has it rather than the active tab.
@@ -290,6 +294,7 @@ impl App {
             dock: ui_state.dock.clone().unwrap_or_default(),
             dragging_panel: None,
             dragging_pane: None,
+            drag_out: None,
             docked: Vec::new(),
             docked_focus: None,
             frame_uploads: Arc::default(),
@@ -907,6 +912,7 @@ impl App {
             Intent::MovePane { id, target } => self.move_pane(&id, target),
             Intent::DockPane { id, edge } => self.dock_pane(&id, edge),
             Intent::ResetDock => self.dock = dock::Dock::default(),
+            Intent::DragOut(file) => self.drag_out = Some(file),
         }
     }
 
@@ -1158,7 +1164,7 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let scale = ctx.pixels_per_point();
         if (scale - self.scale).abs() > f32::EPSILON {
@@ -1228,6 +1234,14 @@ impl eframe::App for App {
         // A drag released over nothing that takes it simply ends.
         if ctx.input(|input| input.pointer.any_released()) {
             self.dragging_pane = None;
+        }
+        // The OS takes the pointer over from here, and on Windows keeps it until the drop,
+        // so egui's own drag of the row ends now rather than on a release it never sees.
+        if let Some(file) = self.drag_out.take() {
+            ctx.stop_dragging();
+            if let Err(error) = crate::drag_out::start(frame, &file) {
+                self.notify(error, true);
+            }
         }
 
         // Every pane has been built by now and no callback has prepared yet, so glyphs first

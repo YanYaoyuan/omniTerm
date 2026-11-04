@@ -28,6 +28,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
 
+# A native drag source for SFTP files (OLE on Windows, NSDraggingSession on macOS). On
+# Linux it needs a GTK window, which winit does not make, so it is left out there.
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+drag = "2.1"
+
 [profile.release]
 opt-level = 3
 lto = "thin"

@@ -12,6 +12,7 @@ mod agent;
 mod backend;
 mod bench;
 mod core;
+mod drag_out;
 mod glyphs;
 mod gpu;
 mod grid;
