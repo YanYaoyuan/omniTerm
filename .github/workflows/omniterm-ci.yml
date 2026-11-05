@@ -131,6 +131,76 @@ jobs:
         if: runner.os != 'Windows'
         run: node scripts/test-ssh.mjs
 
+  native-app:
+    name: Native app / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: omniterm-native
+        shell: bash
+    env:
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the repository Rust toolchain
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component clippy
+          rustup default 1.95.0
+      - name: Install window-system libraries, software Vulkan and CJK fonts
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev libx11-dev libxcursor1 libxrandr2 libxi6 libx11-xcb1 libvulkan1 mesa-vulkan-drivers xvfb fonts-noto-cjk fonts-dejavu-core
+      - name: Unit tests (emulation, input, layout, quads, atlas)
+        run: cargo test --locked
+      - name: Lints
+        run: cargo clippy --locked --all-targets -- -D warnings
+      # The exact ssh command an X11-forwarding session runs, through a real sshd on loopback,
+      # with a remote X client drawing on Xvfb, in restricted (-X) and trusted (-Y) modes.
+      - name: X11 forwarding end to end (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y openssh-server xauth x11-utils
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519
+          cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
+          printf 'X11Forwarding yes\nX11UseLocalhost yes\n' | sudo tee /etc/ssh/sshd_config.d/omniterm-x11.conf
+          sudo systemctl restart ssh || sudo service ssh restart
+          Xvfb :99 -screen 0 800x600x24 &
+          for _ in $(seq 50); do DISPLAY=:99 xdpyinfo >/dev/null 2>&1 && break; sleep 0.1; done
+          DISPLAY=:99 OMNITERM_E2E_SSH="$USER@127.0.0.1" cargo test --locked x11_forwarding_end_to_end -- --ignored --nocapture
+      - name: SFTP transfers end to end (Linux)
+        if: runner.os == 'Linux'
+        run: python3 scripts/test-sftp.py -- cargo test --locked sftp_end_to_end -- --ignored --nocapture
+      - name: Build the release app
+        run: cargo build --release --locked
+      - name: Measure emulation throughput and frame building
+        run: target/release/omniterm-app --bench 32 | tee bench-${{ runner.os }}.json
+      # A real window on a GPU adapter (lavapipe on Linux, WARP on Windows): a shell starts,
+      # runs a command, its output reaches the screen, and a screenshot is saved.
+      - name: Open the window and run a command in a real shell (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a -s "-screen 0 1600x1000x24" target/release/omniterm-app --smoke "$PWD/smoke-Linux.png"
+      - name: Open the window and run a command in a real shell (Windows)
+        if: runner.os == 'Windows'
+        run: target/release/omniterm-app.exe --smoke "$PWD/smoke-Windows.png"
+      - name: Package the app alone (the release adds the Agent)
+        run: node scripts/package.mjs --without-agent
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-app-${{ runner.os }}
+          path: |
+            omniterm-native/smoke-*.png
+            omniterm-native/bench-*.json
+            omniterm-native/target/release/omniterm-app
+            omniterm-native/target/release/omniterm-app.exe
+            dist/release-native/*
+          if-no-files-found: ignore
+
   engine:
     name: Agent engine / ubuntu-latest
     runs-on: ubuntu-latest

@@ -1,21 +1,12 @@
 //! Terminal backend of omniTerm Desktop, run as a child process of the Electron main process.
 
-mod broker;
-mod host;
-mod interaction;
-mod protocol;
-mod redact;
-mod screen;
-mod session;
-
-use host::Host;
-use protocol::Outbox;
-use protocol::Request;
-use protocol::write_frames;
+use omniterm_terminal_host::PROTOCOL_VERSION;
+use omniterm_terminal_host::host::Host;
+use omniterm_terminal_host::protocol::Outbox;
+use omniterm_terminal_host::protocol::Request;
+use omniterm_terminal_host::protocol::write_frames;
 use std::io::BufRead;
 use std::thread;
-
-const PROTOCOL_VERSION: u32 = 1;
 
 fn main() {
     if std::env::args().nth(1).as_deref() == Some("--protocol-version") {

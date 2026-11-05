@@ -4,6 +4,8 @@
 
 **让本地终端、远程连接和 Codex Agent 在同一个开源桌面工作台中协作。**
 
+**v0.2.0 原生预览版正在准备中。** 本版在 Electron 应用之外新增 Rust 原生应用，提供 GPU 终端渲染、SSH X11 转发及改进的 SFTP 传输。改动、验证记录和剩余平台实测项见 [v0.2.0 发布说明](docs/omniterm/releases/v0.2.0.md)。新安装包发布前，下方下载链接仍对应已有的 0.1.0 版本。
+
 [下载 0.1.0](https://github.com/YanYaoyuan/omniTerm/releases) · [桌面指南](omniterm-desktop/README.md) · [构建 Agent](docs/omniterm/local-build.md) · [反馈问题](https://github.com/YanYaoyuan/omniTerm/issues) · [参与贡献](CONTRIBUTING.md)
 
 omniTerm 面向 **macOS、Linux 和 Windows**，把 Shell 多标签、分屏、SSH、图形 SFTP 文件面板、串口和端口转发放在同一个桌面应用中。旁边是从本仓库源码构建、在本机运行的 Codex Agent：选中终端输出，发送到 Agent 输入框，由你决定何时提交。

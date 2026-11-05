@@ -16,6 +16,7 @@ on:
       - 'omniterm-desktop/package*.json'
       - 'omniterm-desktop/native/**'
       - 'omniterm-desktop/scripts/package*.mjs'
+      - 'omniterm-native/**'
   workflow_dispatch:
     inputs:
       reuse_agent_run_id:
@@ -138,6 +139,19 @@ jobs:
         run: node scripts/release/verify-desktop.mjs
       - name: Create unsigned portable ZIP and checksums
         run: node omniterm-desktop/scripts/package-release.mjs
+      - name: Build and package the native app beside the Agent
+        shell: bash
+        run: |
+          cargo build --release --locked --manifest-path omniterm-native/Cargo.toml
+          node omniterm-native/scripts/package.mjs
+      - name: Upload native app artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: omniterm-native-windows-x64-${{ github.sha }}
+          path: dist/release-native/*
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
       - name: Upload desktop release artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -252,6 +266,19 @@ jobs:
           cd ..
           node scripts/release/verify-desktop.mjs
           node omniterm-desktop/scripts/package-release.mjs
+      - name: Build and package the native app beside the Agent
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev; fi
+          cargo build --release --locked --manifest-path omniterm-native/Cargo.toml
+          node omniterm-native/scripts/package.mjs
+      - name: Upload native app artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: omniterm-native-${{ matrix.slug }}-${{ github.sha }}
+          path: dist/release-native/*
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
       - name: Upload desktop release artifacts
         uses: actions/upload-artifact@v4
         with:
