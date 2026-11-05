@@ -77,3 +77,21 @@ cargo run --release -- --smoke out.png # 打开窗口，在真实 Shell 里执�
 - 非 macOS 平台上 Ctrl+V 是粘贴，不会把 ^V 发给程序。
 - 打包：`node omniterm-native/scripts/package.mjs` 在 `dist/release-native` 生成安装包，发布流程把源码构建的 Agent 一起打进去；CI 用 `--without-agent` 只打包应用本身。和桌面版一样不做 Developer ID 签名、公证或自动更新。
 - macOS 的 CI 只构建、单测和基准测试，不开真实窗口；Linux（lavapipe 软件 Vulkan）和 Windows（WARP）在 CI 里开真实窗口做冒烟测试。
+
+## SFTP 回归测试
+
+Linux 安装 `openssh-server` 后，在 `omniterm-native` 目录运行：
+
+```sh
+python3 scripts/test-sftp.py -- cargo test --locked sftp_end_to_end -- --ignored --nocapture
+```
+
+脚本在私有临时目录生成测试密钥和配置，启动只监听回环地址随机端口的 sshd，
+将 SFTP 双向限速至 1 MiB/s。它不使用个人 SSH 配置、密钥或 SSH Agent，结束时清理测试服务。
+8 项测试覆盖批量与嵌套目录往返、空文件、特殊文件名、运行中和排队取消、断线重连、
+失败后继续传输，以及关闭标签和退出应用时的清理。文件按字节比较，并检查临时文件是否残留。
+普通单测另有“拒绝覆盖”界面回归，验证未确认前不入队、取消后原文件不变。
+
+这些真实连接测试在普通单测中标记为忽略，由 Linux CI 的 `SFTP transfers end to end`
+步骤单独执行，日志为每个通过的场景输出 `sftp-e2e` 记录。它们不代表已手工验证 Windows、
+macOS 或 Wayland 上的文件拖放与 X11 转发。

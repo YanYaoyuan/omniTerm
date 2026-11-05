@@ -172,6 +172,9 @@ jobs:
           Xvfb :99 -screen 0 800x600x24 &
           for _ in $(seq 50); do DISPLAY=:99 xdpyinfo >/dev/null 2>&1 && break; sleep 0.1; done
           DISPLAY=:99 OMNITERM_E2E_SSH="$USER@127.0.0.1" cargo test --locked x11_forwarding_end_to_end -- --ignored --nocapture
+      - name: SFTP transfers end to end (Linux)
+        if: runner.os == 'Linux'
+        run: python3 scripts/test-sftp.py -- cargo test --locked sftp_end_to_end -- --ignored --nocapture
       - name: Build the release app
         run: cargo build --release --locked
       - name: Measure emulation throughput and frame building

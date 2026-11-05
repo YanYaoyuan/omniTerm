@@ -731,6 +731,39 @@ mod tests {
     }
 
     #[test]
+    fn declining_download_overwrite_preserves_file_and_enqueues_nothing() {
+        let directory = std::env::temp_dir().join(format!("omniterm-overwrite-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir(&directory).unwrap();
+        let file = directory.join("报告 #1%.txt");
+        std::fs::write(&file, b"original local content").unwrap();
+        let manager = crate::remote::manager::Manager::new(|| {});
+        manager.attach("confirm", crate::core::plan::Companion { executable: "ssh".into(), destination: "unused".into(), control_path: Some(directory.join("not-connected").to_string_lossy().into_owned()), args: Vec::new() });
+        let remote = manager.get("confirm").unwrap();
+        let mut state = PanelState::default();
+        download(Some(directory.clone()), &remote, &mut state, vec!["/remote/报告 #1%.txt".into()], &mut Vec::new());
+        assert!(matches!(state.confirm, Some(Confirm::OverwriteDownload { .. })));
+        assert!(remote.snapshot().transfers.is_empty());
+        let ctx = context();
+        let mut position = egui::Pos2::ZERO;
+        for step in 0..4 {
+            let events = if step < 2 { Vec::new() } else { vec![egui::Event::PointerMoved(position), egui::Event::PointerButton { pos: position, button: egui::PointerButton::Primary, pressed: step == 2, modifiers: egui::Modifiers::default() }] };
+            let output = ctx.run_ui(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(800.0, 600.0))), events, ..Default::default() }, |ui| confirm(ui, &remote, &mut state, "/remote"));
+            if step == 1 {
+                position = output.shapes.iter().find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == "取消" => Some(text.visual_bounding_rect().center()),
+                    _ => None,
+                }).expect("confirmation must offer a Cancel button");
+            }
+            output.drop_without_applying_deltas();
+        }
+        assert!(state.confirm.is_none());
+        assert!(remote.snapshot().transfers.is_empty());
+        assert_eq!(std::fs::read(&file).unwrap(), b"original local content");
+        manager.shutdown();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn sizes_times_and_order_read_like_the_desktop_app() {
         assert_eq!(format_bytes(512.0), "512 B");
         assert_eq!(format_bytes(1536.0), "1.5 KiB");

@@ -6,7 +6,7 @@
 use super::metrics::{self, Sample, Tracker};
 use super::sftp::{self, Client};
 use crate::core::plan::Companion;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -131,6 +131,7 @@ type Work = Box<dyn FnOnce(&Remote, u64) -> Result<usize, String> + Send>;
 struct Job {
     transfer: u64,
     run: Work,
+    drag_source: Option<String>,
 }
 
 struct State {
@@ -151,6 +152,8 @@ struct State {
     drags: HashMap<String, DragFile>,
     /// A private directory for dragged items, removed when the remote closes.
     drag_directory: Option<PathBuf>,
+    /// Exact temporary paths created by this remote, retried after a lost connection.
+    partial_uploads: HashSet<String>,
 }
 
 pub struct Remote {
@@ -287,6 +290,7 @@ impl Remote {
                     std::thread::sleep(POLL);
                 }
             }
+            if remote.closed.load(Ordering::Acquire) { return; }
             lock(&remote.state).linked = true;
             if lock(&remote.state).metrics_wanted {
                 remote.start_metrics();
@@ -296,6 +300,7 @@ impl Remote {
     }
 
     fn connect(self: &Arc<Self>) {
+        if self.closed.load(Ordering::Acquire) { return; }
         self.publish(|state| state.phase = Phase::Connecting);
         let mut args = self.channel_args();
         args.extend(["-s".to_string(), self.target.destination.clone(), "sftp".to_string()]);
@@ -309,7 +314,16 @@ impl Remote {
         };
         let (Some(stdin), Some(stdout), Some(mut stderr)) = (child.stdin.take(), child.stdout.take(), child.stderr.take()) else { return };
         let child = Arc::new(Mutex::new(child));
-        lock(&self.state).sftp_child = Some(child.clone());
+        {
+            let mut state = lock(&self.state);
+            if self.closed.load(Ordering::Acquire) {
+                drop(state);
+                let _ = lock(&child).kill();
+                let _ = lock(&child).wait();
+                return;
+            }
+            state.sftp_child = Some(child.clone());
+        }
         let errors = Arc::new(Mutex::new(String::new()));
         {
             let errors = errors.clone();
@@ -345,6 +359,15 @@ impl Remote {
         match result {
             Ok((client, home)) => {
                 let client = Arc::new(client);
+                if self.closed.load(Ordering::Acquire) {
+                    let _ = lock(&child).kill();
+                    let _ = lock(&child).wait();
+                    return;
+                }
+                let partials: Vec<String> = lock(&self.state).partial_uploads.iter().cloned().collect();
+                for path in partials {
+                    self.remove_partial(&client, &path);
+                }
                 self.publish(|state| {
                     state.client = Some(client.clone());
                     state.home = Some(home.clone());
@@ -353,7 +376,13 @@ impl Remote {
                 // When the channel ends, the panel says so and offers a retry.
                 let remote = self.clone();
                 std::thread::spawn(move || {
-                    let _ = lock(&child).wait();
+                    // Never hold the child mutex while waiting: close() needs it to kill
+                    // a live SSH channel. A blocking wait here deadlocks tab shutdown.
+                    loop {
+                        let alive = lock(&child).try_wait().is_ok_and(|status| status.is_none());
+                        if !alive { break; }
+                        std::thread::sleep(POLL);
+                    }
                     if remote.closed.load(Ordering::Acquire) || !lock(&remote.state).client.as_ref().is_some_and(|current| Arc::ptr_eq(current, &client)) {
                         return;
                     }
@@ -526,7 +555,7 @@ impl Remote {
         for source in paths {
             let name = source.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
             let target = join(&directory, &name);
-            self.enqueue(true, name, Box::new(move |remote, id| remote.run_upload(id, &source, &target)));
+            self.enqueue(true, name, None, Box::new(move |remote, id| remote.run_upload(id, &source, &target)));
         }
     }
 
@@ -539,7 +568,7 @@ impl Remote {
         for source in paths {
             let name = basename(&source).to_string();
             let target = directory.join(&name);
-            self.enqueue(false, name, Box::new(move |remote, id| remote.run_download(id, &source, &target, None)));
+            self.enqueue(false, name, None, Box::new(move |remote, id| remote.run_download(id, &source, &target, None)));
         }
         Ok(())
     }
@@ -575,6 +604,7 @@ impl Remote {
         self.enqueue(
             false,
             name,
+            Some(source.clone()),
             Box::new(move |remote, id| {
                 let result = remote.run_download(id, &source, &target, Some(MAX_DRAG_BYTES));
                 remote.publish(|state| {
@@ -590,11 +620,11 @@ impl Remote {
         Ok(())
     }
 
-    fn enqueue(self: &Arc<Self>, upload: bool, name: String, run: Work) {
+    fn enqueue(self: &Arc<Self>, upload: bool, name: String, drag_source: Option<String>, run: Work) {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         self.publish(|state| {
             state.transfers.push(Transfer::queued(id, upload, name));
-            state.queue.push_back(Job { transfer: id, run });
+            state.queue.push_back(Job { transfer: id, run, drag_source });
         });
         self.pump();
     }
@@ -603,7 +633,7 @@ impl Remote {
         loop {
             let job = {
                 let mut state = lock(&self.state);
-                if state.running >= CONCURRENT_TRANSFERS {
+                if self.closed.load(Ordering::Acquire) || state.running >= CONCURRENT_TRANSFERS {
                     return;
                 }
                 let Some(job) = state.queue.pop_front() else { return };
@@ -646,9 +676,18 @@ impl Remote {
     }
 
     pub fn cancel(&self, transfer: u64) {
-        if let Some(transfer) = lock(&self.state).transfers.iter().find(|item| item.id == transfer) {
-            transfer.canceled.store(true, Ordering::Relaxed);
-        }
+        self.publish(|state| {
+            if let Some(item) = state.transfers.iter_mut().find(|item| item.id == transfer && !item.finished()) {
+                item.canceled.store(true, Ordering::Relaxed);
+                if item.status == TransferStatus::Queued {
+                    item.status = TransferStatus::Canceled;
+                    if let Some(source) = state.queue.iter().find(|job| job.transfer == transfer).and_then(|job| job.drag_source.as_ref()) {
+                        state.drags.remove(source);
+                    }
+                    state.queue.retain(|job| job.transfer != transfer);
+                }
+            }
+        });
     }
 
     pub fn clear_finished(&self) {
@@ -680,6 +719,12 @@ impl Remote {
         lock(&self.state).transfers.iter().find(|transfer| transfer.id == id).map(|transfer| transfer.canceled.clone()).unwrap_or_default()
     }
 
+    fn remove_partial(&self, client: &Client, path: &str) {
+        if client.remove(path).is_ok() || client.exists(path).is_ok_and(|exists| !exists) {
+            lock(&self.state).partial_uploads.remove(path);
+        }
+    }
+
     /// Links are skipped below the top level: following them can loop forever or send
     /// files from outside the folder the user chose. Files go up as `.part` and are moved
     /// into place only when complete.
@@ -694,6 +739,9 @@ impl Remote {
         let mut skipped = 0;
         let mut stack = vec![(source.to_path_buf(), target.to_string(), 0usize, true)];
         while let Some((path, remote, depth, top)) = stack.pop() {
+            if canceled.load(Ordering::Relaxed) {
+                return Err("传输已取消。".into());
+            }
             let meta = if top { std::fs::metadata(&path) } else { std::fs::symlink_metadata(&path) }.map_err(|error| error.to_string())?;
             if depth > MAX_DEPTH {
                 skipped += 1;
@@ -729,11 +777,13 @@ impl Remote {
                 },
                 Step::File(local, remote, mode) => {
                     let partial = format!("{remote}.omniterm-{}.part", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+                    lock(&self.state).partial_uploads.insert(partial.clone());
                     let result = client.upload(&local, &partial, Some(mode), &canceled, &mut progress).and_then(|_| client.replace(&partial, &remote));
                     if let Err(error) = result {
-                        let _ = client.remove(&partial);
+                        self.remove_partial(&client, &partial);
                         return Err(error.to_string());
                     }
+                    lock(&self.state).partial_uploads.remove(&partial);
                 }
             }
         }
@@ -753,6 +803,9 @@ impl Remote {
         let top = client.stat(source).map_err(|error| error.to_string())?;
         let mut stack = vec![(source.to_string(), target.to_path_buf(), top, 0usize)];
         while let Some((remote, local, attributes, depth)) = stack.pop() {
+            if canceled.load(Ordering::Relaxed) {
+                return Err("传输已取消。".into());
+            }
             if depth > MAX_DEPTH {
                 skipped += 1;
             } else if attributes.directory() {
@@ -810,37 +863,52 @@ impl Remote {
 
     /// Ends the channels and the shared login, which otherwise outlives the terminal for
     /// ControlPersist seconds.
-    fn close(&self) {
-        self.closed.store(true, Ordering::Release);
-        let mut state = lock(&self.state);
-        for transfer in &state.transfers {
-            transfer.canceled.store(true, Ordering::Relaxed);
-        }
-        state.client = None;
-        state.drags.clear();
-        if let Some(directory) = state.drag_directory.take() {
-            let _ = std::fs::remove_dir_all(directory);
-        }
-        for child in [state.sftp_child.take(), state.metrics_child.take()].into_iter().flatten() {
-            let _ = lock(&child).kill();
-        }
-        drop(state);
-        if let Some(path) = &self.target.control_path
-            && Path::new(path).exists()
+    fn close(self: &Arc<Self>) -> Option<std::thread::JoinHandle<()>> {
+        if self.closed.swap(true, Ordering::AcqRel) { return None; }
         {
-            let _ = command(&self.target.executable).args(["-o", &format!("ControlPath={path}"), "-O", "exit", &self.target.destination]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+            let mut state = lock(&self.state);
+            for transfer in &mut state.transfers {
+                transfer.canceled.store(true, Ordering::Relaxed);
+                if transfer.status == TransferStatus::Queued { transfer.status = TransferStatus::Canceled; }
+            }
+            state.queue.clear();
+            state.drags.clear();
         }
+        let remote = self.clone();
+        Some(std::thread::spawn(move || {
+            // Give canceled workers a bounded chance to remove their temporary files
+            // while the channel still works. A tab close never blocks the UI thread.
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                let running = lock(&remote.state).running;
+                if running == 0 || Instant::now() >= deadline { break; }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let (children, directory) = {
+                let mut state = lock(&remote.state);
+                state.client = None;
+                ([state.sftp_child.take(), state.metrics_child.take()], state.drag_directory.take())
+            };
+            for child in children.into_iter().flatten() { let _ = lock(&child).kill(); }
+            if let Some(directory) = directory { let _ = std::fs::remove_dir_all(directory); }
+            if let Some(path) = &remote.target.control_path
+                && Path::new(path).exists()
+            {
+                let _ = command(&remote.target.executable).args(["-o", &format!("ControlPath={path}"), "-O", "exit", &remote.target.destination]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+            }
+        }))
     }
 }
 
 pub struct Manager {
     remotes: Mutex<HashMap<String, Arc<Remote>>>,
     wake: Arc<dyn Fn() + Send + Sync>,
+    closing: Mutex<Vec<std::thread::JoinHandle<()>>>,
 }
 
 impl Manager {
     pub fn new(wake: impl Fn() + Send + Sync + 'static) -> Self {
-        Self { remotes: Mutex::default(), wake: Arc::new(wake) }
+        Self { remotes: Mutex::default(), wake: Arc::new(wake), closing: Mutex::default() }
     }
 
     pub fn attach(&self, id: &str, target: Companion) {
@@ -864,6 +932,7 @@ impl Manager {
                 uploads_done: 0,
                 drags: HashMap::new(),
                 drag_directory: None,
+                partial_uploads: HashSet::new(),
             }),
             closed: AtomicBool::new(false),
             wake: self.wake.clone(),
@@ -878,15 +947,21 @@ impl Manager {
     }
 
     pub fn detach(&self, id: &str) {
-        if let Some(remote) = lock(&self.remotes).remove(id) {
-            remote.close();
+        if let Some(remote) = lock(&self.remotes).remove(id)
+            && let Some(worker) = remote.close()
+        {
+            let mut closing = lock(&self.closing);
+            closing.retain(|worker| !worker.is_finished());
+            closing.push(worker);
         }
     }
 
     pub fn shutdown(&self) {
-        for (_, remote) in lock(&self.remotes).drain() {
-            remote.close();
-        }
+        let remotes: Vec<_> = lock(&self.remotes).drain().map(|(_, remote)| remote).collect();
+        let mut workers: Vec<_> = lock(&self.closing).drain(..).collect();
+        workers.extend(remotes.iter().filter_map(|remote| remote.close()));
+        // The window has exited; finish cleanup before main returns and stops all threads.
+        for worker in workers { let _ = worker.join(); }
     }
 }
 
@@ -953,3 +1028,7 @@ mod tests {
         assert_eq!(failure_reason("", Reason::Lost), Reason::Lost);
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "manager_tests.rs"]
+mod integration_tests;
