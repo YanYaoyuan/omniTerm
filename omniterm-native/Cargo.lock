@@ -3207,7 +3207,7 @@ dependencies = [
 
 [[package]]
 name = "omniterm-native"
-version = "0.0.1"
+version = "0.2.0"
 dependencies = [
  "alacritty_terminal",
  "arboard",

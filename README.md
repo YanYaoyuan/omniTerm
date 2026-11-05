@@ -4,6 +4,8 @@
 
 **An open-source terminal workspace with a Codex Agent beside your local and remote sessions.**
 
+**v0.2.0 Native Preview is being prepared.** It adds a Rust application with GPU-rendered terminals, SSH X11 forwarding and improved SFTP transfers alongside the Electron app. See the [v0.2.0 release notes](docs/omniterm/releases/v0.2.0.md) for changes, validation and remaining platform checks. The download links below refer to the existing 0.1.0 release until new assets are published.
+
 [Download 0.1.0](https://github.com/YanYaoyuan/omniTerm/releases) · [Desktop guide](omniterm-desktop/README.md) · [Build the Agent](docs/omniterm/local-build.md) · [Report an issue](https://github.com/YanYaoyuan/omniTerm/issues) · [Contribute](CONTRIBUTING.md)
 
 omniTerm brings shell tabs, split panes, SSH, a graphical SFTP browser, serial connections and port forwarding into one desktop app for **macOS, Linux and Windows**. A locally running, source-built Codex Agent shares the workspace. Select terminal output, send it to the Agent's input, and decide what to submit.
