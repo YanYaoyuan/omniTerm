@@ -94,6 +94,10 @@ pub struct Transfer {
 }
 
 impl Transfer {
+    pub(crate) fn queued(id: u64, upload: bool, name: String) -> Self {
+        Self { id, upload, name, bytes: 0, total: 0, status: TransferStatus::Queued, skipped: 0, error: String::new(), canceled: Arc::default() }
+    }
+
     pub fn finished(&self) -> bool {
         matches!(self.status, TransferStatus::Done | TransferStatus::Failed | TransferStatus::Canceled)
     }
@@ -589,7 +593,7 @@ impl Remote {
     fn enqueue(self: &Arc<Self>, upload: bool, name: String, run: Work) {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         self.publish(|state| {
-            state.transfers.push(Transfer { id, upload, name, bytes: 0, total: 0, status: TransferStatus::Queued, skipped: 0, error: String::new(), canceled: Arc::default() });
+            state.transfers.push(Transfer::queued(id, upload, name));
             state.queue.push_back(Job { transfer: id, run });
         });
         self.pump();

@@ -4,7 +4,7 @@
 use super::style::{self, alpha, icon, icon_button};
 use super::{App, Intent};
 use crate::icons;
-use crate::remote::manager::{DragFile, FileEntry, Phase, Remote, Snapshot, TransferStatus, join, parent};
+use crate::remote::manager::{DragFile, FileEntry, Phase, Remote, Snapshot, Transfer, TransferStatus, join, parent};
 use crate::remote::metrics::Sample;
 use eframe::egui::{self, Align, Key, Layout, RichText, Sense, Stroke, Ui, Vec2};
 use std::collections::BTreeSet;
@@ -214,8 +214,8 @@ pub fn file_panel(app: &mut App, ui: &mut Ui, remote: &Arc<Remote>, intents: &mu
 
     let entries = sorted(&snapshot.listing.entries, state.show_hidden);
     let names: Vec<String> = entries.iter().map(|entry| entry.name.clone()).collect();
-    let list_height = ui.available_height() - transfers_height(&snapshot);
-    egui::ScrollArea::vertical().max_height(list_height.max(80.0)).auto_shrink([false, false]).show(ui, |ui| {
+    let list_height = (ui.available_height() - transfers_height(&snapshot, ui.available_height()) - ui.spacing().item_spacing.y).max(0.0);
+    egui::ScrollArea::vertical().id_salt("remote-files").max_height(list_height).min_scrolled_height(0.0).auto_shrink([false, false]).show(ui, |ui| {
         if let Some(Editing::NewFolder(value)) = &mut state.editing {
             let (commit, cancel) = name_input(ui, value, "文件夹名称");
             if commit {
@@ -351,8 +351,15 @@ pub fn file_panel(app: &mut App, ui: &mut Ui, remote: &Arc<Remote>, intents: &mu
     confirm(ui, remote, state, &current);
 }
 
-fn transfers_height(snapshot: &Snapshot) -> f32 {
-    if snapshot.transfers.is_empty() { 0.0 } else { 34.0 + 30.0 * snapshot.transfers.len().min(5) as f32 }
+const TRANSFER_ROW_HEIGHT: f32 = 58.0;
+
+fn transfers_height(snapshot: &Snapshot, available: f32) -> f32 {
+    if snapshot.transfers.is_empty() {
+        return 0.0;
+    }
+    // In a short dock, give one progress row space before allocating the file list.
+    let desired = 34.0 + TRANSFER_ROW_HEIGHT * snapshot.transfers.len().min(3) as f32;
+    desired.min((available * 0.6).max(34.0 + TRANSFER_ROW_HEIGHT)).min(available)
 }
 
 fn select(state: &mut PanelState, names: &[String], name: &str, toggle: bool, range: bool) {
@@ -494,33 +501,78 @@ fn transfers(ui: &mut Ui, remote: &Arc<Remote>, snapshot: &Snapshot) {
             });
         }
     });
-    egui::ScrollArea::vertical().id_salt("transfers").max_height(150.0).show(ui, |ui| {
-        for transfer in &snapshot.transfers {
-            let percent = (transfer.total > 0).then(|| (transfer.bytes as f64 / transfer.total as f64 * 100.0).min(100.0));
-            let status = match transfer.status {
-                TransferStatus::Queued => "排队中".to_string(),
-                TransferStatus::Done if transfer.skipped > 0 => format!("完成，跳过 {} 项", transfer.skipped),
-                TransferStatus::Done => "完成".into(),
-                TransferStatus::Canceled => "已取消".into(),
-                TransferStatus::Failed => "失败".into(),
-                TransferStatus::Running => percent.map(|p| format!("{}%", p.round())).unwrap_or_else(|| "准备中".into()),
-            };
-            ui.horizontal(|ui| {
-                ui.label(icon(if transfer.upload { icons::ARROW_UP } else { icons::ARROW_DOWN }, 13.0).color(palette.muted()));
-                ui.add(egui::Label::new(RichText::new(&transfer.name).size(10.5)).truncate()).on_hover_text(if transfer.error.is_empty() { &transfer.name } else { &transfer.error });
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if !transfer.finished() && icon_button(ui, icons::X, "取消传输", true).clicked() {
-                        remote.cancel(transfer.id);
-                    }
-                    let tint = if transfer.status == TransferStatus::Failed { palette.danger() } else { palette.faint() };
-                    ui.label(RichText::new(status).size(10.0).color(tint));
-                });
-            });
-            if transfer.status == TransferStatus::Running {
-                ui.add(egui::ProgressBar::new(percent.unwrap_or(0.0) as f32 / 100.0).desired_height(3.0));
+    if let Some(id) = transfer_rows(ui, &snapshot.transfers) {
+        remote.cancel(id);
+    }
+}
+
+/// Keep active work above history, and reveal newly added transfers even if the user
+/// previously scrolled through completed items. Ordinary progress updates keep the scroll.
+fn transfer_rows(ui: &mut Ui, transfers: &[Transfer]) -> Option<u64> {
+    let latest = transfers.last().map(|transfer| transfer.id);
+    let memory = ui.scope_id().with("latest-transfer");
+    let previous = ui.ctx().data_mut(|data| data.get_temp::<Option<u64>>(memory));
+    ui.ctx().data_mut(|data| data.insert_temp(memory, latest));
+    let mut scroll = egui::ScrollArea::vertical().id_salt("transfers").max_height(ui.available_height().max(0.0)).min_scrolled_height(0.0).auto_shrink([false, false]);
+    if previous != Some(latest) {
+        scroll = scroll.vertical_scroll_offset(0.0);
+    }
+    let mut cancel = None;
+    scroll.show(ui, |ui| {
+        let running = transfers.iter().filter(|transfer| transfer.status == TransferStatus::Running);
+        let queued = transfers.iter().filter(|transfer| transfer.status == TransferStatus::Queued);
+        let history = transfers.iter().rev().filter(|transfer| transfer.finished());
+        for transfer in running.chain(queued).chain(history) {
+            if transfer_row(ui, transfer) {
+                cancel = Some(transfer.id);
             }
         }
     });
+    cancel
+}
+
+fn transfer_row(ui: &mut Ui, transfer: &Transfer) -> bool {
+    let palette = style::palette(ui);
+    let fraction = if transfer.status == TransferStatus::Done { 1.0 } else if transfer.total > 0 { (transfer.bytes as f64 / transfer.total as f64).clamp(0.0, 1.0) as f32 } else { 0.0 };
+    let status = match transfer.status {
+        TransferStatus::Queued => "排队中".to_string(),
+        TransferStatus::Done if transfer.skipped > 0 => format!("完成，跳过 {} 项", transfer.skipped),
+        TransferStatus::Done => "完成 100%".into(),
+        TransferStatus::Canceled => "已取消".into(),
+        TransferStatus::Failed => "失败".into(),
+        TransferStatus::Running if transfer.total > 0 => format!("{:.0}%", fraction * 100.0),
+        TransferStatus::Running => "准备中".into(),
+    };
+    let tint = if transfer.status == TransferStatus::Failed { palette.danger() } else if transfer.status == TransferStatus::Canceled { palette.muted() } else { palette.accent() };
+    let width = ui.available_width().max(0.0);
+    let (row, response) = ui.allocate_exact_size(Vec2::new(width, TRANSFER_ROW_HEIGHT), Sense::hover());
+    response.on_hover_text(if transfer.error.is_empty() { &transfer.name } else { &transfer.error });
+    let mut canceled = false;
+    ui.scope_builder(egui::UiBuilder::new().max_rect(row), |ui| {
+        ui.set_clip_rect(ui.clip_rect().intersect(row));
+        let mut right = row.right();
+        if !transfer.finished() {
+            let cancel = egui::Rect::from_min_size(egui::pos2(right - 22.0, row.top()), Vec2::splat(22.0));
+            canceled = ui.put(cancel, egui::Button::new(icon(icons::X, 12.0)).frame(false)).on_hover_text("取消传输").clicked();
+            right = cancel.left() - 4.0;
+        }
+        let mut job = egui::text::LayoutJob::simple_singleline(status, egui::FontId::proportional(10.0), tint);
+        job.wrap = egui::text::TextWrapping::truncate_at_width((right - row.left()).max(0.0) * 0.55);
+        let status = ui.painter().layout_job(job);
+        right -= status.size().x;
+        ui.painter().galley(egui::pos2(right, row.top() + 5.0), status, tint);
+        ui.painter().text(row.min + Vec2::new(0.0, 11.0), egui::Align2::LEFT_CENTER, if transfer.upload { icons::ARROW_UP } else { icons::ARROW_DOWN }, egui::FontId::new(13.0, egui::FontFamily::Name(style::ICONS.into())), palette.muted());
+        let name_left = row.left() + 19.0;
+        let mut job = egui::text::LayoutJob::simple_singleline(transfer.name.clone(), egui::FontId::proportional(10.5), palette.text_soft());
+        job.wrap = egui::text::TextWrapping::truncate_at_width((right - 8.0 - name_left).max(0.0));
+        let name = ui.painter().layout_job(job);
+        ui.painter().galley(egui::pos2(name_left, row.top() + 5.0), name, palette.text_soft());
+        let bar = egui::Rect::from_min_size(row.min + Vec2::new(0.0, 25.0), Vec2::new(width, 8.0));
+        ui.put(bar, egui::ProgressBar::new(fraction).desired_width(width).desired_height(8.0).fill(tint).animate(transfer.status == TransferStatus::Running && transfer.total == 0));
+        let bytes = if transfer.total > 0 { format!("{} / {}", format_bytes(transfer.bytes as f64), format_bytes(transfer.total as f64)) } else { format_bytes(transfer.bytes as f64) };
+        ui.put(egui::Rect::from_min_size(row.min + Vec2::new(0.0, 37.0), Vec2::new(width, 16.0)), egui::Label::new(RichText::new(bytes).size(10.0).color(palette.muted())).truncate());
+    });
+    canceled
 }
 
 /// The host bar under an SSH terminal: CPU, memory, swap, disk, load, network, uptime, GPUs.
@@ -590,6 +642,93 @@ fn metric_items(ui: &mut Ui, sample: &Sample) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn transfer(id: u64, upload: bool, status: TransferStatus) -> Transfer {
+        let mut transfer = Transfer::queued(id, upload, format!("{}-{id}.bin", if upload { "upload" } else { "download" }));
+        transfer.status = status;
+        transfer.total = 4 * 1024 * 1024;
+        transfer.bytes = 1024 * 1024;
+        transfer
+    }
+
+    fn context() -> egui::Context {
+        let ctx = egui::Context::default();
+        style::install_fonts(&ctx);
+        ctx
+    }
+
+    fn visible_bars(output: &egui::FullOutput) -> Vec<&egui::epaint::RectShape> {
+        output.shapes.iter().filter_map(|shape| match &shape.shape {
+            egui::Shape::Rect(rect) if (rect.rect.height() - 8.0).abs() < 0.01 && shape.clip_rect.intersects(rect.rect) => Some(rect),
+            _ => None,
+        }).collect()
+    }
+
+    #[test]
+    fn upload_and_download_bars_remain_visible_above_completed_history() {
+        let mut transfers: Vec<Transfer> = (1..=20).map(|id| transfer(id, true, TransferStatus::Done)).collect();
+        transfers.push(transfer(21, true, TransferStatus::Running));
+        transfers.push(transfer(22, false, TransferStatus::Running));
+        let ctx = context();
+        for _ in 0..2 {
+            let output = ctx.run_ui(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(248.0, 135.0))), ..Default::default() }, |ui| {
+                transfer_rows(ui, &transfers);
+            });
+            let names: Vec<&str> = output.shapes.iter().filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if shape.clip_rect.intersects(text.visual_bounding_rect()) && text.galley.job.text.ends_with(".bin") => Some(text.galley.job.text.as_str()),
+                _ => None,
+            }).collect();
+            assert!(names.starts_with(&["upload-21.bin", "download-22.bin"]), "active transfers are hidden below history: {names:?}");
+            let bars = visible_bars(&output);
+            assert_eq!(bars.len(), 4, "each visible task has a track and a filled part");
+            for pair in bars.chunks_exact(2) {
+                assert!((pair[1].rect.width() / pair[0].rect.width() - 0.25).abs() < 0.01);
+            }
+            output.drop_without_applying_deltas();
+        }
+    }
+
+    #[test]
+    fn completed_empty_files_keep_a_full_bar_and_long_names_fit_narrow_panels() {
+        for width in [160.0, 248.0, 400.0] {
+            let ctx = context();
+            let mut item = transfer(1, false, TransferStatus::Done);
+            item.name = "long-file-name-".repeat(30);
+            item.bytes = 0;
+            item.total = 0;
+            let output = ctx.run_ui(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(width, 100.0))), ..Default::default() }, |ui| {
+                transfer_rows(ui, &[item.clone()]);
+            });
+            let bars = visible_bars(&output);
+            assert_eq!(bars.len(), 2);
+            assert_eq!(bars[0].rect, bars[1].rect);
+            for shape in &output.shapes {
+                if let egui::Shape::Text(text) = &shape.shape {
+                    assert!(text.pos.x + text.galley.size().x <= width, "text extends past the panel");
+                    if text.galley.job.text == item.name {
+                        assert!(text.pos.x + text.galley.size().x < width - 45.0, "filename obscures completion status");
+                    }
+                }
+            }
+            output.drop_without_applying_deltas();
+        }
+    }
+
+    #[test]
+    fn cancel_button_targets_the_visible_active_transfer() {
+        let ctx = context();
+        let transfers = [transfer(1, false, TransferStatus::Done), transfer(2, true, TransferStatus::Running)];
+        let mut position = egui::Pos2::ZERO;
+        let mut canceled = None;
+        for step in 0..3 {
+            let events = if step == 0 { Vec::new() } else { vec![egui::Event::PointerMoved(position), egui::Event::PointerButton { pos: position, button: egui::PointerButton::Primary, pressed: step == 1, modifiers: egui::Modifiers::default() }] };
+            ctx.run_ui(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(248.0, 150.0))), events, ..Default::default() }, |ui| {
+                position = ui.available_rect_before_wrap().right_top() + Vec2::new(-11.0, 11.0);
+                canceled = transfer_rows(ui, &transfers).or(canceled);
+            }).drop_without_applying_deltas();
+        }
+        assert_eq!(canceled, Some(2));
+    }
 
     #[test]
     fn sizes_times_and_order_read_like_the_desktop_app() {
