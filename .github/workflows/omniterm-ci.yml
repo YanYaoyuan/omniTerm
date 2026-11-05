@@ -92,7 +92,7 @@ jobs:
         run: xvfb-run -a -s "-screen 0 1440x940x24" node scripts/test-gui.mjs
       - name: Upload screenshots
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: desktop-window-screenshots
           path: ${{ runner.temp }}/gui
@@ -189,7 +189,7 @@ jobs:
         run: target/release/omniterm-app.exe --smoke "$PWD/smoke-Windows.png"
       - name: Package the app alone (the release adds the Agent)
         run: node scripts/package.mjs --without-agent
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: native-app-${{ runner.os }}
