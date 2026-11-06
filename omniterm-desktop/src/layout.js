@@ -87,9 +87,58 @@ export const dockedTerminals = (root) => paneIds(root).filter((id) => id.startsW
 export const DOCK_KEY = "omniterm-dock-layout";
 
 export const defaultDock = () => ({
-  type: "split", direction: "row", ratio: 0.18,
-  children: [pane("sidebar"), { type: "split", direction: "row", ratio: 0.72, children: [pane("terminals"), { type: "split", direction: "column", ratio: 0.6, children: [pane("agent"), pane("monitor")] }] }],
+  type: "split", direction: "row", ratio: 0.18, pinned: 248,
+  children: [pane("sidebar"), { type: "split", direction: "row", ratio: 0.72, pinned: 400, children: [pane("terminals"), { type: "split", direction: "column", ratio: 0.6, children: [pane("agent"), pane("monitor")] }] }],
 });
+
+// Panels beside the terminal area keep their size in pixels when the window resizes, and the
+// terminal area takes up the difference. `pinned` is the size of the side without the terminals.
+export const MIN_PANEL_PX = 160;
+export const MAX_PANEL_PX = 1600;
+const MIN_TERMINALS_PX = 320;
+const holdsTerminals = (node) => paneIds(node).includes("terminals");
+// Which child a split pins: the one without the terminal area, if exactly one has it.
+export function pinnedChild(node) {
+  if (node?.type !== "split") return -1;
+  const [first, second] = node.children.map(holdsTerminals);
+  return first === second ? -1 : first ? 1 : 0;
+}
+
+function splitRatio(node, rect, px) {
+  const side = pinnedChild(node);
+  if (!px || side < 0 || !Number.isFinite(node.pinned)) return node.ratio;
+  const total = node.direction === "row" ? rect.w * px.width : rect.h * px.height;
+  if (!(total >= MIN_PANEL_PX + MIN_TERMINALS_PX)) return node.ratio;
+  const size = Math.min(Math.max(node.pinned, MIN_PANEL_PX), total - MIN_TERMINALS_PX) / total;
+  return side === 0 ? size : 1 - size;
+}
+
+// A divider drag. Pinned splits record the new size in pixels as well.
+export function resizeSplit(node, path, ratio, totalPx) {
+  if (path.length) {
+    const [index, ...rest] = path;
+    return { ...node, children: node.children.map((child, position) => position === index ? resizeSplit(child, rest, ratio, totalPx) : child) };
+  }
+  const next = { ...node, ratio: Math.min(1 - MIN_RATIO, Math.max(MIN_RATIO, ratio)) };
+  const side = pinnedChild(node);
+  if (side < 0 || !(totalPx > 0)) return next;
+  const size = (side === 0 ? ratio : 1 - ratio) * totalPx;
+  return { ...next, pinned: Math.round(Math.min(MAX_PANEL_PX, Math.max(MIN_PANEL_PX, Math.min(size, totalPx - MIN_TERMINALS_PX)))) };
+}
+
+// Gives a layout saved before pinning the pixel sizes it has at this window size.
+export function pinPanels(node, px, rect = { x: 0, y: 0, w: 1, h: 1 }) {
+  if (node.type !== "split") return node;
+  const row = node.direction === "row";
+  const size = (row ? rect.w : rect.h) * node.ratio;
+  const first = row ? { ...rect, w: size } : { ...rect, h: size };
+  const second = row ? { x: rect.x + size, y: rect.y, w: rect.w - size, h: rect.h } : { x: rect.x, y: rect.y + size, w: rect.w, h: rect.h - size };
+  const children = [pinPanels(node.children[0], px, first), pinPanels(node.children[1], px, second)];
+  const side = pinnedChild(node);
+  const pinned = Number.isFinite(node.pinned) || side < 0 ? node.pinned : Math.round(Math.min(MAX_PANEL_PX, Math.max(MIN_PANEL_PX, (side === 0 ? size : (row ? rect.w : rect.h) - size) * (row ? px.width : px.height))));
+  const changed = children[0] !== node.children[0] || children[1] !== node.children[1] || pinned !== node.pinned;
+  return changed ? { ...node, ...(pinned === undefined ? {} : { pinned }), children } : node;
+}
 
 // Terminal leaves aren't saved: their sessions don't outlive the app.
 export function storableDock(root) {
@@ -129,7 +178,8 @@ export function parseDock(raw, panels = DOCK_PANELS) {
     const [first, second] = value.children.map((child) => clean(child, depth + 1));
     if (!first || !second) return null;
     const ratio = Number.isFinite(value.ratio) ? Math.min(1 - MIN_RATIO, Math.max(MIN_RATIO, value.ratio)) : 0.5;
-    return { type: "split", direction: value.direction, ratio, children: [first, second] };
+    const pinned = Number.isFinite(value.pinned) ? { pinned: Math.round(Math.min(MAX_PANEL_PX, Math.max(MIN_PANEL_PX, value.pinned))) } : {};
+    return { type: "split", direction: value.direction, ratio, ...pinned, children: [first, second] };
   };
   const root = clean(data, 0);
   if (!root) return null;
@@ -169,17 +219,18 @@ export function equalize(node) {
   return { ...node, ratio: 0.5, children: node.children.map(equalize) };
 }
 
-// Returns fractional rectangles (0–1) for every pane and every divider.
-export function computeLayout(node, rect = { x: 0, y: 0, w: 1, h: 1 }, path = [], out = { panes: [], dividers: [] }) {
+// Returns fractional rectangles (0–1) for every pane and every divider. With the container's
+// size in pixels (`px`), pinned splits keep their panel's pixel size.
+export function computeLayout(node, rect = { x: 0, y: 0, w: 1, h: 1 }, path = [], out = { panes: [], dividers: [] }, px = null) {
   if (!node) return out;
   if (node.type === "pane") { out.panes.push({ sessionId: node.sessionId, rect }); return out; }
   const row = node.direction === "row";
-  const size = (row ? rect.w : rect.h) * node.ratio;
+  const size = (row ? rect.w : rect.h) * splitRatio(node, rect, px);
   const first = row ? { ...rect, w: size } : { ...rect, h: size };
   const second = row ? { x: rect.x + size, y: rect.y, w: rect.w - size, h: rect.h } : { x: rect.x, y: rect.y + size, w: rect.w, h: rect.h - size };
   out.dividers.push({ path: node.origin ?? path, direction: node.direction, parent: rect, position: row ? rect.x + size : rect.y + size });
-  computeLayout(node.children[0], first, [...path, 0], out);
-  computeLayout(node.children[1], second, [...path, 1], out);
+  computeLayout(node.children[0], first, [...path, 0], out, px);
+  computeLayout(node.children[1], second, [...path, 1], out, px);
   return out;
 }
 

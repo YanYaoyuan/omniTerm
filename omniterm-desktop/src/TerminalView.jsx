@@ -36,7 +36,7 @@ function loadWebgl(term) {
   }
 }
 
-export function TerminalView({ session, visible, selected = false, focused = false, dimmed = false, style, settings, clear = false, platform, hostname, api, register, onState, onError, onFocus, onInput, onCwd, onTitle, onPaneDragStart, onPaneDragEnd }) {
+export function TerminalView({ session, visible, selected = false, focused = false, dimmed = false, docked = false, style, settings, clear = false, platform, hostname, api, register, onState, onError, onFocus, onInput, onCwd, onTitle, onPaneDragStart, onPaneDragEnd }) {
   const host = useRef(null);
   const terminal = useRef(null);
   const fitRef = useRef(null);
@@ -275,7 +275,7 @@ export function TerminalView({ session, visible, selected = false, focused = fal
   };
 
   return <div
-    className={`terminal-view ${visible ? "is-visible" : ""} ${focused ? "is-focused" : ""} ${dimmed ? "is-dimmed" : ""} ${dragging ? "is-dragging" : ""}`}
+    className={`terminal-view ${visible ? "is-visible" : ""} ${docked ? "is-docked" : ""} ${focused ? "is-focused" : ""} ${dimmed ? "is-dimmed" : ""} ${dragging ? "is-dragging" : ""}`}
     style={style}
     onMouseDown={() => callbacks.current.onFocus(session.id)}
     onDragOver={(event) => { if (event.dataTransfer?.types?.includes("Files")) { event.preventDefault(); setDragging(true); } }}

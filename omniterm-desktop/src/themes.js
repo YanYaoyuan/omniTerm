@@ -136,10 +136,12 @@ const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, N
 // The stack behind the interface, bottom to top: the desktop (only in a transparent
 // window), the theme color at `base`, then the optional image. `clear` means
 // something is worth seeing through the terminals; opaque terminals are kept
-// otherwise because transparent ones lose subpixel text rendering.
+// otherwise because transparent ones lose subpixel text rendering. When clear, every
+// panel and every terminal sits on one veil of the theme color at `panelAlpha`, so all of
+// them show the same amount of what is behind.
 export function backdrop(settings, windowTransparent) {
   const base = !windowTransparent || settings.backgroundMode === "opaque" ? 1 : settings.backgroundMode === "transparent" ? 0 : clamp(settings.backgroundOpacity, 0.1, 0.95);
   const image = settings.backgroundImage?.url || "";
   const clear = base < 1 || Boolean(image);
-  return { base, image, imageOpacity: clamp(settings.backgroundImageOpacity, 0.05, 1), clear, panelAlpha: clear ? clamp(base, 0.6, 0.85) : 1 };
+  return { base, image, imageOpacity: clamp(settings.backgroundImageOpacity, 0.05, 1), clear, panelAlpha: clear ? clamp(settings.surfaceOpacity ?? 0.5, 0, 0.95) : 1 };
 }
