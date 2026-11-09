@@ -38,6 +38,9 @@ fn app_icon() -> Option<egui::IconData> {
 
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(code) = core::ssh_auth::helper(&args, ui::ssh_auth::show) {
+        std::process::exit(code);
+    }
     // ssh runs omniTerm as its `xauth` for X11 forwarding on Windows; answer and leave.
     if let Some(code) = core::x11::xauth_shim(&args) {
         std::process::exit(code);
@@ -70,5 +73,6 @@ fn main() -> eframe::Result {
     let result = eframe::run_native("omniTerm", options, Box::new(move |cc| Ok(Box::new(ui::App::new(cc, settings, transparent, smoke)))));
     remote::cleanup();
     core::x11::shutdown();
+    core::ssh_auth::cleanup();
     result
 }

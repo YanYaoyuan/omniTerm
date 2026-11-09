@@ -148,8 +148,10 @@ fn destination(profile: &Profile, kind: Kind) -> String {
         host = format!("[{host}]");
     }
     match user {
-        Some(user) => format!("{user}@{host}"),
-        None => host,
+        // sftp also parses the destination as a path. Pass routing usernames via
+        // the shared -o User option so '/' can never change destination parsing.
+        Some(user) if !user.contains('/') => format!("{user}@{host}"),
+        _ => host,
     }
 }
 
@@ -211,6 +213,9 @@ pub fn build(request: &Request, control_path: impl FnOnce() -> Option<String>) -
                 args.extend(["-o".into(), "ControlMaster=auto".into(), "-o".into(), format!("ControlPath={socket}"), "-o".into(), format!("ControlPersist={CONTROL_PERSIST_SECONDS}")]);
             }
             let mut common = Vec::new();
+            if let Some(user) = profile.username.as_deref().filter(|user| user.contains('/')) {
+                common.extend(["-o".to_string(), format!("User={user}")]);
+            }
             if let Some(port) = profile.port {
                 common.extend([if request.kind == Kind::Sftp { "-P" } else { "-p" }.to_string(), port.to_string()]);
             }
@@ -272,6 +277,9 @@ pub fn build(request: &Request, control_path: impl FnOnce() -> Option<String>) -
     });
     let kind = serde_json::to_value(request.kind).map_err(|error| error.to_string())?;
     let mut env = session_env();
+    if request.kind == Kind::Ssh && profile.remember_password {
+        env.extend(super::ssh_auth::prepare(&profile)?.into_iter().map(|(key, value)| (key, Value::String(value))));
+    }
     if let Some(display) = display {
         env.insert("DISPLAY".into(), Value::String(display));
     }
@@ -284,12 +292,65 @@ mod tests {
     use super::*;
 
     #[test]
+    fn remembering_passwords_uses_askpass_only_for_opted_in_ssh_connections() {
+        if find_executable("ssh").is_none() { return; }
+        let cwd = std::env::current_dir().unwrap();
+        let shell = LocalShell::default();
+        let profile = Profile { kind: Some(Kind::Ssh), host: Some("gateway".into()), username: Some("fixture".into()), port: Some(60022), remember_password: true, ..Profile::default() };
+        let request = Request { kind: Kind::Ssh, cwd: cwd.to_str().unwrap(), profile: Some(&profile), companion: false, local_shell: &shell };
+        let plan = build(&request, || None).unwrap();
+        let env = &plan.host["env"];
+        assert_eq!(env["SSH_ASKPASS_REQUIRE"], "force");
+        assert_eq!(env["OMNITERM_SSH_ASKPASS"], "1");
+        let state = Path::new(env["OMNITERM_SSH_AUTH_STATE"].as_str().unwrap());
+        assert!(!state.exists(), "planning stores no password or first-answer data");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(state.parent().unwrap().metadata().unwrap().permissions().mode() & 0o777, 0o700);
+        }
+        let ordinary = Profile { remember_password: false, ..profile.clone() };
+        let ordinary_plan = build(&Request { profile: Some(&ordinary), ..request }, || None).unwrap();
+        assert!(ordinary_plan.host["env"].get("OMNITERM_SSH_AUTH_STATE").is_none());
+        std::fs::remove_dir(state.parent().unwrap()).unwrap();
+    }
+
+    #[test]
     fn ssh_destinations_keep_users_and_bracket_ipv6_for_sftp() {
         let profile = Profile { kind: Some(Kind::Sftp), host: Some("me@::1".into()), ..Profile::default() };
         assert_eq!(destination(&profile, Kind::Sftp), "me@[::1]");
         assert_eq!(destination(&profile, Kind::Ssh), "me@::1");
         let named = Profile { username: Some("ops".into()), host: Some("box".into()), ..Profile::default() };
         assert_eq!(destination(&named, Kind::Ssh), "ops@box");
+    }
+
+    #[test]
+    fn bastion_routing_user_is_preserved_for_terminal_sftp_and_companions() {
+        if find_executable("ssh").is_none() || find_executable("sftp").is_none() { return; }
+        let cwd = std::env::current_dir().unwrap();
+        let shell = LocalShell::default();
+        let user = "alice/192.0.2.10/root";
+        for kind in [Kind::Ssh, Kind::Sftp, Kind::Tunnel] {
+            let profile = Profile { kind: Some(kind), host: Some("gateway".into()), username: Some(user.into()), port: Some(60022), forward_type: Some(Forward::D), bind_port: Some(8080), ..Profile::default() };
+            let request = Request { kind, cwd: cwd.to_str().unwrap(), profile: Some(&profile), companion: true, local_shell: &shell };
+            let plan = build(&request, || None).unwrap();
+            let args: Vec<&str> = plan.host["args"].as_array().unwrap().iter().map(|value| value.as_str().unwrap()).collect();
+            assert!(args.windows(2).any(|pair| pair == ["-o", "User=alice/192.0.2.10/root"]));
+            assert_eq!(args.last(), Some(&"gateway"));
+            if let Some(companion) = plan.companion {
+                assert_eq!(companion.destination, "gateway");
+                assert!(companion.args.windows(2).any(|pair| pair == ["-o", "User=alice/192.0.2.10/root"]));
+                // OpenSSH's actual parser checks the generated options without
+                // connecting, resolving DNS, or reading personal configuration.
+                #[cfg(unix)]
+                {
+                    let output = Command::new(&companion.executable).args(["-F", "/dev/null", "-G"]).args(&companion.args).arg(&companion.destination).output().unwrap();
+                    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+                    assert!(String::from_utf8_lossy(&output.stdout).lines().any(|line| line == format!("user {user}")));
+                }
+            }
+            assert_eq!(plan.host["connection"]["user"], user);
+        }
     }
 
     #[cfg(unix)]

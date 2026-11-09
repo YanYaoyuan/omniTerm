@@ -25,6 +25,7 @@ pub struct ConnectionForm {
     pub baud: String,
     pub forward: Forward,
     pub x11: X11,
+    pub remember_password: bool,
     pub bind_port: String,
     pub target_host: String,
     pub target_port: String,
@@ -49,6 +50,7 @@ impl ConnectionForm {
             baud: p.baud.unwrap_or(115_200).to_string(),
             forward: p.forward_type.unwrap_or(Forward::L),
             x11: p.x11,
+            remember_password: p.remember_password,
             bind_port: number(p.bind_port),
             target_host: p.target_host.clone().unwrap_or_else(|| "localhost".into()),
             target_port: number(p.target_port),
@@ -85,6 +87,7 @@ impl ConnectionForm {
             profile.key_path = optional(&self.key_path);
             profile.proxy_jump = optional(&self.proxy_jump);
             profile.x11 = self.x11;
+            profile.remember_password = self.remember_password;
             // The imported label describes the host it came from.
             if self.editing.as_ref().is_some_and(|old| old.host == profile.host) {
                 profile.summary = self.editing.as_ref().and_then(|old| old.summary.clone());
@@ -437,106 +440,120 @@ fn connection(form: &mut ConnectionForm, ctx: &egui::Context, intents: &mut Vec<
     let palette = style::palette_of(ctx);
     let title = if form.editing.is_some() { "编辑连接" } else { "新建连接" };
     modal(ctx, "connection", 470.0, icons::PLUGS_CONNECTED, title, "配置并管理你的终端连接", |ui| {
-        let kinds = Kind::CONNECTIONS.map(|kind| (kind, super::sidebar::connection_label(kind)));
-        segmented(ui, &mut form.kind, &kinds);
-        ui.add_space(6.0);
-        let description = match form.kind {
-            Kind::Ssh => "通过 SSH 安全连接到远程主机。",
-            Kind::Sftp => "打开交互式 SFTP 会话，上传和下载文件。",
-            Kind::Serial => "连接本地串口设备并打开交互控制台。",
-            _ => "建立 SSH 隧道，安全转发本地或远程端口。",
-        };
-        ui.label(RichText::new(description).size(11.0).color(palette.muted()));
-        ui.add_space(8.0);
-        let full = ui.available_width();
-        let host_width = full - 120.0;
-        field(ui, "连接名称", &mut form.name, "为这个连接起个名字", full);
-        if form.kind == Kind::Serial {
-            ui.horizontal(|ui| {
-                field(ui, "串口设备", &mut form.device, "/dev/ttyUSB0 或 COM3", host_width);
-                field(ui, "波特率", &mut form.baud, "115200", 110.0);
-            });
-            egui::Frame::new().fill(style::alpha(palette.tokens.accent, 0.08)).corner_radius(6).inner_margin(8).show(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt("connection-fields").max_height((ctx.content_rect().height() - 160.0).max(180.0)).show(ui, |ui| {
+            let kinds = Kind::CONNECTIONS.map(|kind| (kind, super::sidebar::connection_label(kind)));
+            segmented(ui, &mut form.kind, &kinds);
+            ui.add_space(6.0);
+            let description = match form.kind {
+                Kind::Ssh => "通过 SSH 安全连接到远程主机。",
+                Kind::Sftp => "打开交互式 SFTP 会话，上传和下载文件。",
+                Kind::Serial => "连接本地串口设备并打开交互控制台。",
+                _ => "建立 SSH 隧道，安全转发本地或远程端口。",
+            };
+            ui.label(RichText::new(description).size(11.0).color(palette.muted()));
+            ui.add_space(8.0);
+            let full = ui.available_width();
+            let host_width = full - 120.0;
+            field(ui, "连接名称", &mut form.name, "为这个连接起个名字", full);
+            if form.kind == Kind::Serial {
                 ui.horizontal(|ui| {
-                    ui.label(icon(icons::INFO, 16.0).color(palette.accent()));
-                    ui.label(RichText::new("使用本地 Python 与 pyserial。连接后按 Ctrl+] 退出串口控制台。").size(11.0));
+                    field(ui, "串口设备", &mut form.device, "/dev/ttyUSB0 或 COM3", host_width);
+                    field(ui, "波特率", &mut form.baud, "115200", 110.0);
                 });
-            });
-        } else {
-            ui.horizontal(|ui| {
-                field(ui, "主机地址", &mut form.host, "主机名或 IP 地址", host_width);
-                field(ui, "SSH 端口", &mut form.port, "22", 110.0);
-            });
-            field(ui, "用户名", &mut form.username, "留空时使用系统默认用户", full);
-            field(ui, "私钥路径（可选）", &mut form.key_path, "例如 ~/.ssh/id_ed25519", full);
-            ui.label(RichText::new("也可以使用系统 SSH 配置和 SSH Agent。").size(10.0).color(palette.faint()));
-            field(ui, "跳板机（可选）", &mut form.proxy_jump, "例如 root@192.168.10.222 或 ~/.ssh/config 中的别名", full);
-            ui.label(RichText::new("对应 ProxyJump，多级跳板用逗号分隔。留空时沿用 ~/.ssh/config 中的设置。").size(10.0).color(palette.faint()));
-            if form.kind == Kind::Ssh {
-                ui.add_space(4.0);
-                ui.label(RichText::new("X11 转发").size(11.0).color(palette.muted()));
-                segmented(ui, &mut form.x11, &[(X11::Off, "关闭"), (X11::Restricted, "受限（-X）"), (X11::Trusted, "信任（-Y）")]);
-                let hint = if cfg!(windows) {
-                    "远程图形程序在本机显示。需要 VcXsrv 或 Xming（omniTerm 会带授权自动启动），或已运行的 X 服务器；Windows 上总是以信任模式转发。"
-                } else if cfg!(target_os = "macos") {
-                    "远程图形程序在本机显示，需要 XQuartz。受限模式更安全；个别程序需要信任模式。"
-                } else {
-                    "远程图形程序在本机显示（X11 或 XWayland）。受限模式更安全；个别程序需要信任模式。"
-                };
-                ui.add(egui::Label::new(RichText::new(hint).size(10.0).color(palette.faint())).wrap());
-            }
-        }
-        if form.kind == Kind::Tunnel {
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.set_width(host_width);
-                    ui.label(RichText::new("转发类型").size(11.0).color(palette.muted()));
-                    let label = |forward: Forward| match forward {
-                        Forward::L => "本地转发（-L）",
-                        Forward::R => "远程转发（-R）",
-                        Forward::D => "动态 SOCKS（-D）",
-                    };
-                    egui::ComboBox::from_id_salt("forward").width(host_width).selected_text(label(form.forward)).show_ui(ui, |ui| {
-                        for forward in [Forward::L, Forward::R, Forward::D] {
-                            ui.selectable_value(&mut form.forward, forward, label(forward));
-                        }
+                egui::Frame::new().fill(style::alpha(palette.tokens.accent, 0.08)).corner_radius(6).inner_margin(8).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(icon(icons::INFO, 16.0).color(palette.accent()));
+                        ui.label(RichText::new("使用本地 Python 与 pyserial。连接后按 Ctrl+] 退出串口控制台。").size(11.0));
                     });
                 });
-                field(ui, "监听端口", &mut form.bind_port, "8080", 110.0);
-            });
-            if form.forward != Forward::D {
+            } else {
                 ui.horizontal(|ui| {
-                    field(ui, "目标主机", &mut form.target_host, "localhost", host_width);
-                    field(ui, "目标端口", &mut form.target_port, "3000", 110.0);
+                    field(ui, "主机地址", &mut form.host, "主机名或 IP 地址", host_width);
+                    field(ui, "SSH 端口", &mut form.port, "22", 110.0);
                 });
-            }
-        }
-        ui.add_space(8.0);
-        ui.checkbox(&mut form.persist, "保存到我的连接");
-        if let Some(error) = &form.error {
-            ui.colored_label(palette.danger(), error);
-        }
-        ui.add_space(10.0);
-        ui.horizontal(|ui| {
-            let mut chosen = None;
-            if style::secondary_button(ui, "仅保存").clicked() {
-                chosen = Some(false);
-            }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if style::primary_button(ui, &format!("{}  连接", icons::TERMINAL_WINDOW)).clicked() || ui.input(|input| input.key_pressed(egui::Key::Enter)) {
-                    chosen = Some(true);
+                field(ui, "用户名", &mut form.username, "留空时使用系统默认用户", full);
+                if form.username.contains('/') {
+                    ui.label(RichText::new("堡垒机透传账号格式：堡垒机账号/资产IP/资产账号。").size(10.0).color(palette.faint()));
                 }
-                if style::ghost_button(ui, "取消").clicked() {
-                    intents.push(Intent::CloseDialog);
+                field(ui, "私钥路径（可选）", &mut form.key_path, "例如 ~/.ssh/id_ed25519", full);
+                ui.label(RichText::new("也可以使用系统 SSH 配置和 SSH Agent。").size(10.0).color(palette.faint()));
+                field(ui, "跳板机（可选）", &mut form.proxy_jump, "例如 root@192.168.10.222 或 ~/.ssh/config 中的别名", full);
+                ui.label(RichText::new("对应 ProxyJump，多级跳板用逗号分隔。留空时沿用 ~/.ssh/config 中的设置。").size(10.0).color(palette.faint()));
+                if form.kind == Kind::Ssh {
+                    ui.add_space(4.0);
+                    ui.checkbox(&mut form.remember_password, "记住首次登录密码（系统钥匙串）");
+                    ui.label(RichText::new("首次密码通过安全弹窗输入；动态验证码每次手动输入，不保存。").size(10.0).color(palette.faint()));
+                    if style::ghost_button(ui, "忘记已保存的首次密码").clicked() {
+                        match form.editing.clone().map(Ok).unwrap_or_else(|| form.profile()) {
+                            Ok(profile) => intents.push(Intent::ForgetSshPassword(profile)),
+                            Err(error) => form.error = Some(error),
+                        }
+                    }
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("X11 转发").size(11.0).color(palette.muted()));
+                    segmented(ui, &mut form.x11, &[(X11::Off, "关闭"), (X11::Restricted, "受限（-X）"), (X11::Trusted, "信任（-Y）")]);
+                    let hint = if cfg!(windows) {
+                        "远程图形程序在本机显示。需要 VcXsrv 或 Xming（omniTerm 会带授权自动启动），或已运行的 X 服务器；Windows 上总是以信任模式转发。"
+                    } else if cfg!(target_os = "macos") {
+                        "远程图形程序在本机显示，需要 XQuartz。受限模式更安全；个别程序需要信任模式。"
+                    } else {
+                        "远程图形程序在本机显示（X11 或 XWayland）。受限模式更安全；个别程序需要信任模式。"
+                    };
+                    ui.add(egui::Label::new(RichText::new(hint).size(10.0).color(palette.faint())).wrap());
+                }
+            }
+            if form.kind == Kind::Tunnel {
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width(host_width);
+                        ui.label(RichText::new("转发类型").size(11.0).color(palette.muted()));
+                        let label = |forward: Forward| match forward {
+                            Forward::L => "本地转发（-L）",
+                            Forward::R => "远程转发（-R）",
+                            Forward::D => "动态 SOCKS（-D）",
+                        };
+                        egui::ComboBox::from_id_salt("forward").width(host_width).selected_text(label(form.forward)).show_ui(ui, |ui| {
+                            for forward in [Forward::L, Forward::R, Forward::D] {
+                                ui.selectable_value(&mut form.forward, forward, label(forward));
+                            }
+                        });
+                    });
+                    field(ui, "监听端口", &mut form.bind_port, "8080", 110.0);
+                });
+                if form.forward != Forward::D {
+                    ui.horizontal(|ui| {
+                        field(ui, "目标主机", &mut form.target_host, "localhost", host_width);
+                        field(ui, "目标端口", &mut form.target_port, "3000", 110.0);
+                    });
+                }
+            }
+            ui.add_space(8.0);
+            ui.checkbox(&mut form.persist, "保存到我的连接");
+            if let Some(error) = &form.error {
+                ui.colored_label(palette.danger(), error);
+            }
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                let mut chosen = None;
+                if style::secondary_button(ui, "仅保存").clicked() {
+                    chosen = Some(false);
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if style::primary_button(ui, &format!("{}  连接", icons::TERMINAL_WINDOW)).clicked() || ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+                        chosen = Some(true);
+                    }
+                    if style::ghost_button(ui, "取消").clicked() {
+                        intents.push(Intent::CloseDialog);
+                    }
+                });
+                if let Some(connect) = chosen {
+                    match form.profile() {
+                        Ok(profile) => intents.push(Intent::SaveProfile { profile, connect, persist: form.persist }),
+                        Err(error) => form.error = Some(error),
+                    }
                 }
             });
-            if let Some(connect) = chosen {
-                match form.profile() {
-                    Ok(profile) => intents.push(Intent::SaveProfile { profile, connect, persist: form.persist }),
-                    Err(error) => form.error = Some(error),
-                }
-            }
         });
     })
 }

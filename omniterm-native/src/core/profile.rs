@@ -82,6 +82,9 @@ pub struct Profile {
     /// in; the store keeps it beside, by profile id.
     #[serde(skip)]
     pub x11: X11,
+    /// Native-only opt-in; passwords themselves live exclusively in the OS keychain.
+    #[serde(skip)]
+    pub remember_password: bool,
 }
 
 fn text(value: &Option<String>, label: &str, maximum: usize) -> Result<Option<String>, String> {
@@ -130,7 +133,7 @@ impl Profile {
         out.host = text(&self.host, "主机", 255)?.map(|value| host(&value, "主机", true)).transpose()?;
         out.username = text(&self.username, "用户名", 128)?;
         if let Some(user) = &out.username
-            && !(user.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') && user.chars().all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c)))
+            && !user.split('/').all(|part| part.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') && part.chars().all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c)))
         {
             return Err("SSH 用户名无效。".into());
         }
@@ -161,6 +164,7 @@ impl Profile {
         out.target_host = text(&self.target_host, "目标主机", 255)?.map(|value| host(&value, "目标主机", false)).transpose()?;
         out.forward_type = self.forward_type;
         out.x11 = if kind == Kind::Ssh { self.x11 } else { X11::Off };
+        out.remember_password = kind == Kind::Ssh && self.remember_password;
         if complete {
             if matches!(kind, Kind::Ssh | Kind::Sftp | Kind::Tunnel) && out.host.is_none() {
                 return Err("需要填写主机或 SSH 别名。".into());
@@ -193,12 +197,14 @@ pub struct Store {
     path: PathBuf,
     /// X11 forwarding per profile id, which `profiles.json` cannot hold.
     extras: PathBuf,
+    ssh_passwords: PathBuf,
 }
 
 impl Store {
     pub fn new(path: PathBuf) -> Self {
         let extras = path.with_file_name("native-profile-x11.json");
-        Self { path, extras }
+        let ssh_passwords = path.with_file_name("native-profile-ssh-auth.json");
+        Self { path, extras, ssh_passwords }
     }
 
     fn x11_modes(&self) -> std::collections::HashMap<String, X11> {
@@ -220,12 +226,14 @@ impl Store {
         }
         let mut ids = std::collections::HashSet::new();
         let modes = self.x11_modes();
+        let passwords: std::collections::HashMap<String, bool> = std::fs::read(&self.ssh_passwords).ok().filter(|bytes| bytes.len() <= 1 << 20).and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
         profiles
             .iter()
             .map(|profile| {
                 let mut valid = profile.validate(true)?;
                 if valid.kind == Some(Kind::Ssh) {
                     valid.x11 = valid.id.as_ref().and_then(|id| modes.get(id)).copied().unwrap_or_default();
+                    valid.remember_password = valid.id.as_ref().and_then(|id| passwords.get(id)).copied().unwrap_or(false);
                 }
                 match &valid.id {
                     Some(id) if ids.insert(id.clone()) => Ok(valid),
@@ -242,7 +250,10 @@ impl Store {
         let modes: std::collections::BTreeMap<&str, X11> = profiles.iter().filter(|profile| profile.x11 != X11::Off).filter_map(|profile| Some((profile.id.as_deref()?, profile.x11))).collect();
         let mut json = serde_json::to_vec_pretty(&modes).map_err(|error| error.to_string())?;
         json.push(b'\n');
-        super::paths::write_atomically(&self.extras, &json).map_err(|error| format!("无法保存连接：{error}"))
+        super::paths::write_atomically(&self.extras, &json).map_err(|error| format!("无法保存连接：{error}"))?;
+        let modes: std::collections::BTreeMap<&str, bool> = profiles.iter().filter(|profile| profile.remember_password).filter_map(|profile| Some((profile.id.as_deref()?, true))).collect();
+        let json = serde_json::to_vec_pretty(&modes).map_err(|error| error.to_string())?;
+        super::paths::write_atomically(&self.ssh_passwords, &json).map_err(|error| format!("无法保存 SSH 认证偏好：{error}"))
     }
 
     pub fn save(&self, input: &Profile) -> Result<Vec<Profile>, String> {
@@ -321,6 +332,32 @@ mod tests {
         assert!(ssh("user@").validate(true).is_err());
         assert!(ssh("deploy@10.0.0.1").validate(true).is_ok());
         assert!(Profile { username: Some("me".into()), ..ssh("deploy@box") }.validate(true).is_err());
+    }
+
+    #[test]
+    fn bastion_routing_usernames_are_allowed_without_options_or_control_characters() {
+        for user in ["alice", "alice/192.0.2.10/root", "alice/asset-name/_ubuntu"] {
+            assert_eq!(Profile { username: Some(user.into()), ..ssh("gateway") }.validate(true).unwrap().username.as_deref(), Some(user));
+        }
+        for user in ["/root", "alice//root", "alice/", "-oProxyCommand=x", "alice/-oProxyCommand", "alice/asset/root\n", "alice/asset/root;id", "alice/asset/root@host", "alice/asset/root x"] {
+            assert!(Profile { username: Some(user.into()), ..ssh("gateway") }.validate(true).is_err());
+        }
+    }
+
+    #[test]
+    fn remembering_ssh_passwords_keeps_only_a_boolean_outside_shared_profiles() {
+        let directory = std::env::temp_dir().join(format!("omniterm-auth-profiles-{}", uuid::Uuid::new_v4()));
+        let store = Store::new(directory.join("profiles.json"));
+        let saved = store.save(&Profile { remember_password: true, ..ssh("gateway") }).unwrap();
+        assert!(store.list().unwrap()[0].remember_password);
+        let shared = std::fs::read_to_string(directory.join("profiles.json")).unwrap();
+        assert!(!shared.contains("rememberPassword"));
+        assert!(!shared.contains("password"));
+        let preferences: serde_json::Value = serde_json::from_slice(&std::fs::read(directory.join("native-profile-ssh-auth.json")).unwrap()).unwrap();
+        assert_eq!(preferences[saved[0].id.as_ref().unwrap()], true);
+        store.save(&Profile { id: saved[0].id.clone(), remember_password: false, ..ssh("gateway") }).unwrap();
+        assert!(!store.list().unwrap()[0].remember_password);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

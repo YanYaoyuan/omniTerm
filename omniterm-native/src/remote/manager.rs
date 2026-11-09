@@ -28,6 +28,8 @@ const MAX_DRAG_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reason {
     NoSftp,
+    ChannelRefused,
+    HostKey,
     Auth,
     Lost,
     Failed,
@@ -36,8 +38,10 @@ pub enum Reason {
 impl Reason {
     pub fn message(self) -> &'static str {
         match self {
-            Reason::NoSftp => "这台主机没有启用 SFTP，文件面板不可用。",
-            Reason::Auth => "无法复用 SSH 登录。Windows 上文件面板需要密钥或 SSH Agent 认证。",
+            Reason::NoSftp => "SSH 服务器未提供或不允许 SFTP，文件面板不可用。",
+            Reason::ChannelRefused => "SSH 服务器拒绝新增会话通道。堡垒机菜单登录可能不支持共享 SFTP，请使用管理员提供的资产 SFTP 入口。",
+            Reason::HostKey => "SSH 主机身份验证失败，请核对主机指纹和 known_hosts。",
+            Reason::Auth => "文件连接的 SSH 认证未通过。请检查认证方式与权限；终端登录成功不代表文件通道可复用该登录。",
             Reason::Lost => "SFTP 连接已断开。",
             Reason::Failed => "无法打开 SFTP 连接。",
         }
@@ -183,9 +187,13 @@ pub fn command(program: &str) -> Command {
 
 fn failure_reason(stderr: &str, fallback: Reason) -> Reason {
     let lower = stderr.to_lowercase();
-    if lower.contains("subsystem request failed") || (lower.contains("subsystem") && (lower.contains("not") || lower.contains("denied"))) {
+    if lower.contains("session open refused") || lower.contains("session request failed") || lower.contains("administratively prohibited") {
+        Reason::ChannelRefused
+    } else if lower.contains("subsystem request failed") || (lower.contains("subsystem") && (lower.contains("not") || lower.contains("denied"))) {
         Reason::NoSftp
-    } else if lower.contains("permission denied") || lower.contains("host key verification failed") || lower.contains("no supported authentication") {
+    } else if lower.contains("host key verification failed") || lower.contains("remote host identification has changed") {
+        Reason::HostKey
+    } else if lower.contains("permission denied") || lower.contains("no supported authentication") {
         Reason::Auth
     } else {
         fallback
@@ -246,6 +254,10 @@ impl Remote {
             None => "ControlPath=none".into(),
         };
         let mut args: Vec<String> = ["-o", "BatchMode=yes", "-o", "ControlMaster=no", "-o", &control, "-o", "ClearAllForwardings=yes", "-o", "RemoteCommand=none", "-o", "RequestTTY=no", "-o", "ConnectTimeout=15"].iter().map(|s| s.to_string()).collect();
+        if self.target.control_path.is_some() {
+            // Refused mux channels must not fall back to a fresh MFA login.
+            args.extend(["-o".into(), "ProxyCommand=false".into()]);
+        }
         args.extend(self.target.args.iter().cloned());
         args
     }
@@ -1025,6 +1037,8 @@ mod tests {
     fn ssh_errors_explain_why_the_panel_is_unavailable() {
         assert_eq!(failure_reason("subsystem request failed on channel 0", Reason::Failed), Reason::NoSftp);
         assert_eq!(failure_reason("Permission denied (publickey).", Reason::Failed), Reason::Auth);
+        assert_eq!(failure_reason("mux_client_request_session: session request failed: Session open refused by peer\nPermission denied (password,keyboard-interactive,publickey).", Reason::Failed), Reason::ChannelRefused);
+        assert_eq!(failure_reason("Host key verification failed.", Reason::Failed), Reason::HostKey);
         assert_eq!(failure_reason("", Reason::Lost), Reason::Lost);
     }
 }

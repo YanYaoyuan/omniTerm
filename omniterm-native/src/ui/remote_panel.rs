@@ -583,7 +583,8 @@ pub fn metrics_bar(ui: &mut Ui, rect: egui::Rect, snapshot: &Snapshot) {
     ui.scope_builder(egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(14.0, 0.0))).layout(Layout::left_to_right(Align::Center)), |ui| {
         ui.spacing_mut().item_spacing.x = 16.0;
         let Some(sample) = snapshot.metrics.as_ref().filter(|_| snapshot.metrics_available) else {
-            ui.label(RichText::new(if snapshot.phase == Phase::Waiting { "等待 SSH 登录完成…" } else { "主机指标不可用" }).size(11.0).color(palette.muted()));
+            ui.label(RichText::new(if snapshot.phase == Phase::Waiting { "等待 SSH 登录完成…" } else { "主机指标不可用" }).size(11.0).color(palette.muted()))
+                .on_hover_text("采样需要服务器允许额外 SSH 会话和 POSIX shell 命令。堡垒机的菜单会话不等同于目标资产的独立命令通道。");
             return;
         };
         metric_items(ui, sample);

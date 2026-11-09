@@ -12,6 +12,7 @@ mod process_window;
 mod palette;
 mod remote_panel;
 pub mod shortcuts;
+pub mod ssh_auth;
 mod sidebar;
 pub mod style;
 mod terminals;
@@ -123,6 +124,7 @@ pub enum Intent {
     SetRatio { tab: u64, path: Vec<usize>, ratio: f32 },
     ChooseDirectory,
     Dialog(Dialog),
+    ForgetSshPassword(Profile),
     CloseDialog,
     SaveProfile { profile: Profile, connect: bool, persist: bool },
     DeleteProfile(String),
@@ -205,6 +207,7 @@ pub struct App {
     file_panels: HashMap<String, remote_panel::PanelState>,
     sidebar_files: bool,
     watched: Option<String>,
+    credential_work: Vec<std::sync::mpsc::Receiver<Result<(), String>>>,
     background: Option<(std::path::PathBuf, egui::TextureHandle)>,
     applied_theme: Option<&'static str>,
     blink_epoch: Instant,
@@ -299,6 +302,7 @@ impl App {
             file_panels: HashMap::new(),
             sidebar_files: true,
             watched: None,
+            credential_work: Vec::new(),
             background: None,
             applied_theme: None,
             blink_epoch: Instant::now(),
@@ -790,6 +794,15 @@ impl App {
                 }
             }
             Intent::Dialog(dialog) => self.dialog = Some(dialog),
+            Intent::ForgetSshPassword(profile) => {
+                let (send, receive) = std::sync::mpsc::channel();
+                self.credential_work.push(receive);
+                let ctx = ctx.clone();
+                std::thread::spawn(move || {
+                    let _ = send.send(crate::core::ssh_auth::forget(&profile));
+                    ctx.request_repaint();
+                });
+            }
             // Closing the import list counts as having seen those hosts, so it asks only once.
             Intent::CloseDialog => {
                 if matches!(self.dialog, Some(Dialog::SshImport(_))) {
@@ -953,6 +966,18 @@ impl App {
     }
 
     fn handle_notices(&mut self) {
+        let mut credential_results = Vec::new();
+        self.credential_work.retain(|receive| match receive.try_recv() {
+            Ok(result) => { credential_results.push(result); false }
+            Err(std::sync::mpsc::TryRecvError::Empty) => true,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => { credential_results.push(Err("SSH 密码清理未完成，请重试。".into())); false }
+        });
+        for result in credential_results {
+            match result {
+                Ok(()) => self.notify("已忘记这个连接保存的首次密码。", false),
+                Err(error) => self.notify(error, true),
+            }
+        }
         while let Ok(notice) = self.backend.notices.try_recv() {
             match notice {
                 Notice::Opened { token, result } => self.opened(token, result),
