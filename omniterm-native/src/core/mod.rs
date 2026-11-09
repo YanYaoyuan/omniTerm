@@ -7,6 +7,7 @@ pub mod plan;
 pub mod profile;
 pub mod settings;
 pub mod ssh_config;
+pub mod ssh_auth;
 pub mod text;
 pub mod workspace;
 pub mod x11;

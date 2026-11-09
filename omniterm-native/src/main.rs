@@ -13,6 +13,7 @@ mod backend;
 mod bench;
 mod core;
 mod drag_out;
+mod file_drop_position;
 mod glyphs;
 mod gpu;
 mod grid;
@@ -38,8 +39,31 @@ fn app_icon() -> Option<egui::IconData> {
 
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(code) = remote::qizhi::helper(&args, ui::ssh_auth::show) {
+        std::process::exit(code);
+    }
+    if let Some(code) = core::ssh_auth::helper(&args, ui::ssh_auth::show) {
+        std::process::exit(code);
+    }
     // ssh runs omniTerm as its `xauth` for X11 forwarding on Windows; answer and leave.
     if let Some(code) = core::x11::xauth_shim(&args) {
+        std::process::exit(code);
+    }
+    if args.first().map(String::as_str) == Some("--verify-file-connection") {
+        let code = match args.get(1) {
+            Some(path) if args.len() == 2 => remote::verify::run(std::path::Path::new(path)),
+            _ => {
+                eprintln!("Usage: omniTerm --verify-file-connection <connection-parameters.json>");
+                2
+            }
+        };
+        std::process::exit(code);
+    }
+    if args.first().map(String::as_str) == Some("--verify-routed-file-connection") {
+        let code = match args.get(1) {
+            Some(id) if args.len() == 2 => remote::verify::run_profile(id),
+            _ => { eprintln!("Usage: omniTerm --verify-routed-file-connection <saved-profile-id>"); 2 }
+        };
         std::process::exit(code);
     }
     if args.first().map(String::as_str) == Some("--bench") {
@@ -70,5 +94,6 @@ fn main() -> eframe::Result {
     let result = eframe::run_native("omniTerm", options, Box::new(move |cc| Ok(Box::new(ui::App::new(cc, settings, transparent, smoke)))));
     remote::cleanup();
     core::x11::shutdown();
+    core::ssh_auth::cleanup();
     result
 }

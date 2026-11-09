@@ -34,6 +34,13 @@ uuid = { version = "1", features = ["v4"] }
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 drag = "2.1"
 
+# Read the native drop position when AppKit sends file paths without mouse-motion events.
+# These versions already belong to eframe's native dependency graph.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSView", "NSWindow", "objc2-core-foundation"] }
+raw-window-handle = "0.6"
+
 # X11 forwarding: the short path of omniTerm itself, which ssh runs as its xauth.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }

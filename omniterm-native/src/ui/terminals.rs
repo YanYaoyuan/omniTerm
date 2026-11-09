@@ -62,7 +62,7 @@ pub fn show(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>, modal: bool) 
         let note = Rect::from_min_max(Pos2::new(area.left(), area.bottom() - FOOTNOTE), area.max);
         footnote(app, ui, note);
         area.max.y -= FOOTNOTE;
-        if let Some(remote) = app.focused_remote() {
+        if let Some(remote) = app.focused_remote().filter(|remote| !remote.is_independent()) {
             let bar = Rect::from_min_max(Pos2::new(area.left(), area.bottom() - METRICS), area.max);
             super::remote_panel::metrics_bar(ui, bar, &remote.snapshot());
             area.max.y -= METRICS;
@@ -576,13 +576,13 @@ fn pane(app: &mut App, ui: &mut Ui, id: &str, rect: Rect, focused: bool, many: b
     });
 
     // Files dropped on a terminal are typed as quoted paths, as in the desktop app.
-    let dropped: Vec<String> = ui.input(|input| input.raw.dropped_files.iter().map(|file| file.path().to_string_lossy().into_owned()).filter(|path| !path.is_empty()).collect());
-    if !dropped.is_empty() && running && ui.input(|input| input.pointer.hover_pos()).is_some_and(|pointer| rect.contains(pointer)) {
-        let text = dropped.iter().map(|path| quote_path(path, app.windows, powershell)).collect::<Vec<_>>().join(" ") + " ";
+    let dropped = if running && !modal { app.file_drop.take(ui, rect) } else { Vec::new() };
+    if !dropped.is_empty() {
+        let text = dropped.iter().map(|path| quote_path(&path.to_string_lossy(), app.windows, powershell)).collect::<Vec<_>>().join(" ") + " ";
         app.backend.write(id, text);
         intents.push(Intent::Focus(id.to_string()));
     }
-    if ui.input(|input| !input.raw.hovered_files.is_empty()) && ui.input(|input| input.pointer.hover_pos()).is_some_and(|pointer| rect.contains(pointer)) {
+    if running && !modal && app.file_drop.hovered(ui, rect) {
         ui.painter().rect(rect.shrink(6.0), 6.0, alpha(palette.tokens.accent, 0.07), Stroke::new(1.5, alpha(palette.tokens.accent, 0.56)), egui::StrokeKind::Inside);
         ui.painter().text(rect.center(), Align2::CENTER_CENTER, "拖放以插入文件路径", FontId::proportional(12.0), palette.text_soft());
     }

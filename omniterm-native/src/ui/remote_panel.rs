@@ -121,8 +121,46 @@ fn valid_name(name: &str) -> bool {
     !name.is_empty() && name != "." && name != ".." && !name.contains('/') && !name.contains('\0')
 }
 
+fn file_connection_actions(app: &App, ui: &mut Ui, id: &str, intents: &mut Vec<Intent>) {
+    let Some(pane) = app.panes.get(id).filter(|pane| pane.session.kind == crate::core::profile::Kind::Ssh) else { return };
+    let binding = pane.session.profile.as_ref().and_then(|profile| profile.file_connection.as_ref());
+    let direct = binding.is_none() && pane.session.profile.as_ref().is_some_and(|profile| profile.routed_file_login());
+    if direct {
+        ui.label(egui::RichText::new("资产文件 · SFTP 透传自动连接").size(10.5));
+    }
+    if binding.is_some() && pane.session.profile.as_ref().is_some_and(|profile| profile.routed_file_login())
+        && style::ghost_button(ui, "改用账号透传自动连接").clicked()
+    {
+        intents.push(Intent::UseRoutedFileConnection(id.into()));
+    }
+    ui.horizontal(|ui| {
+        if style::ghost_button(ui, if binding.is_some() { "更新文件连接参数…" } else if direct { "其他文件入口…" } else { "导入文件连接参数…" }).clicked() {
+            intents.push(Intent::ImportFileConnection(id.into()));
+        }
+        if (binding.is_some() || direct) && icon_button(ui, icons::ARROW_CLOCKWISE, "重新连接文件", true).clicked() {
+            intents.push(Intent::ReconnectFileConnection(id.into()));
+        }
+    });
+    ui.add_space(4.0);
+}
+
+pub fn disconnected_file_panel(app: &App, ui: &mut Ui, id: &str, intents: &mut Vec<Intent>) {
+    file_connection_actions(app, ui, id, intents);
+    let palette = style::palette(ui);
+    ui.add_space(20.0);
+    if let Some(error) = app.file_connection_errors.get(id) {
+        ui.add(egui::Label::new(RichText::new(error).size(11.0).color(palette.danger())).wrap());
+        ui.add(egui::Label::new("请更新导出的参数文件后重新连接，或重新导入文件连接参数。").wrap());
+    } else {
+        ui.add(egui::Label::new(RichText::new("此终端尚未打开文件连接。").size(11.0).color(palette.muted())).wrap());
+    }
+}
+
 pub fn file_panel(app: &mut App, ui: &mut Ui, remote: &Arc<Remote>, intents: &mut Vec<Intent>) {
     let palette = style::palette(ui);
+    let routed_login = app.panes.get(remote.id()).and_then(|pane| pane.session.profile.as_ref()).is_some_and(|profile| profile.file_connection.is_none() && profile.routed_file_login());
+    let panel = ui.available_rect_before_wrap();
+    file_connection_actions(app, ui, remote.id(), intents);
     let snapshot = remote.snapshot();
     let state = app.file_panels.entry(remote.id().to_string()).or_default();
     if snapshot.phase != Phase::Ready {
@@ -135,13 +173,27 @@ pub fn file_panel(app: &mut App, ui: &mut Ui, remote: &Arc<Remote>, intents: &mu
                     if !detail.is_empty() && *reason != crate::remote::manager::Reason::NoSftp {
                         ui.add(egui::Label::new(RichText::new(detail).monospace().size(9.5).color(palette.faint())).wrap());
                     }
-                    if style::secondary_button(ui, "重试").clicked() {
-                        remote.retry();
+                    if remote.is_independent() {
+                        let guidance = if routed_login {
+                            "文件连接使用堡垒机账号直接认证，不依赖导出文件。请核对密码、动态验证码及该资产的文件传输权限，然后重新连接。"
+                        } else if *reason == crate::remote::manager::Reason::Auth {
+                            "导出的文件凭据可能已过期、失效，或服务端需要额外认证。请在堡垒机重新打开该资产的文件连接，更新参数文件后重连。保存的终端密码不一定适用于此文件入口。"
+                        } else {
+                            "请核对文件入口是否可达；如需刷新凭据，在堡垒机重新打开该资产的文件连接，更新导出的参数文件后重连。"
+                        };
+                        ui.add(egui::Label::new(RichText::new(guidance).size(10.5).color(palette.muted())).wrap());
+                    }
+                    if style::secondary_button(ui, "重新连接").clicked() {
+                        if remote.is_independent() {
+                            intents.push(Intent::ReconnectFileConnection(remote.id().into()));
+                        } else {
+                            remote.retry();
+                        }
                     }
                 }
                 phase => {
                     ui.add(egui::Spinner::new().size(20.0));
-                    ui.label(RichText::new(if *phase == Phase::Waiting { "等待 SSH 登录完成…" } else { "正在打开 SFTP…" }).size(11.5).color(palette.muted()));
+                    ui.label(RichText::new(if *phase == Phase::Waiting && !remote.is_independent() { "等待 SSH 登录完成…" } else { "正在打开 SFTP…" }).size(11.5).color(palette.muted()));
                 }
             }
         });
@@ -342,12 +394,18 @@ pub fn file_panel(app: &mut App, ui: &mut Ui, remote: &Arc<Remote>, intents: &mu
     });
 
     // Files dropped anywhere on the panel go up into the folder it shows.
-    let panel = ui.min_rect();
-    let dropped: Vec<PathBuf> = ui.input(|input| input.raw.dropped_files.iter().map(|file| file.path().to_path_buf()).filter(|path| !path.as_os_str().is_empty()).collect());
-    if !dropped.is_empty() && ui.input(|input| input.pointer.hover_pos()).is_some_and(|pointer| panel.contains(pointer)) {
+    let dropped = if state.confirm.is_none() { app.file_drop.take(ui, panel) } else { Vec::new() };
+    if !dropped.is_empty() {
         upload(remote, state, dropped, current.clone(), intents);
     }
     transfers(ui, remote, &snapshot);
+    if state.confirm.is_none() && app.file_drop.hovered(ui, panel) {
+        let rect = panel.intersect(ui.clip_rect()).shrink(3.0);
+        ui.painter().rect(rect, 6.0, alpha(palette.tokens.accent, 0.12), Stroke::new(1.5, palette.accent()), egui::StrokeKind::Inside);
+        let label = egui::Rect::from_center_size(rect.center(), Vec2::new((rect.width() - 16.0).max(0.0), 58.0));
+        ui.painter().rect_filled(label, 6.0, palette.surface());
+        ui.painter().text(label.center(), egui::Align2::CENTER_CENTER, "松开以上传到当前目录", egui::FontId::proportional(12.0), palette.text());
+    }
     confirm(ui, remote, state, &current);
 }
 
@@ -583,7 +641,8 @@ pub fn metrics_bar(ui: &mut Ui, rect: egui::Rect, snapshot: &Snapshot) {
     ui.scope_builder(egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(14.0, 0.0))).layout(Layout::left_to_right(Align::Center)), |ui| {
         ui.spacing_mut().item_spacing.x = 16.0;
         let Some(sample) = snapshot.metrics.as_ref().filter(|_| snapshot.metrics_available) else {
-            ui.label(RichText::new(if snapshot.phase == Phase::Waiting { "等待 SSH 登录完成…" } else { "主机指标不可用" }).size(11.0).color(palette.muted()));
+            ui.label(RichText::new(if snapshot.phase == Phase::Waiting { "等待 SSH 登录完成…" } else { "主机指标不可用" }).size(11.0).color(palette.muted()))
+                .on_hover_text("采样需要服务器允许额外 SSH 会话和 POSIX shell 命令。堡垒机的菜单会话不等同于目标资产的独立命令通道。");
             return;
         };
         metric_items(ui, sample);

@@ -51,8 +51,10 @@ function localPath(value) {
 }
 
 function failureReason(stderr, fallback = "failed") {
+  if (/session open refused|session request failed|administratively prohibited/i.test(stderr)) return "channel-refused";
   if (/subsystem request failed|subsystem.*(not|denied)/i.test(stderr)) return "no-sftp";
-  if (/permission denied|host key verification failed|no supported authentication/i.test(stderr)) return "auth";
+  if (/host key verification failed|remote host identification has changed/i.test(stderr)) return "host-key";
+  if (/permission denied|no supported authentication/i.test(stderr)) return "auth";
   return fallback;
 }
 
@@ -84,7 +86,9 @@ export class RemoteManager {
   }
   channelArgs(target) {
     const control = target.controlPath ? ["-o", `ControlPath=${target.controlPath}`] : ["-o", "ControlPath=none"];
-    return ["-o", "BatchMode=yes", "-o", "ControlMaster=no", ...control, "-o", "ClearAllForwardings=yes", "-o", "RemoteCommand=none", "-o", "RequestTTY=no", "-o", "ConnectTimeout=15", ...target.args];
+    // A refused mux channel must not fall back to a fresh login (especially MFA gateways).
+    const sharedOnly = target.controlPath ? ["-o", "ProxyCommand=false"] : [];
+    return ["-o", "BatchMode=yes", "-o", "ControlMaster=no", ...control, ...sharedOnly, "-o", "ClearAllForwardings=yes", "-o", "RemoteCommand=none", "-o", "RequestTTY=no", "-o", "ConnectTimeout=15", ...target.args];
   }
   require(id) {
     const remote = this.remotes.get(id);
@@ -191,11 +195,13 @@ export class RemoteManager {
   }
   startMetrics(remote) {
     const { target } = remote;
-    const child = this.spawnProcess(target.executable, [...this.channelArgs(target), target.destination, `sh -c '${METRICS_SCRIPT}'`], { env: target.env, stdio: ["ignore", "pipe", "ignore"], shell: false, windowsHide: true });
+    const child = this.spawnProcess(target.executable, [...this.channelArgs(target), target.destination, `sh -c '${METRICS_SCRIPT}'`], { env: target.env, stdio: ["ignore", "pipe", "pipe"], shell: false, windowsHide: true });
     remote.metricsChild = child;
     const tracker = new MetricsTracker();
     let buffer = "";
     let delivered = false;
+    let stderr = "";
+    child.stderr.on("data", (chunk) => { stderr = (stderr + chunk).slice(-MAX_STDERR); });
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
       buffer += chunk;
@@ -207,11 +213,11 @@ export class RemoteManager {
         if (remote.metricsChild === child) this.onMetrics({ id: remote.id, available: true, sample: tracker.next(parseSample(text)) });
       }
     });
-    child.once("error", () => {});
-    child.once("close", () => {
+    child.once("error", (error) => { stderr = error.message.slice(-MAX_STDERR); });
+    child.once("close", (code) => {
       if (remote.metricsChild !== child) return;
       remote.metricsChild = null;
-      this.onMetrics({ id: remote.id, available: false, delivered });
+      this.onMetrics({ id: remote.id, available: false, delivered, reason: failureReason(stderr), detail: stderr.trim().slice(-500) || `ssh exited with code ${code}.` });
     });
   }
   // Runs one read-only probe on the session's shared login and returns its output.

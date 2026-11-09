@@ -3,11 +3,14 @@
 //! metrics channel for the host bar. Both share the terminal's authenticated OpenSSH login
 //! through its control socket, so they never ask for credentials and passwords never reach
 //! this process. Windows OpenSSH has no control sockets; there the channels open their own
-//! non-interactive connection instead.
+//! non-interactive connection instead. Explicit asset file endpoints can instead use an
+//! independent, user-authenticated SFTP-only connection without touching that login.
 
 pub mod manager;
 pub mod metrics;
+pub mod qizhi;
 pub mod sftp;
+pub mod verify;
 
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};

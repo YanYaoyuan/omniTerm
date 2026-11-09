@@ -3217,6 +3217,8 @@ dependencies = [
  "eframe",
  "image",
  "keyring",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
  "omniterm-terminal-host",
  "raw-window-handle",
  "rfd",
