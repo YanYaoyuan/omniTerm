@@ -5,6 +5,7 @@
 mod agent_panel;
 mod chrome;
 mod dialogs;
+mod file_connection;
 mod dock;
 mod monitor_view;
 mod opening;
@@ -93,6 +94,7 @@ pub enum Dialog {
     Connection(Box<dialogs::ConnectionForm>),
     Delete { profile: Profile, error: Option<String> },
     SshImport(dialogs::ImportState),
+    FileConnection(file_connection::Import),
 }
 
 #[derive(Default)]
@@ -125,6 +127,9 @@ pub enum Intent {
     ChooseDirectory,
     Dialog(Dialog),
     ForgetSshPassword(Profile),
+    ImportFileConnection(String),
+    ConfirmFileConnection,
+    ReconnectFileConnection(String),
     CloseDialog,
     SaveProfile { profile: Profile, connect: bool, persist: bool },
     DeleteProfile(String),
@@ -205,6 +210,7 @@ pub struct App {
     agent_state: agent_panel::AgentState,
     workspace_layout: Option<serde_json::Value>,
     file_panels: HashMap<String, remote_panel::PanelState>,
+    file_connection_errors: HashMap<String, String>,
     sidebar_files: bool,
     watched: Option<String>,
     credential_work: Vec<std::sync::mpsc::Receiver<Result<(), String>>>,
@@ -300,6 +306,7 @@ impl App {
             agent_state: agent_panel::AgentState::with_profile(ui_state.agent_profile.clone()),
             workspace_layout: None,
             file_panels: HashMap::new(),
+            file_connection_errors: HashMap::new(),
             sidebar_files: true,
             watched: None,
             credential_work: Vec::new(),
@@ -438,6 +445,7 @@ impl App {
             built: BuildKey { generation: 0, size: [0, 0], focused: false, dim: false, cursor_on: false, theme: std::ptr::null(), cell: (0, 0), atlas: u64::MAX, alpha: 0 },
             version: 0,
         });
+        self.reconnect_file_connection(&id);
         self.mark_workspace();
         id
     }
@@ -559,6 +567,7 @@ impl App {
         }
         self.remotes.detach(id);
         self.file_panels.remove(id);
+        self.file_connection_errors.remove(id);
         self.backend.close(id);
         self.panes.remove(id);
         if self.search.open && self.focused().is_none_or(|pane| pane.id() == id) {
@@ -593,6 +602,7 @@ impl App {
         for id in ids {
             self.remotes.detach(&id);
             self.file_panels.remove(&id);
+            self.file_connection_errors.remove(&id);
             self.backend.close(&id);
             self.panes.remove(&id);
         }
@@ -794,6 +804,9 @@ impl App {
                 }
             }
             Intent::Dialog(dialog) => self.dialog = Some(dialog),
+            Intent::ImportFileConnection(id) => self.import_file_connection(&id),
+            Intent::ConfirmFileConnection => self.confirm_file_connection(),
+            Intent::ReconnectFileConnection(id) => self.reconnect_file_connection(&id),
             Intent::ForgetSshPassword(profile) => {
                 let (send, receive) = std::sync::mpsc::channel();
                 self.credential_work.push(receive);
@@ -811,7 +824,10 @@ impl App {
                     self.dialog = None;
                 }
             }
-            Intent::SaveProfile { profile, connect, persist } => {
+            Intent::SaveProfile { mut profile, connect, persist } => {
+                if (persist || !connect) && profile.id.is_none() {
+                    profile.id = Some(uuid::Uuid::new_v4().to_string());
+                }
                 let saved = if persist || !connect { self.store.save(&profile).map(Some) } else { profile.validate(true).map(|_| None) };
                 match saved {
                     Ok(list) => {
@@ -1108,22 +1124,23 @@ impl App {
     }
 
     pub fn open_processes(&mut self) {
-        let host = self.focused().filter(|pane| pane.session.kind == Kind::Ssh && self.remotes.get(pane.id()).is_some()).map(|pane| pane.id().to_string());
+        let host = self.focused().filter(|pane| pane.session.kind == Kind::Ssh && self.remotes.get(pane.id()).is_some_and(|remote| !remote.is_independent())).map(|pane| pane.id().to_string());
         self.processes.open_for(host);
     }
 
     /// The SSH companion of the focused pane, when the file panel and metrics are on.
     pub fn focused_remote(&self) -> Option<Arc<crate::remote::manager::Remote>> {
         let pane = self.focused()?;
-        if !self.settings.remote_panels {
+        let remote = self.remotes.get(pane.id())?;
+        if !self.settings.remote_panels && !remote.is_independent() {
             return None;
         }
-        self.remotes.get(pane.id())
+        Some(remote)
     }
 
     /// Only the focused SSH tab samples its host; the others stop until they are shown.
     fn watch_metrics(&mut self) {
-        let focused = self.focused_remote().map(|remote| remote.id().to_string());
+        let focused = self.focused_remote().filter(|remote| !remote.is_independent()).map(|remote| remote.id().to_string());
         if focused == self.watched {
             return;
         }

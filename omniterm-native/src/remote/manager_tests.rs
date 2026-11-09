@@ -264,3 +264,275 @@ fn sftp_end_to_end_shutdown_finishes_detached_tab_cleanup() {
     assert_eq!(fixture.wait(1)[0].status, TransferStatus::Canceled); fixture.no_partials();
     println!("sftp-e2e application shutdown joined cleanup of an already detached SSH tab");
 }
+
+
+/// A local byte-stream peer, never an SSH server. It exercises the production SFTP
+/// reader/manager and child lifecycle without network, keys, an askpass GUI or global env.
+struct WireFixture {
+    directory: PathBuf,
+    executable: String,
+    manager: Manager,
+}
+
+impl WireFixture {
+    fn new() -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = private_directory(&std::env::temp_dir(), "omniterm-file-wire-").unwrap();
+        let events = directory.join("events.jsonl");
+        let script = directory.join("ssh-fixture");
+        let python = crate::core::paths::find_executable("python3").expect("python3 for local wire fixture");
+        let program = format!("#!{}\nROOT = {:?}\nEVENTS = {:?}\n", python.display(), directory.to_string_lossy(), events.to_string_lossy()) + r#"
+import json, os, pathlib, struct, sys, time
+root = pathlib.Path(ROOT)
+with open(EVENTS, 'a') as log:
+    log.write(json.dumps({'args':sys.argv[1:], 'auth':os.environ.get('OMNITERM_QIZHI_AUTH_STATE'), 'pid':os.getpid()}) + '\n')
+if '-O' in sys.argv:
+    (root / 'master-exit').write_text('master exit requested')
+    sys.exit(0)
+if any(arg.startswith('sh -c ') for arg in sys.argv):
+    (root / 'metrics-exec').write_text('metrics requested')
+    sys.exit(0)
+if (root / 'spawn-descendant').exists():
+    import subprocess
+    code = "import pathlib,time; p=pathlib.Path(" + repr(str(root / 'heartbeat')) + "); " + "exec(\"while True:\\n p.open('ab').write(b'x')\\n time.sleep(0.02)\")"
+    subprocess.Popen([sys.executable, '-c', code], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+while (root / 'hold').exists(): time.sleep(0.01)
+if (root / 'fail').exists(): sys.exit(23)
+def u32(n): return struct.pack('>I', n)
+def text(s):
+    s = s.encode('utf-8') if isinstance(s, str) else s
+    return u32(len(s)) + s
+def readn(n):
+    data = b''
+    while len(data) < n:
+        part = sys.stdin.buffer.read(n - len(data))
+        if not part: raise EOFError()
+        data += part
+    return data
+def send(packet):
+    sys.stdout.buffer.write(u32(len(packet)) + packet)
+    sys.stdout.buffer.flush()
+def string(packet, offset=5):
+    length = struct.unpack('>I', packet[offset:offset+4])[0]
+    return packet[offset+4:offset+4+length]
+try:
+    packet = readn(struct.unpack('>I', readn(4))[0])
+    assert packet[0] == 1
+    send(bytes([2]) + u32(3))
+    listed = False
+    while True:
+        packet = readn(struct.unpack('>I', readn(4))[0])
+        kind, ident = packet[0], packet[1:5]
+        if kind == 16:
+            path = string(packet)
+            with open(root / 'paths', 'ab') as log: log.write(path + b'\n')
+            # A stale reply with another request id must not consume this request.
+            send(bytes([101]) + u32(0xFFFFFFFE) + u32(0))
+            send(bytes([104]) + ident + u32(1) + text(path) + text(b'') + u32(0))
+        elif kind == 11:
+            listed = False
+            send(bytes([102]) + ident + text('fixture-handle'))
+        elif kind == 12 and not listed:
+            listed = True
+            send(bytes([104]) + ident + u32(1) + text('fixture.txt') + text('fixture.txt') + u32(4) + u32(0o100644))
+        else:
+            send(bytes([101]) + ident + u32(1 if kind == 12 else 0) + text('') + text(''))
+except (EOFError, BrokenPipeError):
+    pass
+"#;
+        std::fs::write(&script, program).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        Self { directory, executable: script.to_string_lossy().into_owned(), manager: Manager::new(|| {}) }
+    }
+
+    fn connection(&self, directory: &str) -> qizhi::Connection {
+        let file = self.directory.join(format!("import-{}.json", uuid::Uuid::new_v4().simple()));
+        let document = serde_json::json!({"parameters": {
+            "app": "winscp", "Host": "fixture.invalid", "User": "fixture/192.0.2.10/root",
+            "Port": "60022", "Path": directory, "pwd": "synthetic-single-use-secret", "st": "Fixture"
+        }});
+        let mut options = std::fs::OpenOptions::new();
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file_handle = options.write(true).create_new(true).mode(0o600).open(&file).unwrap();
+        use std::io::Write;
+        file_handle.write_all(&serde_json::to_vec(&document).unwrap()).unwrap();
+        let result = qizhi::load(&file).unwrap();
+        std::fs::remove_file(file).unwrap();
+        result
+    }
+
+    fn attach(&self, id: &str, directory: &str) -> Arc<Remote> {
+        self.manager.install(id, Target::Independent { connection: Mutex::new(self.connection(directory)), executable: self.executable.clone() });
+        self.manager.get(id).unwrap()
+    }
+
+    fn events(&self) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(self.directory.join("events.jsonl")).unwrap_or_default().lines().filter_map(|line| serde_json::from_str(line).ok()).collect()
+    }
+
+    fn ready(&self, remote: &Remote) {
+        until("wire SFTP ready", 5, || {
+            let phase = remote.snapshot().phase;
+            assert!(!matches!(phase, Phase::Unavailable { .. }), "wire fixture failed: {phase:?}");
+            phase == Phase::Ready
+        });
+    }
+}
+
+impl Drop for WireFixture {
+    fn drop(&mut self) {
+        self.manager.shutdown();
+        let _ = std::fs::remove_dir_all(&self.directory);
+    }
+}
+
+#[test]
+fn independent_file_connections_keep_panes_separate_and_never_execute_shell_commands() {
+    let fixture = WireFixture::new();
+    let a = fixture.attach("pane-a", "/asset/a");
+    let b = fixture.attach("pane-b", "/asset/b");
+    fixture.ready(&a); fixture.ready(&b);
+    assert!(a.is_independent() && b.is_independent());
+    assert_eq!(a.snapshot().home.as_deref(), Some("/asset/a"));
+    assert_eq!(b.snapshot().home.as_deref(), Some("/asset/b"));
+    a.list("/asset/a".into()); b.list("/asset/b".into());
+    until("each pane's directory listing", 5, || !a.snapshot().listing.loading && !b.snapshot().listing.loading);
+    assert_eq!(a.snapshot().listing.path.as_deref(), Some("/asset/a"));
+    assert_eq!(b.snapshot().listing.path.as_deref(), Some("/asset/b"));
+    assert_eq!(a.snapshot().listing.entries[0].name, "fixture.txt");
+    assert!(a.exec("id", Duration::from_secs(1)).unwrap_err().contains("仅支持 SFTP"));
+    a.watch_metrics(true); b.watch_metrics(true);
+    assert!(!lock(&a.state).metrics_wanted && lock(&a.state).metrics_child.is_none());
+    assert!(!lock(&b.state).metrics_wanted && lock(&b.state).metrics_child.is_none());
+    let events = fixture.events();
+    assert_eq!(events.len(), 2);
+    for event in &events {
+        let args: Vec<&str> = event["args"].as_array().unwrap().iter().map(|value| value.as_str().unwrap()).collect();
+        assert_eq!(&args[args.len()-3..], ["-s", "fixture.invalid", "sftp"]);
+        assert!(args.contains(&"ControlPath=none") && args.contains(&"ControlMaster=no"));
+        assert!(!event["args"].to_string().contains("synthetic-single-use-secret"));
+    }
+    fixture.manager.detach("pane-a");
+    assert!(fixture.manager.get("pane-a").is_none());
+    assert_eq!(b.snapshot().phase, Phase::Ready);
+    fixture.manager.shutdown();
+    for event in events { assert!(!Path::new(event["auth"].as_str().unwrap()).exists(), "auth state must be removed on close"); }
+    assert!(!fixture.directory.join("master-exit").exists());
+    assert!(!fixture.directory.join("metrics-exec").exists());
+}
+
+#[test]
+fn replacing_shared_files_preserves_terminal_master_and_rejects_stale_results() {
+    let fixture = WireFixture::new();
+    let socket = fixture.directory.join("terminal-socket");
+    std::fs::write(&socket, b"fixture socket marker").unwrap();
+    let shared = Companion { executable: fixture.executable.clone(), destination: "fixture.invalid".into(), control_path: Some(socket.to_string_lossy().into_owned()), args: vec![] };
+    fixture.manager.attach("pane", shared);
+    let previous = fixture.manager.get("pane").unwrap();
+    fixture.ready(&previous);
+    let args = previous.channel_args();
+    assert!(args.iter().any(|arg| arg == "BatchMode=yes"));
+    assert!(args.iter().any(|arg| arg == "ProxyCommand=false"));
+    let independent = fixture.attach("pane", "/replacement");
+    fixture.ready(&independent);
+    assert!(previous.closed.load(Ordering::Acquire));
+    previous.publish_attempt(0, |state| state.phase = Phase::Unavailable { reason: Reason::Failed, detail: "stale result".into() });
+    assert_eq!(fixture.manager.get("pane").unwrap().snapshot().home.as_deref(), Some("/replacement"));
+    fixture.manager.detach_file_only("pane");
+    assert!(!fixture.directory.join("master-exit").exists(), "replacing file channels must not exit terminal master");
+    fixture.manager.detach("pane");
+    fixture.manager.shutdown();
+    assert_eq!(fixture.events().iter().filter(|event| event["args"].as_array().unwrap().iter().any(|arg| arg == "-O")).count(), 1, "terminal detach must exit the original master exactly once");
+}
+
+#[test]
+fn independent_retry_is_explicit_serialized_and_does_not_resend_imported_secret() {
+    let fixture = WireFixture::new();
+    std::fs::write(fixture.directory.join("fail"), b"fail initial attempt").unwrap();
+    let remote = fixture.attach("pane", "/retry");
+    until("first failure", 5, || matches!(remote.snapshot().phase, Phase::Unavailable { .. }));
+    assert_eq!(fixture.events().len(), 1);
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(fixture.events().len(), 1, "no automatic retry");
+    std::fs::remove_file(fixture.directory.join("fail")).unwrap();
+    std::fs::write(fixture.directory.join("hold"), b"hold retry during authentication").unwrap();
+    std::thread::scope(|scope| { for _ in 0..16 { let remote = remote.clone(); scope.spawn(move || remote.retry()); } });
+    until("one retry starts", 5, || fixture.events().len() == 2);
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(fixture.events().len(), 2, "concurrent retries must share one attempt");
+    let events = fixture.events();
+    let auth = Path::new(events[1]["auth"].as_str().unwrap());
+    assert!(!auth.join("credential").exists(), "retry must prompt instead of replaying the import credential");
+    std::fs::remove_file(fixture.directory.join("hold")).unwrap();
+    fixture.ready(&remote);
+    let before = remote.snapshot().phase;
+    remote.publish_attempt(1, |state| state.phase = Phase::Unavailable { reason: Reason::Failed, detail: "late old error".into() });
+    assert_eq!(remote.snapshot().phase, before, "old attempts cannot overwrite retry success");
+}
+
+#[test]
+fn independent_authentication_can_outlast_shared_handshake_and_cancel_cleans_children() {
+    let fixture = WireFixture::new();
+    std::fs::write(fixture.directory.join("hold"), b"simulate user entering OTP").unwrap();
+    std::fs::write(fixture.directory.join("spawn-descendant"), b"simulate askpass child").unwrap();
+    let remote = fixture.attach("pane", "/otp");
+    until("independent child starts", 5, || !fixture.events().is_empty());
+    std::thread::sleep(HANDSHAKE + Duration::from_millis(250));
+    assert_eq!(remote.snapshot().phase, Phase::Connecting, "OTP entry must not hit the shared 20 second watchdog");
+    let child = lock(&remote.state).sftp_child.clone().unwrap();
+    let events = fixture.events();
+    let auth = Path::new(events[0]["auth"].as_str().unwrap());
+    assert!(auth.exists());
+    fixture.manager.detach_file_only("pane");
+    fixture.manager.shutdown();
+    assert!(lock(&child).try_wait().unwrap().is_some());
+    assert!(!auth.exists());
+    let heartbeat = fixture.directory.join("heartbeat");
+    let size = std::fs::metadata(&heartbeat).expect("descendant ran").len();
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(std::fs::metadata(&heartbeat).unwrap().len(), size, "cancel must also stop the ssh child's descendants");
+    remote.retry();
+    assert_eq!(fixture.events().len(), 1, "closed connections cannot restart");
+}
+
+#[test]
+fn ordinary_shared_channels_still_sample_and_close_their_master() {
+    let fixture = WireFixture::new();
+    let socket = fixture.directory.join("ordinary-socket");
+    std::fs::write(&socket, b"fixture socket marker").unwrap();
+    fixture.manager.attach("ordinary", Companion { executable: fixture.executable.clone(), destination: "fixture.invalid".into(), control_path: Some(socket.to_string_lossy().into_owned()), args: vec![] });
+    let remote = fixture.manager.get("ordinary").unwrap();
+    fixture.ready(&remote);
+    assert!(!remote.is_independent());
+    assert!(remote.exec("id", Duration::from_secs(2)).is_ok());
+    remote.watch_metrics(true);
+    until("ordinary metrics starts", 5, || fixture.events().iter().filter(|event| event["args"].to_string().contains("sh -c ")).count() >= 2);
+    fixture.manager.detach("ordinary");
+    fixture.manager.shutdown();
+    assert!(fixture.directory.join("master-exit").exists(), "ordinary SSH tab shutdown must still exit its shared master");
+}
+
+#[test]
+fn shutdown_closes_preserved_masters_once_after_repeated_file_replacements() {
+    let fixture = WireFixture::new();
+    for number in [1, 1, 2] {
+        let socket = fixture.directory.join(format!("preserved-{number}"));
+        std::fs::write(&socket, b"fixture socket marker").unwrap();
+        fixture.manager.attach("pane", Companion { executable: fixture.executable.clone(), destination: "fixture.invalid".into(), control_path: Some(socket.to_string_lossy().into_owned()), args: vec![] });
+        fixture.ready(&fixture.manager.get("pane").unwrap());
+        let independent = fixture.attach("pane", "/replacement");
+        fixture.ready(&independent);
+        fixture.manager.detach_file_only("pane");
+        assert!(!fixture.directory.join("master-exit").exists());
+    }
+    fixture.manager.shutdown();
+    let events = fixture.events();
+    let exits: Vec<_> = events.iter().filter(|event| event["args"].as_array().unwrap().iter().any(|arg| arg == "-O")).collect();
+    assert_eq!(exits.len(), 2, "app shutdown must retain all original masters and deduplicate a repeated socket");
+    for number in [1, 2] {
+        let option = format!("ControlPath={}", fixture.directory.join(format!("preserved-{number}")).display());
+        assert_eq!(exits.iter().filter(|event| event["args"].as_array().unwrap().iter().any(|arg| arg == &option)).count(), 1);
+    }
+    fixture.manager.shutdown();
+    assert_eq!(fixture.events().len(), events.len(), "repeated shutdown cannot exit a master again");
+}

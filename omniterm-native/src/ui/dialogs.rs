@@ -3,7 +3,7 @@
 
 use super::style::{self, icon, icon_button, percent_slider, segmented, toggle};
 use super::{App, Dialog, Intent};
-use crate::core::profile::{Forward, Kind, Profile, X11};
+use crate::core::profile::{FileConnection, Forward, Kind, Profile, X11};
 use crate::core::settings::{BackgroundMode, CursorStyle, FontFamily, ImageFit, LINE_HEIGHTS, LocalShell, MAX_FONT, MIN_FONT, SCROLLBACKS, Settings};
 use crate::core::ssh_config::Host;
 use crate::icons;
@@ -12,6 +12,7 @@ use eframe::egui::{self, Align, Color32, Id, Layout, RichText, Sense, Stroke, Ui
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+#[derive(Clone)]
 pub struct ConnectionForm {
     pub kind: Kind,
     pub editing: Option<Profile>,
@@ -26,6 +27,9 @@ pub struct ConnectionForm {
     pub forward: Forward,
     pub x11: X11,
     pub remember_password: bool,
+    pub file_connection: Option<FileConnection>,
+    binding_target: Option<Profile>,
+    file_preview: Option<(FileConnection, Profile)>,
     pub bind_port: String,
     pub target_host: String,
     pub target_port: String,
@@ -51,6 +55,9 @@ impl ConnectionForm {
             forward: p.forward_type.unwrap_or(Forward::L),
             x11: p.x11,
             remember_password: p.remember_password,
+            file_connection: p.file_connection.clone(),
+            binding_target: p.file_connection.as_ref().map(|_| p.clone()),
+            file_preview: None,
             bind_port: number(p.bind_port),
             target_host: p.target_host.clone().unwrap_or_else(|| "localhost".into()),
             target_port: number(p.target_port),
@@ -88,6 +95,12 @@ impl ConnectionForm {
             profile.proxy_jump = optional(&self.proxy_jump);
             profile.x11 = self.x11;
             profile.remember_password = self.remember_password;
+            if self.kind == Kind::Ssh {
+                profile.file_connection = self.file_connection.clone();
+                if self.file_connection.is_some() && self.binding_target.as_ref().is_some_and(|target| !super::file_connection::same_target(target, &profile)) {
+                    return Err("SSH 目标已修改，请重新导入文件连接参数以确认资产。".into());
+                }
+            }
             // The imported label describes the host it came from.
             if self.editing.as_ref().is_some_and(|old| old.host == profile.host) {
                 profile.summary = self.editing.as_ref().and_then(|old| old.summary.clone());
@@ -206,6 +219,7 @@ pub fn show(app: &mut App, ctx: &egui::Context, intents: &mut Vec<Intent>) {
         Dialog::Connection(form) => connection(form, ctx, intents),
         Dialog::Delete { profile, error } => delete(profile, error.as_deref(), ctx, intents),
         Dialog::SshImport(state) => import(state, ctx, intents),
+        Dialog::FileConnection(state) => file_connection_import(state, ctx, intents),
     };
     if close {
         intents.push(Intent::CloseDialog);
@@ -500,6 +514,8 @@ fn connection(form: &mut ConnectionForm, ctx: &egui::Context, intents: &mut Vec<
                         "远程图形程序在本机显示（X11 或 XWayland）。受限模式更安全；个别程序需要信任模式。"
                     };
                     ui.add(egui::Label::new(RichText::new(hint).size(10.0).color(palette.faint())).wrap());
+                    ui.add_space(8.0);
+                    file_connection_form(form, ui);
                 }
             }
             if form.kind == Kind::Tunnel {
@@ -548,12 +564,85 @@ fn connection(form: &mut ConnectionForm, ctx: &egui::Context, intents: &mut Vec<
                     }
                 });
                 if let Some(connect) = chosen {
+                    if form.file_preview.is_some() {
+                        form.error = Some("请先确认或取消下面的文件连接参数导入。".into());
+                        return;
+                    }
                     match form.profile() {
                         Ok(profile) => intents.push(Intent::SaveProfile { profile, connect, persist: form.persist }),
                         Err(error) => form.error = Some(error),
                     }
                 }
             });
+        });
+    })
+}
+
+fn file_connection_form(form: &mut ConnectionForm, ui: &mut Ui) {
+    let palette = style::palette(ui);
+    if style::ghost_button(ui, "导入文件连接参数…").clicked() {
+        let mut target = form.clone();
+        target.file_connection = None;
+        match target.profile().and_then(|profile| super::file_connection::choose().map(|binding| binding.map(|binding| (binding, profile)))) {
+            Ok(Some(preview)) => { form.file_preview = Some(preview); form.error = None; }
+            Ok(None) => {}
+            Err(error) => form.error = Some(error),
+        }
+    }
+    if let Some(binding) = &form.file_connection {
+        ui.add(egui::Label::new(RichText::new(format!("文件：{} · {}", binding.title, binding.endpoint())).size(10.0).color(palette.faint())).wrap());
+        if style::ghost_button(ui, "移除文件参数绑定").clicked() {
+            form.file_connection = None;
+            form.binding_target = None;
+        }
+    }
+    if let Some((binding, target)) = form.file_preview.clone() {
+        egui::Frame::new().fill(style::alpha(palette.tokens.accent, 0.08)).corner_radius(6).inner_margin(8).show(ui, |ui| {
+            ui.label(RichText::new("确认文件连接目标").strong());
+            ui.label(format!("SSH：{}", super::file_connection::target_label(&target)));
+            ui.label(format!("文件：{}", binding.endpoint()));
+            ui.label(format!("资产标题：{}", binding.title));
+            ui.add(egui::Label::new("请确认它们属于同一资产。保存连接后将自动读取这个参数文件。").wrap());
+            ui.horizontal(|ui| {
+                if style::secondary_button(ui, "绑定到此连接").clicked() {
+                    let mut current = form.clone();
+                    current.file_connection = None;
+                    match current.profile() {
+                        Ok(profile) if super::file_connection::same_target(&profile, &target) => {
+                            form.file_connection = Some(binding.clone());
+                            form.binding_target = Some(target.clone());
+                            form.file_preview = None;
+                            form.error = None;
+                        }
+                        _ => form.error = Some("SSH 目标已变化，请重新导入后确认。".into()),
+                    }
+                }
+                if style::ghost_button(ui, "取消导入").clicked() {
+                    form.file_preview = None;
+                }
+            });
+        });
+    }
+}
+
+fn file_connection_import(state: &mut super::file_connection::Import, ctx: &egui::Context, intents: &mut Vec<Intent>) -> bool {
+    modal(ctx, "file-connection-import", 470.0, icons::FOLDER_OPEN, "确认文件连接目标", "文件操作将绑定到下面这个终端", |ui| {
+        ui.label(format!("终端：{}", state.pane_title));
+        ui.label(format!("SSH：{}", super::file_connection::target_label(&state.profile)));
+        ui.label(format!("文件：{}", state.binding.endpoint()));
+        ui.label(format!("资产标题：{}", state.binding.title));
+        ui.add(egui::Label::new("请确认它们属于同一资产。切换窗口或焦点不会改变此绑定目标；文件参数更新后会核对目标和账号。").wrap());
+        if let Some(error) = &state.error {
+            ui.colored_label(style::palette(ui).danger(), error);
+        }
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            if style::primary_button(ui, "绑定并打开文件").clicked() {
+                intents.push(Intent::ConfirmFileConnection);
+            }
+            if style::ghost_button(ui, "取消").clicked() {
+                intents.push(Intent::CloseDialog);
+            }
         });
     })
 }
@@ -634,6 +723,22 @@ fn import(state: &mut ImportState, ctx: &egui::Context, intents: &mut Vec<Intent
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn editing_a_bound_ssh_target_requires_a_new_file_import() {
+        let profile = Profile {
+            id: Some("saved-asset".into()), kind: Some(Kind::Ssh), host: Some("gateway".into()), username: Some("alice/192.0.2.1/root".into()),
+            file_connection: Some(FileConnection { source: std::env::temp_dir().join("synthetic-access.json"), host: "192.0.2.2".into(), user: "fixture".into(), port: 2222, title: "asset".into() }),
+            ..Profile::default()
+        };
+        let mut form = ConnectionForm::new(Kind::Ssh, Some(profile.clone()));
+        form.name = "Renamed saved asset".into();
+        assert_eq!(form.profile().unwrap().file_connection, profile.file_connection);
+        form.username = "alice/192.0.2.9/root".into();
+        assert!(form.profile().is_err());
+        form.file_connection = None;
+        assert!(form.profile().is_ok());
+    }
 
     #[test]
     fn shell_settings_fit_without_changing_paths_or_arguments() {

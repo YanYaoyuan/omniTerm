@@ -62,7 +62,7 @@ pub fn show(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>, modal: bool) 
         let note = Rect::from_min_max(Pos2::new(area.left(), area.bottom() - FOOTNOTE), area.max);
         footnote(app, ui, note);
         area.max.y -= FOOTNOTE;
-        if let Some(remote) = app.focused_remote() {
+        if let Some(remote) = app.focused_remote().filter(|remote| !remote.is_independent()) {
             let bar = Rect::from_min_max(Pos2::new(area.left(), area.bottom() - METRICS), area.max);
             super::remote_panel::metrics_bar(ui, bar, &remote.snapshot());
             area.max.y -= METRICS;

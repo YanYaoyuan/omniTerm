@@ -121,8 +121,35 @@ fn valid_name(name: &str) -> bool {
     !name.is_empty() && name != "." && name != ".." && !name.contains('/') && !name.contains('\0')
 }
 
+fn file_connection_actions(app: &App, ui: &mut Ui, id: &str, intents: &mut Vec<Intent>) {
+    let Some(pane) = app.panes.get(id).filter(|pane| pane.session.kind == crate::core::profile::Kind::Ssh) else { return };
+    let binding = pane.session.profile.as_ref().and_then(|profile| profile.file_connection.as_ref());
+    ui.horizontal(|ui| {
+        if style::ghost_button(ui, if binding.is_some() { "更新文件连接参数…" } else { "导入文件连接参数…" }).clicked() {
+            intents.push(Intent::ImportFileConnection(id.into()));
+        }
+        if binding.is_some() && icon_button(ui, icons::ARROW_CLOCKWISE, "重新连接文件", true).clicked() {
+            intents.push(Intent::ReconnectFileConnection(id.into()));
+        }
+    });
+    ui.add_space(4.0);
+}
+
+pub fn disconnected_file_panel(app: &App, ui: &mut Ui, id: &str, intents: &mut Vec<Intent>) {
+    file_connection_actions(app, ui, id, intents);
+    let palette = style::palette(ui);
+    ui.add_space(20.0);
+    if let Some(error) = app.file_connection_errors.get(id) {
+        ui.add(egui::Label::new(RichText::new(error).size(11.0).color(palette.danger())).wrap());
+        ui.add(egui::Label::new("请更新导出的参数文件后重新连接，或重新导入文件连接参数。").wrap());
+    } else {
+        ui.add(egui::Label::new(RichText::new("此终端尚未打开文件连接。").size(11.0).color(palette.muted())).wrap());
+    }
+}
+
 pub fn file_panel(app: &mut App, ui: &mut Ui, remote: &Arc<Remote>, intents: &mut Vec<Intent>) {
     let palette = style::palette(ui);
+    file_connection_actions(app, ui, remote.id(), intents);
     let snapshot = remote.snapshot();
     let state = app.file_panels.entry(remote.id().to_string()).or_default();
     if snapshot.phase != Phase::Ready {
@@ -135,13 +162,20 @@ pub fn file_panel(app: &mut App, ui: &mut Ui, remote: &Arc<Remote>, intents: &mu
                     if !detail.is_empty() && *reason != crate::remote::manager::Reason::NoSftp {
                         ui.add(egui::Label::new(RichText::new(detail).monospace().size(9.5).color(palette.faint())).wrap());
                     }
-                    if style::secondary_button(ui, "重试").clicked() {
-                        remote.retry();
+                    if remote.is_independent() {
+                        ui.add(egui::Label::new(RichText::new("参数可能已过期。请更新导出的参数文件后重新连接，或重新导入。").size(10.5).color(palette.muted())).wrap());
+                    }
+                    if style::secondary_button(ui, "重新连接").clicked() {
+                        if remote.is_independent() {
+                            intents.push(Intent::ReconnectFileConnection(remote.id().into()));
+                        } else {
+                            remote.retry();
+                        }
                     }
                 }
                 phase => {
                     ui.add(egui::Spinner::new().size(20.0));
-                    ui.label(RichText::new(if *phase == Phase::Waiting { "等待 SSH 登录完成…" } else { "正在打开 SFTP…" }).size(11.5).color(palette.muted()));
+                    ui.label(RichText::new(if *phase == Phase::Waiting && !remote.is_independent() { "等待 SSH 登录完成…" } else { "正在打开 SFTP…" }).size(11.5).color(palette.muted()));
                 }
             }
         });

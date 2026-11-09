@@ -45,6 +45,58 @@ pub enum X11 {
     Trusted,
 }
 
+/// A reference to an imported file connection. Credentials stay in the source file;
+/// the pinned identity prevents a refreshed export from silently selecting another asset.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FileConnection {
+    pub source: PathBuf,
+    pub host: String,
+    pub user: String,
+    pub port: u16,
+    pub title: String,
+}
+
+impl FileConnection {
+    fn validate(&self) -> Result<(), String> {
+        let source = self.source.to_str().ok_or("文件连接参数路径无效。")?;
+        if !self.source.is_absolute() || source.is_empty() || source.len() > 4096 || source.chars().any(char::is_control)
+            || self.port == 0 || self.host.is_empty() || self.user.is_empty()
+            || [&self.host, &self.user, &self.title].iter().any(|value| value.len() > 4096 || value.chars().any(char::is_control))
+        {
+            return Err("文件连接参数引用无效，请重新导入。".into());
+        }
+        Ok(())
+    }
+
+    pub fn endpoint(&self) -> String {
+        format!("{}@{}:{}", self.user, self.host, self.port)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TerminalIdentity {
+    host: Option<String>,
+    username: Option<String>,
+    port: Option<u16>,
+    key_path: Option<String>,
+    proxy_jump: Option<String>,
+}
+
+impl TerminalIdentity {
+    fn of(profile: &Profile) -> Self {
+        Self { host: profile.host.clone(), username: profile.username.clone(), port: profile.port, key_path: profile.key_path.clone(), proxy_jump: profile.proxy_jump.clone() }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileConnectionEntry {
+    terminal: TerminalIdentity,
+    connection: FileConnection,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Profile {
@@ -85,6 +137,12 @@ pub struct Profile {
     /// Native-only opt-in; passwords themselves live exclusively in the OS keychain.
     #[serde(skip)]
     pub remember_password: bool,
+    /// Native-only reference and safe identity, never the imported JSON or its secret.
+    #[serde(skip)]
+    pub file_connection: Option<FileConnection>,
+    /// A shared-profile edit changed the SSH destination after the user bound its files.
+    #[serde(skip)]
+    pub file_connection_stale: bool,
 }
 
 fn text(value: &Option<String>, label: &str, maximum: usize) -> Result<Option<String>, String> {
@@ -165,6 +223,13 @@ impl Profile {
         out.forward_type = self.forward_type;
         out.x11 = if kind == Kind::Ssh { self.x11 } else { X11::Off };
         out.remember_password = kind == Kind::Ssh && self.remember_password;
+        if kind == Kind::Ssh {
+            if let Some(binding) = &self.file_connection {
+                binding.validate()?;
+            }
+            out.file_connection = self.file_connection.clone();
+            out.file_connection_stale = self.file_connection_stale && out.file_connection.is_none();
+        }
         if complete {
             if matches!(kind, Kind::Ssh | Kind::Sftp | Kind::Tunnel) && out.host.is_none() {
                 return Err("需要填写主机或 SSH 别名。".into());
@@ -198,13 +263,15 @@ pub struct Store {
     /// X11 forwarding per profile id, which `profiles.json` cannot hold.
     extras: PathBuf,
     ssh_passwords: PathBuf,
+    file_connections: PathBuf,
 }
 
 impl Store {
     pub fn new(path: PathBuf) -> Self {
         let extras = path.with_file_name("native-profile-x11.json");
         let ssh_passwords = path.with_file_name("native-profile-ssh-auth.json");
-        Self { path, extras, ssh_passwords }
+        let file_connections = path.with_file_name("native-profile-file-connections.json");
+        Self { path, extras, ssh_passwords, file_connections }
     }
 
     fn x11_modes(&self) -> std::collections::HashMap<String, X11> {
@@ -227,6 +294,11 @@ impl Store {
         let mut ids = std::collections::HashSet::new();
         let modes = self.x11_modes();
         let passwords: std::collections::HashMap<String, bool> = std::fs::read(&self.ssh_passwords).ok().filter(|bytes| bytes.len() <= 1 << 20).and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+        let files: std::collections::HashMap<String, FileConnectionEntry> = match std::fs::read(&self.file_connections) {
+            Ok(bytes) if bytes.len() <= 1 << 20 => serde_json::from_slice(&bytes).map_err(|_| "保存的文件连接参数引用无效，请检查 native-profile-file-connections.json。")?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => std::collections::HashMap::new(),
+            _ => return Err("无法读取保存的文件连接参数引用。".into()),
+        };
         profiles
             .iter()
             .map(|profile| {
@@ -234,6 +306,14 @@ impl Store {
                 if valid.kind == Some(Kind::Ssh) {
                     valid.x11 = valid.id.as_ref().and_then(|id| modes.get(id)).copied().unwrap_or_default();
                     valid.remember_password = valid.id.as_ref().and_then(|id| passwords.get(id)).copied().unwrap_or(false);
+                    if let Some(entry) = valid.id.as_ref().and_then(|id| files.get(id)) {
+                        entry.connection.validate()?;
+                        if entry.terminal == TerminalIdentity::of(&valid) {
+                            valid.file_connection = Some(entry.connection.clone());
+                        } else {
+                            valid.file_connection_stale = true;
+                        }
+                    }
                 }
                 match &valid.id {
                     Some(id) if ids.insert(id.clone()) => Ok(valid),
@@ -253,7 +333,10 @@ impl Store {
         super::paths::write_atomically(&self.extras, &json).map_err(|error| format!("无法保存连接：{error}"))?;
         let modes: std::collections::BTreeMap<&str, bool> = profiles.iter().filter(|profile| profile.remember_password).filter_map(|profile| Some((profile.id.as_deref()?, true))).collect();
         let json = serde_json::to_vec_pretty(&modes).map_err(|error| error.to_string())?;
-        super::paths::write_atomically(&self.ssh_passwords, &json).map_err(|error| format!("无法保存 SSH 认证偏好：{error}"))
+        super::paths::write_atomically(&self.ssh_passwords, &json).map_err(|error| format!("无法保存 SSH 认证偏好：{error}"))?;
+        let files: std::collections::BTreeMap<&str, FileConnectionEntry> = profiles.iter().filter_map(|profile| Some((profile.id.as_deref()?, FileConnectionEntry { terminal: TerminalIdentity::of(profile), connection: profile.file_connection.clone()? }))).collect();
+        let json = serde_json::to_vec_pretty(&files).map_err(|error| error.to_string())?;
+        super::paths::write_atomically(&self.file_connections, &json).map_err(|error| format!("无法保存文件连接参数引用：{error}"))
     }
 
     pub fn save(&self, input: &Profile) -> Result<Vec<Profile>, String> {
@@ -357,6 +440,72 @@ mod tests {
         assert_eq!(preferences[saved[0].id.as_ref().unwrap()], true);
         store.save(&Profile { id: saved[0].id.clone(), remember_password: false, ..ssh("gateway") }).unwrap();
         assert!(!store.list().unwrap()[0].remember_password);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn file_connection_reference_is_native_only_and_deleted_with_profile() {
+        let directory = std::env::temp_dir().join(format!("omniterm-file-profiles-{}", uuid::Uuid::new_v4()));
+        let store = Store::new(directory.join("profiles.json"));
+        let binding = FileConnection { source: directory.join("export.json"), host: "192.0.2.1".into(), user: "asset-user".into(), port: 2222, title: "test asset".into() };
+        let saved = store.save(&Profile { file_connection: Some(binding.clone()), ..ssh("gateway") }).unwrap();
+        let id = saved[0].id.as_deref().unwrap();
+        assert_eq!(store.list().unwrap()[0].file_connection.as_ref(), Some(&binding));
+        let shared = std::fs::read_to_string(directory.join("profiles.json")).unwrap();
+        assert!(!shared.contains("fileConnection") && !shared.contains("export.json") && !shared.contains("asset-user"));
+        let sidecar: serde_json::Value = serde_json::from_slice(&std::fs::read(&store.file_connections).unwrap()).unwrap();
+        assert_eq!(sidecar[id].as_object().unwrap().keys().cloned().collect::<std::collections::BTreeSet<_>>(), ["terminal", "connection"].map(String::from).into_iter().collect());
+        assert_eq!(sidecar[id]["connection"].as_object().unwrap().keys().cloned().collect::<std::collections::BTreeSet<_>>(), ["source", "host", "user", "port", "title"].map(String::from).into_iter().collect());
+        assert!(Profile { kind: Some(Kind::Sftp), file_connection: Some(binding), ..ssh("gateway") }.validate(true).unwrap().file_connection.is_none());
+        store.delete(id).unwrap();
+        assert_eq!(std::fs::read_to_string(&store.file_connections).unwrap(), "{}");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_new_saved_pane_keeps_its_id_when_file_parameters_are_bound_later() {
+        let directory = std::env::temp_dir().join(format!("omniterm-new-pane-profile-{}", uuid::Uuid::new_v4()));
+        let store = Store::new(directory.join("profiles.json"));
+        let other = store.save(&Profile { name: Some("Same name".into()), ..ssh("other-gateway") }).unwrap()[0].clone();
+        // SaveProfile assigns this identity before saving and passes this same profile
+        // to the new pane. A later import must update that ID, never a matching name.
+        let mut pane_profile = Profile { id: Some(uuid::Uuid::new_v4().to_string()), name: Some("Same name".into()), ..ssh("gateway") };
+        let saved = store.save(&pane_profile).unwrap();
+        assert!(saved.iter().any(|profile| profile.id == pane_profile.id));
+        pane_profile.file_connection = Some(FileConnection { source: directory.join("export.json"), host: "192.0.2.1".into(), user: "fixture".into(), port: 2222, title: "asset".into() });
+        store.save(&pane_profile).unwrap();
+        let reloaded = store.list().unwrap();
+        assert_eq!(reloaded.len(), 2);
+        assert_eq!(reloaded.iter().find(|profile| profile.id == pane_profile.id).unwrap().file_connection, pane_profile.file_connection);
+        assert!(reloaded.iter().find(|profile| profile.id == other.id).unwrap().file_connection.is_none());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn external_ssh_target_edits_cannot_reuse_another_assets_file_binding() {
+        let directory = std::env::temp_dir().join(format!("omniterm-external-profile-{}", uuid::Uuid::new_v4()));
+        let store = Store::new(directory.join("profiles.json"));
+        let binding = FileConnection { source: directory.join("export.json"), host: "192.0.2.1".into(), user: "fixture".into(), port: 2222, title: "asset A".into() };
+        let a = Profile { id: Some("asset-a".into()), username: Some("alice".into()), port: Some(22), key_path: Some("fixture-key".into()), proxy_jump: Some("jump-a".into()), file_connection: Some(binding.clone()), ..ssh("gateway-a") };
+        let b = Profile { id: Some("asset-b".into()), file_connection: Some(binding.clone()), ..ssh("gateway-b") };
+        store.save(&a).unwrap();
+        store.save(&b).unwrap();
+        let original: serde_json::Value = serde_json::from_slice(&std::fs::read(&store.path).unwrap()).unwrap();
+        for (field, value) in [("host", serde_json::json!("other-gateway")), ("username", serde_json::json!("other-user")), ("port", serde_json::json!(2200)), ("keyPath", serde_json::json!("other-key")), ("proxyJump", serde_json::json!("other-jump"))] {
+            let mut edited = original.clone();
+            edited[0][field] = value;
+            // Simulate another client replacing the shared JSON without touching
+            // the native-only sidecar, while keeping the same profile ID.
+            std::fs::write(&store.path, serde_json::to_vec(&edited).unwrap()).unwrap();
+            let profiles = store.list().unwrap();
+            assert!(profiles[0].file_connection.is_none(), "old files survived an external {field} edit");
+            assert!(profiles[0].file_connection_stale);
+            assert_eq!(profiles[1].file_connection.as_ref(), Some(&binding));
+        }
+        let mut renamed = original;
+        renamed[0]["name"] = serde_json::json!("Renamed asset A");
+        std::fs::write(&store.path, serde_json::to_vec(&renamed).unwrap()).unwrap();
+        assert_eq!(store.list().unwrap()[0].file_connection.as_ref(), Some(&binding));
         std::fs::remove_dir_all(directory).unwrap();
     }
 

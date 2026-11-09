@@ -203,9 +203,14 @@ pub fn build(request: &Request, control_path: impl FnOnce() -> Option<String>) -
             (python, args)
         }
         Kind::Ssh | Kind::Sftp | Kind::Tunnel => {
-            let shares_login = request.companion && matches!(request.kind, Kind::Ssh | Kind::Sftp);
+            let bound_files = request.kind == Kind::Ssh && (profile.file_connection.is_some() || profile.file_connection_stale);
+            let shares_login = !bound_files && request.companion && matches!(request.kind, Kind::Ssh | Kind::Sftp);
             let socket = if shares_login { control_path() } else { None };
             let mut args = Vec::new();
+            if bound_files {
+                // These command-line values take precedence over a user's SSH config.
+                args.extend(["-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no"].map(String::from));
+            }
             if request.kind == Kind::Tunnel {
                 args.extend(["-N", "-o", "ExitOnForwardFailure=yes"].map(String::from));
             }
@@ -290,6 +295,32 @@ pub fn build(request: &Request, control_path: impl FnOnce() -> Option<String>) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn imported_file_parameters_disable_terminal_multiplexing() {
+        if find_executable("ssh").is_none() { return; }
+        let cwd = std::env::current_dir().unwrap();
+        let shell = LocalShell::default();
+        let profile = Profile {
+            kind: Some(Kind::Ssh), host: Some("gateway".into()),
+            file_connection: Some(crate::core::profile::FileConnection { source: cwd.join("fixture.json"), host: "192.0.2.1".into(), user: "fixture".into(), port: 2222, title: "asset".into() }),
+            ..Profile::default()
+        };
+        let request = Request { kind: Kind::Ssh, cwd: cwd.to_str().unwrap(), profile: Some(&profile), companion: true, local_shell: &shell };
+        let plan = build(&request, || panic!("a bound file connection must not allocate a shared socket")).unwrap();
+        assert!(plan.companion.is_none());
+        let args: Vec<&str> = plan.host["args"].as_array().unwrap().iter().map(|value| value.as_str().unwrap()).collect();
+        for option in ["ControlMaster=no", "ControlPath=none", "ControlPersist=no"] {
+            assert!(args.windows(2).any(|pair| pair == ["-o", option]));
+        }
+        let stale = Profile { file_connection: None, file_connection_stale: true, ..profile.clone() };
+        let stale_plan = build(&Request { profile: Some(&stale), ..request }, || panic!("stale bindings cannot silently fall back to shared login")).unwrap();
+        assert!(stale_plan.companion.is_none());
+        let ordinary = Profile { file_connection: None, ..profile.clone() };
+        let ordinary_plan = build(&Request { profile: Some(&ordinary), ..request }, || Some("/tmp/omniterm-test-socket".into())).unwrap();
+        assert!(ordinary_plan.companion.is_some());
+        assert!(ordinary_plan.host["args"].as_array().unwrap().iter().any(|arg| arg == "ControlMaster=auto"));
+    }
 
     #[test]
     fn remembering_passwords_uses_askpass_only_for_opted_in_ssh_connections() {
