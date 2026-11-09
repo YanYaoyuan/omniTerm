@@ -23,12 +23,15 @@ fn directories() -> &'static Mutex<Vec<PathBuf>> {
 
 pub fn prepare(profile: &Profile) -> Result<BTreeMap<String, String>, String> {
     let root = std::env::temp_dir().join(format!("omniterm-auth-{}", uuid::Uuid::new_v4().simple()));
-    let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
-    {
+    let builder = {
         use std::os::unix::fs::DirBuilderExt;
+        let mut builder = std::fs::DirBuilder::new();
         builder.mode(0o700);
-    }
+        builder
+    };
+    #[cfg(not(unix))]
+    let builder = std::fs::DirBuilder::new();
     builder.create(&root).map_err(|_| "无法创建 SSH 认证状态目录。".to_string())?;
     directories().lock().unwrap_or_else(|p| p.into_inner()).push(root.clone());
     let executable = std::env::current_exe().map_err(|_| "找不到 SSH 密码助手。".to_string())?;
