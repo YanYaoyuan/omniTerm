@@ -2,7 +2,7 @@
 //! Read-only diagnostics through exactly the same transport used by the file panel.
 //! No remote shell, metrics, writes, downloads, or automatic reconnects are performed.
 
-use super::manager::{Manager, Phase};
+use super::manager::{Manager, Phase, Reason};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -33,6 +33,8 @@ fn verify(manager: &Manager, path: &Path) -> Result<(String, usize), &'static st
         let snapshot = remote.snapshot();
         match snapshot.phase {
             Phase::Ready => break snapshot.home.ok_or("missing_initial_directory")?,
+            Phase::Unavailable { reason: Reason::Auth, .. } => return Err("authentication_failed"),
+            Phase::Unavailable { reason: Reason::HostKey, .. } => return Err("host_key_verification_failed"),
             Phase::Unavailable { .. } => return Err("connection_unavailable"),
             _ if Instant::now() >= deadline => return Err("authentication_or_handshake_timeout"),
             _ => std::thread::sleep(Duration::from_millis(50)),

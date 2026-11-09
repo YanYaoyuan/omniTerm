@@ -164,7 +164,12 @@ pub fn file_panel(app: &mut App, ui: &mut Ui, remote: &Arc<Remote>, intents: &mu
                         ui.add(egui::Label::new(RichText::new(detail).monospace().size(9.5).color(palette.faint())).wrap());
                     }
                     if remote.is_independent() {
-                        ui.add(egui::Label::new(RichText::new("参数可能已过期。请更新导出的参数文件后重新连接，或重新导入。").size(10.5).color(palette.muted())).wrap());
+                        let guidance = if *reason == crate::remote::manager::Reason::Auth {
+                            "导出的文件凭据可能已过期、失效，或服务端需要额外认证。请在堡垒机重新打开该资产的文件连接，更新参数文件后重连。保存的终端密码不一定适用于此文件入口。"
+                        } else {
+                            "请核对文件入口是否可达；如需刷新凭据，在堡垒机重新打开该资产的文件连接，更新导出的参数文件后重连。"
+                        };
+                        ui.add(egui::Label::new(RichText::new(guidance).size(10.5).color(palette.muted())).wrap());
                     }
                     if style::secondary_button(ui, "重新连接").clicked() {
                         if remote.is_independent() {

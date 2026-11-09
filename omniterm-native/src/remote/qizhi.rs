@@ -421,8 +421,17 @@ fn answer(
     let _waiting = Prompt::start(root)?;
     // first=false is deliberate: even an account-password retry must never save
     // this one-time import or a subsequent OTP in the ordinary SSH keychain.
+    // A repeated account prompt does not prove expiry: a gateway may require
+    // another factor. Explain the export lifecycle without disabling that flow.
+    let guidance = if !confirm && account_password(prompt, &metadata)
+        && root.join("password-attempted").exists()
+    {
+        "已尝试导出文件中的凭据，但文件服务仍要求认证。凭据可能已失效；若不确定此处需要哪项认证，请取消，在堡垒机重新打开该资产的文件连接，更新导出的参数后重连。\n\n"
+    } else {
+        ""
+    };
     let display = format!(
-        "SFTP · {}@{}:{}\n\n{prompt}",
+        "SFTP · {}@{}:{}\n\n{guidance}{prompt}",
         metadata.user, metadata.host, metadata.port
     );
     let value = ask(&metadata.scope, &display, false, confirm)?;
@@ -594,8 +603,17 @@ mod tests {
         );
         assert!(!auth.root.join(CREDENTIAL).exists());
         assert_eq!(
-            answer(&auth.root, prompt, false, |_, _, first, _| {
+            answer(&auth.root, "2nd Password:", false, |_, display, first, _| {
                 assert!(!first);
+                assert!(!display.contains("凭据可能已失效"), "an explicit OTP must not be called a rejected export");
+                Some("manual-otp".into())
+            }).as_deref(),
+            Some("manual-otp")
+        );
+        assert_eq!(
+            answer(&auth.root, prompt, false, |_, display, first, _| {
+                assert!(!first);
+                assert!(display.contains("更新导出的参数后重连"));
                 Some("manual-retry".into())
             })
             .as_deref(),

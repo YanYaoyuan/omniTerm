@@ -76,3 +76,28 @@ Finder gesture still
 needs manual confirmation on the rebuilt application: the local computer-use
 bridge remains unavailable. User-reported download success is not an automated
 upload verification.
+
+## Reconnection authentication follow-up
+
+After restarting the preview, the user reported that SSH logged in while the
+file connection requested another password and did not open. A single read-only
+comparison with macOS `/usr/bin/sftp` and the same exported lowercase `pwd`
+also failed during authentication (exit 255). TCP, SSH negotiation and the
+existing trusted host key succeeded; no SFTP directory operation completed.
+The export's `receivedAt` was 17:07:35 Asia/Shanghai on 2026-11-09, and the file
+had last changed at 17:08:44. It had previously authenticated successfully.
+
+This does not establish a specific credential lifetime or distinguish expiry,
+revocation, and additional authentication requirements. The comparison helper
+supplied the export only once and declined further interactive challenges. A
+fresh export is required for the next comparison; the old credential is not
+being retried automatically. The Finder-drop commit did not change transport
+or authentication code.
+
+Repeated account-password prompts now explain that the exported credential was
+already attempted and offer updating the export as the recovery path. Explicit
+OTP prompts and manual additional authentication remain available. Authentication
+errors in the file panel explain the distinction from the saved terminal login.
+This improves diagnosis; it is **not evidence that the live connection has been
+restored**. The application currently reloads a user-provided export on explicit
+reconnect; it does not obtain new launch credentials from the bastion portal.
