@@ -13,6 +13,7 @@ mod backend;
 mod bench;
 mod core;
 mod drag_out;
+mod file_drop_position;
 mod glyphs;
 mod gpu;
 mod grid;

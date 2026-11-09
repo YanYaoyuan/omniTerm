@@ -149,6 +149,7 @@ pub fn disconnected_file_panel(app: &App, ui: &mut Ui, id: &str, intents: &mut V
 
 pub fn file_panel(app: &mut App, ui: &mut Ui, remote: &Arc<Remote>, intents: &mut Vec<Intent>) {
     let palette = style::palette(ui);
+    let panel = ui.available_rect_before_wrap();
     file_connection_actions(app, ui, remote.id(), intents);
     let snapshot = remote.snapshot();
     let state = app.file_panels.entry(remote.id().to_string()).or_default();
@@ -376,12 +377,18 @@ pub fn file_panel(app: &mut App, ui: &mut Ui, remote: &Arc<Remote>, intents: &mu
     });
 
     // Files dropped anywhere on the panel go up into the folder it shows.
-    let panel = ui.min_rect();
-    let dropped: Vec<PathBuf> = ui.input(|input| input.raw.dropped_files.iter().map(|file| file.path().to_path_buf()).filter(|path| !path.as_os_str().is_empty()).collect());
-    if !dropped.is_empty() && ui.input(|input| input.pointer.hover_pos()).is_some_and(|pointer| panel.contains(pointer)) {
+    let dropped = if state.confirm.is_none() { app.file_drop.take(ui, panel) } else { Vec::new() };
+    if !dropped.is_empty() {
         upload(remote, state, dropped, current.clone(), intents);
     }
     transfers(ui, remote, &snapshot);
+    if state.confirm.is_none() && app.file_drop.hovered(ui, panel) {
+        let rect = panel.intersect(ui.clip_rect()).shrink(3.0);
+        ui.painter().rect(rect, 6.0, alpha(palette.tokens.accent, 0.12), Stroke::new(1.5, palette.accent()), egui::StrokeKind::Inside);
+        let label = egui::Rect::from_center_size(rect.center(), Vec2::new((rect.width() - 16.0).max(0.0), 58.0));
+        ui.painter().rect_filled(label, 6.0, palette.surface());
+        ui.painter().text(label.center(), egui::Align2::CENTER_CENTER, "松开以上传到当前目录", egui::FontId::proportional(12.0), palette.text());
+    }
     confirm(ui, remote, state, &current);
 }
 

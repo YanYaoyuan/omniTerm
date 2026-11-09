@@ -39,8 +39,8 @@ SSH profile ID; neither may silently attach the old asset's files to a new targe
 - Interactive GUI acceptance is pending: the local computer-use bridge could not
   start, including after resetting it. Import-dialog clicks, rendered file rows,
   interactive tab switching and GUI reconnect are not claimed as verified.
-- Real-server upload/download, overwrite/delete, native drag/drop and expired
-  launch credentials were not exercised. Use a disposable controlled server for
+- Automated real-server upload/download, overwrite/delete, native drag/drop and
+  expired launch credentials were not exercised. Use a disposable controlled server for
   write operations; do not use the read-only endpoint verification as permission
   to mutate production files.
 - The nine ignored integration tests require their dedicated fixture/platform
@@ -51,3 +51,28 @@ SSH profile ID; neither may silently attach the old asset's files to a new targe
 Captured parameter exports and application test data are local only and are not
 included in the repository. The separate preview data directory leaves the
 running application's sessions and saved workspace unchanged.
+
+## macOS Finder drop follow-up
+
+The user confirmed downloads work in the preview, then reported that dropping a
+local file onto the **left file list** inserted its path into SSH instead. The
+cached winit 0.30.13 macOS backend delivers `HoveredFile` / `DroppedFile` paths
+without updating the normal pointer position. Both native drop handlers had
+used that stale pointer position.
+
+The fix samples the current AppKit position in the application's content view,
+including Retina scaling and UI zoom. A shared per-frame payload is consumed
+once by the visible target. The complete file-panel area accepts uploads to its
+current directory and displays an upload preview. Direct terminal drops retain
+quoted-path insertion. Missing native coordinates never fall back to a previous
+terminal position. Ordinary shared SFTP and QiZhi file channels use the same UI
+routing; their authentication and transfer implementations are unchanged.
+
+Automated regressions cover a stale SSH pointer with a native drop over files,
+single-consumer routing, direct terminal drops, clipping, missing coordinates,
+blocking dialogs, and coordinate conversion. The follow-up Rust 1.95 run passed
+**128 tests (9 ignored)** and `clippy --all-targets -- -D warnings`. The original
+Finder gesture still
+needs manual confirmation on the rebuilt application: the local computer-use
+bridge remains unavailable. User-reported download success is not an automated
+upload verification.

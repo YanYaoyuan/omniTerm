@@ -6,6 +6,7 @@ mod agent_panel;
 mod chrome;
 mod dialogs;
 mod file_connection;
+mod file_drop;
 mod dock;
 mod monitor_view;
 mod opening;
@@ -201,6 +202,7 @@ pub struct App {
     dragging_pane: Option<String>,
     /// A file to drag out of the window once this frame's intents are applied.
     drag_out: Option<std::path::PathBuf>,
+    file_drop: file_drop::FrameDrop,
     /// Terminal panes docked on a window edge, beside the panels, outside every tab.
     docked: Vec<(String, dock::Edge)>,
     /// The docked pane with the keyboard, when one has it rather than the active tab.
@@ -300,6 +302,7 @@ impl App {
             dragging_panel: None,
             dragging_pane: None,
             drag_out: None,
+            file_drop: Default::default(),
             docked: Vec::new(),
             docked_focus: None,
             frame_uploads: Arc::default(),
@@ -1227,6 +1230,7 @@ impl eframe::App for App {
             style::apply_visuals(&ctx, &palette);
         }
         let modal = self.dialog.is_some() || self.palette.is_some();
+        self.file_drop = file_drop::FrameDrop::capture(frame, &ctx, modal);
         self.frame_uploads = Arc::default();
         let epoch = self.fonts.epoch;
         if !modal {
