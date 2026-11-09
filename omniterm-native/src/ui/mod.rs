@@ -131,6 +131,7 @@ pub enum Intent {
     ImportFileConnection(String),
     ConfirmFileConnection,
     ReconnectFileConnection(String),
+    UseRoutedFileConnection(String),
     CloseDialog,
     SaveProfile { profile: Profile, connect: bool, persist: bool },
     DeleteProfile(String),
@@ -810,6 +811,9 @@ impl App {
             Intent::ImportFileConnection(id) => self.import_file_connection(&id),
             Intent::ConfirmFileConnection => self.confirm_file_connection(),
             Intent::ReconnectFileConnection(id) => self.reconnect_file_connection(&id),
+            Intent::UseRoutedFileConnection(id) => {
+                if let Err(error) = self.use_routed_file_connection(&id) { self.notify(error, true); }
+            }
             Intent::ForgetSshPassword(profile) => {
                 let (send, receive) = std::sync::mpsc::channel();
                 self.credential_work.push(receive);

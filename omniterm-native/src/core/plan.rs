@@ -203,7 +203,7 @@ pub fn build(request: &Request, control_path: impl FnOnce() -> Option<String>) -
             (python, args)
         }
         Kind::Ssh | Kind::Sftp | Kind::Tunnel => {
-            let bound_files = request.kind == Kind::Ssh && (profile.file_connection.is_some() || profile.file_connection_stale);
+            let bound_files = request.kind == Kind::Ssh && (profile.file_connection.is_some() || profile.file_connection_stale || (request.companion && profile.routed_file_login()));
             let shares_login = !bound_files && request.companion && matches!(request.kind, Kind::Ssh | Kind::Sftp);
             let socket = if shares_login { control_path() } else { None };
             let mut args = Vec::new();
@@ -382,6 +382,23 @@ mod tests {
             }
             assert_eq!(plan.host["connection"]["user"], user);
         }
+    }
+
+    #[test]
+    fn routed_asset_automatically_uses_an_independent_file_connection_without_json() {
+        if find_executable("ssh").is_none() { return; }
+        let cwd = std::env::current_dir().unwrap();
+        let profile = Profile { kind: Some(Kind::Ssh), host: Some("gateway".into()), username: Some("alice/192.0.2.10/root".into()), port: Some(60022), ..Profile::default() };
+        assert!(!Profile { proxy_jump: Some("required-hop".into()), ..profile.clone() }.routed_file_login());
+        assert!(!Profile { key_path: Some("required-key".into()), ..profile.clone() }.routed_file_login());
+        let shell = LocalShell::default();
+        let request = Request { kind: Kind::Ssh, cwd: cwd.to_str().unwrap(), profile: Some(&profile), companion: true, local_shell: &shell };
+        let plan = build(&request, || panic!("a routed asset must not allocate a shared control socket")).unwrap();
+        assert!(plan.companion.is_none());
+        assert!(plan.host["args"].as_array().unwrap().iter().any(|value| value == "ControlPath=none"));
+        let ordinary = Profile { username: Some("alice".into()), ..profile.clone() };
+        let plan = build(&Request { profile: Some(&ordinary), ..request }, || Some("fixture.sock".into())).unwrap();
+        assert!(plan.companion.is_some(), "ordinary hosts keep their existing shared login");
     }
 
     #[cfg(unix)]

@@ -36,7 +36,7 @@ pub fn show(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
     let palette = style::palette(ui);
     // An SSH tab adds its files beside the workspace view.
     let ssh_pane = app.focused().filter(|pane| pane.session.kind == Kind::Ssh).map(|pane| pane.id().to_string());
-    let bound_files = app.focused().and_then(|pane| pane.session.profile.as_ref()).is_some_and(|profile| profile.file_connection.is_some() || profile.file_connection_stale);
+    let bound_files = app.focused().and_then(|pane| pane.session.profile.as_ref()).is_some_and(|profile| profile.file_connection.is_some() || profile.file_connection_stale || (profile.routed_file_login() && app.settings.remote_panels));
     let remote = app.focused_remote();
     if bound_files || remote.is_some() {
         ui.horizontal(|ui| {

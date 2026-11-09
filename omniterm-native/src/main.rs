@@ -59,6 +59,13 @@ fn main() -> eframe::Result {
         };
         std::process::exit(code);
     }
+    if args.first().map(String::as_str) == Some("--verify-routed-file-connection") {
+        let code = match args.get(1) {
+            Some(id) if args.len() == 2 => remote::verify::run_profile(id),
+            _ => { eprintln!("Usage: omniTerm --verify-routed-file-connection <saved-profile-id>"); 2 }
+        };
+        std::process::exit(code);
+    }
     if args.first().map(String::as_str) == Some("--bench") {
         let megabytes = args.get(1).and_then(|value| value.parse().ok()).unwrap_or(32);
         println!("{}", bench::run(megabytes));

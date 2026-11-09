@@ -7,8 +7,20 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 pub fn run(path: &Path) -> i32 {
+    run_connection(super::qizhi::load(path).map_err(|_| "invalid_connection_parameters"))
+}
+
+pub fn run_profile(id: &str) -> i32 {
+    let store = crate::core::profile::Store::new(crate::core::paths::file("profiles.json"));
+    let connection = store.list().map_err(|_| "invalid_saved_profiles")
+        .and_then(|profiles| profiles.into_iter().find(|profile| profile.id.as_deref() == Some(id)).ok_or("profile_not_found"))
+        .and_then(|profile| super::qizhi::Connection::from_profile(&profile).map_err(|_| "invalid_routed_profile"));
+    run_connection(connection)
+}
+
+fn run_connection(connection: Result<super::qizhi::Connection, &'static str>) -> i32 {
     let manager = Manager::new(|| {});
-    let result = verify(&manager, path);
+    let result = connection.and_then(|connection| verify(&manager, connection));
     manager.shutdown();
     match result {
         Ok((directory, entries)) => {
@@ -24,8 +36,7 @@ pub fn run(path: &Path) -> i32 {
     }
 }
 
-fn verify(manager: &Manager, path: &Path) -> Result<(String, usize), &'static str> {
-    let connection = super::qizhi::load(path).map_err(|_| "invalid_connection_parameters")?;
+fn verify(manager: &Manager, connection: super::qizhi::Connection) -> Result<(String, usize), &'static str> {
     manager.attach_qizhi("file-connection-verification", connection).map_err(|_| "cannot_prepare_connection")?;
     let remote = manager.get("file-connection-verification").ok_or("connection_not_created")?;
     let deadline = Instant::now() + Duration::from_secs(120);

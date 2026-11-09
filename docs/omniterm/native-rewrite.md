@@ -80,6 +80,22 @@ cargo run --release -- --smoke out.png # 打开窗口，在真实 Shell 里执�
 
 ## SFTP 回归测试
 
+齐治资产透传：SSH 连接的用户名使用 `堡垒机账号/资产IP/资产账号`，打开连接后左侧自动建立
+独立 SFTP，不复用堡垒机可能拒绝的 SSH 会话通道，也不需要每次导出或导入 WinSCP JSON。
+使用连接中配置的堡垒机地址和端口，远端仍需开放 SFTP 透传权限；菜单式登录不能据此推断资产。
+自动账号透传仅用于未额外配置 ProxyJump 或私钥的连接，避免绕过用户显式配置的登录路径。
+在连接编辑页开启“记住首次登录密码”后，固定密码仅进入系统钥匙串，动态验证码每次手动输入。
+已有文件参数绑定的资产可点“改用账号透传自动连接”切换；普通 SSH 的文件面板继续使用原方式。
+
+验证独立 SFTP 的固定密码、动态码和再次登录（临时钥匙串、回环服务器与 Xvfb）：
+
+```sh
+OMNITERM_SFTP_AUTH_TEST=1 python3 omniterm-native/scripts/test-ssh-password.py
+```
+
+该测试使用真实 OpenSSH 认证和独立 SFTP 的认证助手，不代表特定公司部署已允许透传。
+普通单测另外覆盖直接列目录、断线重连、认证状态清理，均无需参数导出文件。
+
 Linux 安装 `openssh-server` 后，在 `omniterm-native` 目录运行：
 
 ```sh

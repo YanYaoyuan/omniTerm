@@ -124,11 +124,20 @@ fn valid_name(name: &str) -> bool {
 fn file_connection_actions(app: &App, ui: &mut Ui, id: &str, intents: &mut Vec<Intent>) {
     let Some(pane) = app.panes.get(id).filter(|pane| pane.session.kind == crate::core::profile::Kind::Ssh) else { return };
     let binding = pane.session.profile.as_ref().and_then(|profile| profile.file_connection.as_ref());
+    let direct = binding.is_none() && pane.session.profile.as_ref().is_some_and(|profile| profile.routed_file_login());
+    if direct {
+        ui.label(egui::RichText::new("资产文件 · SFTP 透传自动连接").size(10.5));
+    }
+    if binding.is_some() && pane.session.profile.as_ref().is_some_and(|profile| profile.routed_file_login())
+        && style::ghost_button(ui, "改用账号透传自动连接").clicked()
+    {
+        intents.push(Intent::UseRoutedFileConnection(id.into()));
+    }
     ui.horizontal(|ui| {
-        if style::ghost_button(ui, if binding.is_some() { "更新文件连接参数…" } else { "导入文件连接参数…" }).clicked() {
+        if style::ghost_button(ui, if binding.is_some() { "更新文件连接参数…" } else if direct { "其他文件入口…" } else { "导入文件连接参数…" }).clicked() {
             intents.push(Intent::ImportFileConnection(id.into()));
         }
-        if binding.is_some() && icon_button(ui, icons::ARROW_CLOCKWISE, "重新连接文件", true).clicked() {
+        if (binding.is_some() || direct) && icon_button(ui, icons::ARROW_CLOCKWISE, "重新连接文件", true).clicked() {
             intents.push(Intent::ReconnectFileConnection(id.into()));
         }
     });
@@ -149,6 +158,7 @@ pub fn disconnected_file_panel(app: &App, ui: &mut Ui, id: &str, intents: &mut V
 
 pub fn file_panel(app: &mut App, ui: &mut Ui, remote: &Arc<Remote>, intents: &mut Vec<Intent>) {
     let palette = style::palette(ui);
+    let routed_login = app.panes.get(remote.id()).and_then(|pane| pane.session.profile.as_ref()).is_some_and(|profile| profile.file_connection.is_none() && profile.routed_file_login());
     let panel = ui.available_rect_before_wrap();
     file_connection_actions(app, ui, remote.id(), intents);
     let snapshot = remote.snapshot();
@@ -164,7 +174,9 @@ pub fn file_panel(app: &mut App, ui: &mut Ui, remote: &Arc<Remote>, intents: &mu
                         ui.add(egui::Label::new(RichText::new(detail).monospace().size(9.5).color(palette.faint())).wrap());
                     }
                     if remote.is_independent() {
-                        let guidance = if *reason == crate::remote::manager::Reason::Auth {
+                        let guidance = if routed_login {
+                            "文件连接使用堡垒机账号直接认证，不依赖导出文件。请核对密码、动态验证码及该资产的文件传输权限，然后重新连接。"
+                        } else if *reason == crate::remote::manager::Reason::Auth {
                             "导出的文件凭据可能已过期、失效，或服务端需要额外认证。请在堡垒机重新打开该资产的文件连接，更新参数文件后重连。保存的终端密码不一定适用于此文件入口。"
                         } else {
                             "请核对文件入口是否可达；如需刷新凭据，在堡垒机重新打开该资产的文件连接，更新导出的参数文件后重连。"

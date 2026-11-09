@@ -580,6 +580,9 @@ fn connection(form: &mut ConnectionForm, ctx: &egui::Context, intents: &mut Vec<
 
 fn file_connection_form(form: &mut ConnectionForm, ui: &mut Ui) {
     let palette = style::palette(ui);
+    if form.file_connection.is_none() && form.profile().is_ok_and(|profile| profile.routed_file_login()) {
+        ui.add(egui::Label::new(RichText::new("已启用 SFTP 透传自动连接，打开资产即加载左侧目录。按堡垒机要求输入密码和动态验证码。").size(10.5).color(palette.muted())).wrap());
+    }
     if style::ghost_button(ui, "导入文件连接参数…").clicked() {
         let mut target = form.clone();
         target.file_connection = None;

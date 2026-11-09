@@ -8,6 +8,7 @@ No personal keyring, SSH configuration, company servers or accounts are used.
 
 import os
 import sys
+import json
 import pathlib
 import tempfile
 import subprocess
@@ -48,7 +49,8 @@ assert APP.is_file() and XVFB.is_file(), (
 )
 PASS = "fixturepassword938"
 OTPS = ["371682", "825139"]
-LOGIN_USER = "fixture/192.0.2.10/root" if os.environ.get("OMNITERM_SSH_TEST_ROUTED") == "1" else "fixture"
+DIRECT_SFTP = os.environ.get("OMNITERM_SFTP_AUTH_TEST") == "1"
+LOGIN_USER = "fixture/192.0.2.10/root" if DIRECT_SFTP or os.environ.get("OMNITERM_SSH_TEST_ROUTED") == "1" else "fixture"
 
 
 class WindowAttributes(ctypes.Structure):
@@ -353,6 +355,16 @@ with tempfile.TemporaryDirectory(prefix="omniterm-password-test-") as tmp:
                 SSH_ASKPASS=str(APP),
                 SSH_ASKPASS_REQUIRE="force",
             )
+            if DIRECT_SFTP:
+                runenv.pop("OMNITERM_SSH_ASKPASS")
+                scope = runenv.pop("OMNITERM_SSH_AUTH_SCOPE")
+                runenv.pop("OMNITERM_SSH_AUTH_STATE")
+                (authdir / "scope.json").write_text(json.dumps({
+                    "version": 1, "scope": "direct-sftp-fixture",
+                    "host": "127.0.0.1", "user": LOGIN_USER, "port": port,
+                    "account": {"scope": scope, "remember": True},
+                }))
+                runenv.update(OMNITERM_QIZHI_ASKPASS="1", OMNITERM_QIZHI_AUTH_STATE=str(authdir))
             log = (root / ("ssh-" + str(attempt) + ".log")).open("wb")
             ssh = subprocess.Popen(
                 [
@@ -410,6 +422,8 @@ with tempfile.TemporaryDirectory(prefix="omniterm-password-test-") as tmp:
                     + (root / ("ssh-" + str(attempt) + ".log")).read_text()
                 )
             assert output == b"fixture-asset-connected\n", output
+            if DIRECT_SFTP:
+                assert not (authdir / "credential").exists(), "Direct SFTP must not need an exported credential"
             until(lambda: not windows(), "OTP window closed")
             window_counts.append(count)
             print(

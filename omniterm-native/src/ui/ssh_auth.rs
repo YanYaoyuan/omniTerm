@@ -6,6 +6,7 @@ use eframe::egui;
 use std::sync::{Arc, Mutex};
 
 struct PasswordWindow {
+    context: Option<String>,
     prompt: String,
     scope: String,
     first: bool,
@@ -48,6 +49,7 @@ impl eframe::App for PasswordWindow {
                     "SSH 验证（仅本次）"
                 });
                 ui.add_space(8.0);
+                if let Some(context) = &self.context { ui.label(context); }
                 ui.label(&self.prompt);
                 ui.add_space(10.0);
                 if !self.confirm {
@@ -89,6 +91,7 @@ pub fn show(scope: &str, prompt: &str, first: bool, confirm: bool) -> Option<Str
     let result = Arc::new(Mutex::new(None));
     let output = result.clone();
     let window = PasswordWindow {
+        context: crate::remote::qizhi::prompt_context(),
         prompt: prompt.to_string(),
         scope: scope.to_string(),
         first,

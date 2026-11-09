@@ -387,6 +387,43 @@ impl Drop for WireFixture {
 }
 
 #[test]
+fn routed_file_connections_list_and_reconnect_without_an_export() {
+    let fixture = WireFixture::new();
+    let profile = crate::core::profile::Profile {
+        kind: Some(crate::core::profile::Kind::Ssh),
+        host: Some("fixture.invalid".into()), username: Some("fixture/192.0.2.10/root".into()),
+        port: Some(60022), ..Default::default()
+    };
+    fixture.manager.install("asset", Target::Independent {
+        connection: Mutex::new(qizhi::Connection::from_profile(&profile).unwrap()), executable: fixture.executable.clone(),
+    });
+    let remote = fixture.manager.get("asset").unwrap();
+    fixture.ready(&remote);
+    for attempt in 1..=2 {
+        remote.list(".".into());
+        until("direct asset directory listing", 5, || !remote.snapshot().listing.loading);
+        assert_eq!(remote.snapshot().listing.entries[0].name, "fixture.txt");
+        let events = fixture.events();
+        assert_eq!(events.len(), attempt);
+        let auth = Path::new(events[attempt - 1]["auth"].as_str().unwrap());
+        assert!(!auth.join("credential").exists());
+        let metadata: serde_json::Value = serde_json::from_slice(&std::fs::read(auth.join("scope.json")).unwrap()).unwrap();
+        assert!(metadata["account"].is_object());
+        if attempt == 1 {
+            let child = lock(&remote.state).sftp_child.clone().unwrap();
+            lock(&child).kill().unwrap();
+            until("direct SFTP disconnect reported", 5, || matches!(remote.snapshot().phase, Phase::Unavailable { .. }));
+            remote.retry();
+            until("new direct SFTP process", 5, || fixture.events().len() == 2);
+            fixture.ready(&remote);
+            assert!(!auth.exists(), "previous authentication scope is discarded on reconnect");
+        }
+    }
+    fixture.manager.shutdown();
+    assert!(!fixture.directory.join("metrics-exec").exists());
+}
+
+#[test]
 fn independent_file_connections_keep_panes_separate_and_never_execute_shell_commands() {
     let fixture = WireFixture::new();
     let a = fixture.attach("pane-a", "/asset/a");

@@ -1,10 +1,11 @@
 // Copyright 2026 omniTerm contributors. SPDX-License-Identifier: Apache-2.0
-//! AccessClient's WinSCP export describes a separate SFTP endpoint. Its `pwd` is
-//! passed unchanged, once, to that endpoint's first account-password prompt.
-//! Neither the export nor its credential belongs in a saved terminal profile.
+//! Independent asset SFTP: routed accounts authenticate normally with manual MFA;
+//! optional WinSCP exports supply a credential only for the first password prompt.
+//! Export credentials never belong in a saved terminal profile.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use crate::core::{profile::Profile, ssh_auth};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -19,7 +20,7 @@ const CREDENTIAL: &str = "credential";
 const METADATA: &str = "scope.json";
 
 /// Deliberately not Debug, Serialize or Clone: only the public endpoint fields
-/// are suitable for display. A connection owns one imported credential attempt.
+/// are suitable for display. A connection owns its account or imported login.
 pub struct Connection {
     pub host: String,
     pub user: String,
@@ -27,6 +28,7 @@ pub struct Connection {
     pub initial_directory: String,
     pub title: String,
     secret: Option<String>,
+    account: Option<AccountAuth>,
 }
 
 fn paired<'a>(data: &'a Value, upper: &str, lower: &str) -> Result<Option<&'a Value>, String> {
@@ -156,6 +158,7 @@ fn parse(bytes: &[u8]) -> Result<Connection, String> {
         initial_directory,
         title,
         secret: Some(secret),
+        account: None,
     })
 }
 
@@ -175,6 +178,24 @@ pub fn load(path: &Path) -> Result<Connection, String> {
 }
 
 impl Connection {
+    /// Account authentication does not rely on an exported ticket or source file.
+    /// A reconnect authenticates again, with manual MFA when required.
+    pub fn from_profile(profile: &Profile) -> Result<Self, String> {
+        let profile = profile.validate(true)?;
+        if !profile.routed_file_login() {
+            return Err("SFTP 透传需要明确的堡垒机账号/资产IP/资产账号。".into());
+        }
+        Ok(Self {
+            host: profile.host.clone().ok_or("缺少堡垒机地址。")?,
+            user: profile.username.clone().ok_or("缺少透传账号。")?,
+            port: profile.port.unwrap_or(22),
+            initial_directory: ".".into(),
+            title: profile.display_name(),
+            secret: None,
+            account: Some(AccountAuth { scope: ssh_auth::scope(&profile), remember: profile.remember_password }),
+        })
+    }
+
     /// Complete arguments for one SFTP subsystem, with no shared terminal or
     /// inherited SSH configuration, forwarding, agent, key, or command channel.
     pub fn ssh_args(&self) -> Vec<String> {
@@ -191,7 +212,7 @@ impl Connection {
             "ControlMaster=no".into(),
             "ControlPath=none".into(),
             "ControlPersist=no".into(),
-            "StrictHostKeyChecking=yes".into(),
+            if self.account.is_some() { "StrictHostKeyChecking=ask".into() } else { "StrictHostKeyChecking=yes".into() },
             "NumberOfPasswordPrompts=1".into(),
             "PreferredAuthentications=password,keyboard-interactive".into(),
             "BatchMode=no".into(),
@@ -251,6 +272,7 @@ impl Connection {
             host: self.host.clone(),
             user: self.user.clone(),
             port: self.port,
+            account: self.account.clone(),
         };
         let encoded =
             serde_json::to_vec(&metadata).map_err(|_| "无法准备 SFTP 认证。".to_string())?;
@@ -296,6 +318,26 @@ struct Metadata {
     host: String,
     user: String,
     port: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    account: Option<AccountAuth>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AccountAuth {
+    scope: String,
+    remember: bool,
+}
+
+/// Nonsecret context for the existing password window. The actual prompt stays
+/// intact so keychain records match the terminal's original password prompt.
+pub fn prompt_context() -> Option<String> {
+    if std::env::var(MODE).as_deref() != Ok("1") { return None; }
+    let root = PathBuf::from(std::env::var_os(STATE)?);
+    let bytes = std::fs::read(root.join(METADATA)).ok().filter(|bytes| bytes.len() <= 8192)?;
+    let metadata: Metadata = serde_json::from_slice(&bytes).ok()?;
+    metadata.account.as_ref()?;
+    Some(format!("资产文件连接（SFTP） · {}@{}:{}", metadata.user, metadata.host, metadata.port))
 }
 
 fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
@@ -415,6 +457,16 @@ fn answer(
     if metadata.version != 1 || metadata.scope.is_empty() || prompt.len() > 8192 {
         return None;
     }
+    if let Some(account) = &metadata.account {
+        let first = !confirm && account_password(prompt, &metadata)
+            && write_private(&root.join("password-attempted"), b"").is_ok();
+        if first && account.remember && let Some(value) = ssh_auth::saved(&account.scope, prompt) {
+            return Some(value);
+        }
+        let _waiting = Prompt::start(root)?;
+        let value = ask(&account.scope, prompt, first && account.remember, confirm)?;
+        return (root.is_dir() && valid_answer(&value)).then_some(value);
+    }
     if !confirm && let Some(value) = automatic_answer(root, &metadata, prompt) {
         return Some(value);
     }
@@ -478,6 +530,36 @@ mod tests {
 
     fn connection() -> Connection {
         parse(&serde_json::to_vec(&exported()).unwrap()).unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    #[test]
+    fn direct_route_has_no_export_file_or_replayed_ticket_and_keeps_mfa_manual() {
+        let profile = Profile {
+            kind: Some(crate::core::profile::Kind::Ssh), host: Some("gateway.example".into()),
+            username: Some("alice/192.0.2.10/root".into()), port: Some(60022),
+            ..Profile::default()
+        };
+        let mut connection = Connection::from_profile(&profile).unwrap();
+        assert!(connection.secret.is_none());
+        assert_eq!(connection.user, "alice/192.0.2.10/root");
+        assert!(connection.ssh_args().contains(&"StrictHostKeyChecking=ask".into()));
+        assert!(connection.ssh_args().contains(&"ControlPath=none".into()));
+        for _ in 0..2 {
+            let auth = connection.prepare_auth().unwrap();
+            assert!(!auth.root.join(CREDENTIAL).exists());
+            for (prompt, confirm) in [("Password:", false), ("2nd Password:", false), ("Confirm host (yes/no)?", true)] {
+                let result = answer(&auth.root, prompt, confirm, |scope, shown, first, is_confirm| {
+                    assert_eq!(scope, ssh_auth::scope(&profile));
+                    assert_eq!(shown, prompt, "the prompt must stay intact for keychain matching");
+                    assert!(!first, "a profile that did not opt in must not save credentials");
+                    assert_eq!(is_confirm, confirm);
+                    Some(if confirm { "yes".into() } else { "fixture-manual".into() })
+                });
+                assert!(result.is_some());
+                assert!(!auth.root.join(CREDENTIAL).exists());
+            }
+        }
+        assert!(Connection::from_profile(&Profile { username: Some("alice".into()), ..profile }).is_err());
     }
 
     #[test]

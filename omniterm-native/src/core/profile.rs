@@ -174,6 +174,18 @@ fn host(value: &str, label: &str, allow_user: bool) -> Result<String, String> {
 }
 
 impl Profile {
+    /// QiZhi's documented direct SFTP route. The asset address is explicit;
+    /// never infer it from terminal output or an interactive gateway menu.
+    pub fn routed_file_login(&self) -> bool {
+        // This password route must not silently bypass an explicitly configured
+        // jump host or private-key login. Those keep their existing SSH transport.
+        if self.kind != Some(Kind::Ssh) || self.proxy_jump.is_some() || self.key_path.is_some() { return false; }
+        let Some(user) = self.username.as_deref() else { return false };
+        let parts: Vec<_> = user.split('/').collect();
+        parts.len() == 3 && !parts[0].is_empty() && !parts[2].is_empty()
+            && parts[1].parse::<std::net::IpAddr>().is_ok()
+    }
+
     /// Checks a profile for `kind`. `complete` also requires what a connection needs to start.
     pub fn validate(&self, complete: bool) -> Result<Profile, String> {
         let kind = self.kind.ok_or("连接类型缺失。")?;

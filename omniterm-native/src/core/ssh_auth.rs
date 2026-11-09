@@ -72,7 +72,7 @@ fn first_password(prompt: &str, state: &Path) -> bool {
     options.open(state).is_ok()
 }
 
-fn scope(profile: &Profile) -> String {
+pub(crate) fn scope(profile: &Profile) -> String {
     json!([profile.host, profile.username, profile.port, profile.proxy_jump, profile.key_path]).to_string()
 }
 
@@ -85,6 +85,10 @@ fn decode_saved(encoded: &str, prompt: &str) -> Option<String> {
     (value["prompt"].as_str()? == prompt.trim())
         .then(|| value["password"].as_str().map(String::from))
         .flatten()
+}
+
+pub(crate) fn saved(scope: &str, prompt: &str) -> Option<String> {
+    decode_saved(&entry(scope).ok()?.get_password().ok()?, prompt).filter(|value| valid_secret(value))
 }
 
 pub(crate) fn save(scope: &str, prompt: &str, secret: &str) -> Result<(), keyring::Error> {

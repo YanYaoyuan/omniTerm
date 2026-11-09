@@ -40,6 +40,23 @@ pub fn target_label(profile: &Profile) -> String {
 }
 
 impl App {
+    pub(super) fn use_routed_file_connection(&mut self, id: &str) -> Result<(), String> {
+        let mut profile = self.panes.get(id).and_then(|pane| pane.session.profile.clone()).ok_or("目标资产已关闭。")?;
+        if !profile.routed_file_login() { return Err("当前连接不是资产透传账号。".into()); }
+        if let Some(saved_id) = &profile.id {
+            let mut saved = self.store.list()?.into_iter().find(|saved| saved.id.as_ref() == Some(saved_id)).ok_or("保存的连接已删除。")?;
+            if !same_target(&saved, &profile) { return Err("保存的资产目标已变化，请重新打开连接。".into()); }
+            saved.file_connection = None;
+            saved.file_connection_stale = false;
+            self.profiles = self.store.save(&saved)?;
+        }
+        profile.file_connection = None;
+        profile.file_connection_stale = false;
+        self.panes.get_mut(id).ok_or("目标资产已关闭。")?.session.profile = Some(profile);
+        self.reconnect_file_connection(id);
+        Ok(())
+    }
+
     pub(super) fn import_file_connection(&mut self, id: &str) {
         // Capture the destination before opening the native picker.
         let Some(pane) = self.panes.get(id).filter(|pane| pane.session.kind == Kind::Ssh) else { return };
@@ -97,16 +114,22 @@ impl App {
             self.file_connection_errors.insert(id.into(), "SSH 连接目标已更改。请重新导入文件连接参数，确认它属于当前资产。".into());
             return;
         }
-        let binding = self.panes.get(id).and_then(|pane| pane.session.profile.as_ref()).and_then(|profile| profile.file_connection.clone());
-        let Some(binding) = binding else { return };
+        let Some(profile) = self.panes.get(id).and_then(|pane| pane.session.profile.clone()) else { return };
+        let binding = profile.file_connection.clone();
+        let direct = binding.is_none() && profile.routed_file_login() && self.settings.remote_panels;
+        if binding.is_none() && !direct { return; }
         self.file_panels.remove(id);
         self.file_connection_errors.remove(id);
-        let result = load(&binding).and_then(|connection| self.remotes.attach_qizhi(id, connection));
+        let result = match binding {
+            Some(binding) => load(&binding),
+            None => Connection::from_profile(&profile),
+        }.and_then(|connection| self.remotes.attach_qizhi(id, connection));
         if let Err(error) = result {
             // An old connection must not remain usable after a reference changes identity.
             self.remotes.detach_file_only(id);
             self.file_connection_errors.insert(id.into(), error);
         }
+        if direct { self.sidebar_files = true; self.sidebar_visible = true; }
     }
 }
 
