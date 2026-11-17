@@ -218,6 +218,12 @@ test("the remote store keeps snapshots stable and forgets closed sessions", () =
   assert.deepEqual(store.transfers("s").map((item) => item.bytes), [2]);
   handlers.metrics({ id: "s", available: true, sample: { cpu: 1 } });
   assert.equal(store.metrics("s").sample.cpu, 1);
+  handlers.metrics({ id: "s", available: false, reason: "channel-refused", detail: "Session open refused by peer" });
+  assert.equal(store.metrics("s").reason, "channel-refused");
+  assert.equal(store.metrics("s").detail, "Session open refused by peer");
+  assert.equal(store.metrics("s").sample, null);
+  handlers.metrics({ id: "s", available: true, sample: { cpu: 2 } });
+  assert.equal(store.metrics("s").reason, undefined, "recovery clears the old diagnostic");
   store.clearFinished("s");
   assert.equal(store.transfers("s").length, 0);
   for (let index = 0; index < 30; index++) handlers.transfer({ id: "s", transferId: `t${index}`, status: "done", bytes: 0 });

@@ -11,6 +11,12 @@ pub fn home() -> PathBuf {
 }
 
 pub fn data_dir() -> PathBuf {
+    // A separate native preview/test instance must not overwrite the workspace or
+    // connection settings of an already-running application. Never repurpose HOME:
+    // OpenSSH still needs the user's real known_hosts and OS credential store.
+    if let Some(directory) = std::env::var_os("OMNITERM_DATA_DIR").map(PathBuf::from).filter(|path| path.is_absolute()) {
+        return directory;
+    }
     let base = if cfg!(windows) {
         std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(|| home().join("AppData").join("Roaming"))
     } else if cfg!(target_os = "macos") {

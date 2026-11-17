@@ -62,7 +62,7 @@ pub fn show(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>, modal: bool) 
         let note = Rect::from_min_max(Pos2::new(area.left(), area.bottom() - FOOTNOTE), area.max);
         footnote(app, ui, note);
         area.max.y -= FOOTNOTE;
-        if let Some(remote) = app.focused_remote() {
+        if let Some(remote) = app.focused_remote().filter(|remote| !remote.is_independent()) {
             let bar = Rect::from_min_max(Pos2::new(area.left(), area.bottom() - METRICS), area.max);
             super::remote_panel::metrics_bar(ui, bar, &remote.snapshot());
             area.max.y -= METRICS;
@@ -570,19 +570,25 @@ fn pane(app: &mut App, ui: &mut Ui, id: &str, rect: Rect, focused: bool, many: b
         if ui.button(format!("{}  搜索", icons::MAGNIFYING_GLASS)).clicked() {
             intents.push(Intent::Action(Action::Find));
         }
+        ui.checkbox(&mut app.settings.syntax_highlighting, "内容高亮");
+        ui.add_enabled_ui(app.settings.syntax_highlighting, |ui| {
+            ui.menu_button("高亮风格", |ui| {
+                super::highlighting::choices(ui, &mut app.settings.highlight_style);
+            });
+        });
         if ui.button(format!("{}  清空屏幕", icons::TRASH)).clicked() {
             intents.push(Intent::Action(Action::Clear));
         }
     });
 
     // Files dropped on a terminal are typed as quoted paths, as in the desktop app.
-    let dropped: Vec<String> = ui.input(|input| input.raw.dropped_files.iter().map(|file| file.path().to_string_lossy().into_owned()).filter(|path| !path.is_empty()).collect());
-    if !dropped.is_empty() && running && ui.input(|input| input.pointer.hover_pos()).is_some_and(|pointer| rect.contains(pointer)) {
-        let text = dropped.iter().map(|path| quote_path(path, app.windows, powershell)).collect::<Vec<_>>().join(" ") + " ";
+    let dropped = if running && !modal { app.file_drop.take(ui, rect) } else { Vec::new() };
+    if !dropped.is_empty() {
+        let text = dropped.iter().map(|path| quote_path(&path.to_string_lossy(), app.windows, powershell)).collect::<Vec<_>>().join(" ") + " ";
         app.backend.write(id, text);
         intents.push(Intent::Focus(id.to_string()));
     }
-    if ui.input(|input| !input.raw.hovered_files.is_empty()) && ui.input(|input| input.pointer.hover_pos()).is_some_and(|pointer| rect.contains(pointer)) {
+    if running && !modal && app.file_drop.hovered(ui, rect) {
         ui.painter().rect(rect.shrink(6.0), 6.0, alpha(palette.tokens.accent, 0.07), Stroke::new(1.5, alpha(palette.tokens.accent, 0.56)), egui::StrokeKind::Inside);
         ui.painter().text(rect.center(), Align2::CENTER_CENTER, "拖放以插入文件路径", FontId::proportional(12.0), palette.text_soft());
     }
@@ -612,6 +618,8 @@ fn pane(app: &mut App, ui: &mut Ui, id: &str, rect: Rect, focused: bool, many: b
     let theme = app.theme();
     let pane = app.panes.get_mut(id).expect("pane exists");
     let built = super::BuildKey {
+        syntax_highlighting: app.settings.syntax_highlighting,
+        highlight_style: app.settings.highlight_style,
         generation: terminal.generation.load(std::sync::atomic::Ordering::Acquire),
         size: [size_px[0] as u32, size_px[1] as u32],
         focused: focused && response.has_focus(),
@@ -623,7 +631,7 @@ fn pane(app: &mut App, ui: &mut Ui, id: &str, rect: Rect, focused: bool, many: b
         alpha: alpha_bits.to_bits(),
     };
     if pane.built != built {
-        let frame = grid::Frame { theme, size: size_px, focused: built.focused, background_alpha: alpha_bits, dim, cursor_on };
+        let frame = grid::Frame { theme, size: size_px, focused: built.focused, background_alpha: alpha_bits, dim, cursor_on, syntax_highlighting: built.syntax_highlighting, highlight_style: built.highlight_style };
         pane.quads = Arc::new(grid::build(&terminal.lock(), &mut app.fonts, &frame));
         pane.built = built;
         pane.version += 1;

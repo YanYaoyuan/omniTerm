@@ -19,6 +19,7 @@ use std::thread;
 /// A session the UI asked for.
 #[derive(Clone, Debug)]
 pub struct Open {
+    pub web_launch: Option<Arc<crate::core::web_launch::Launch>>,
     pub token: u64,
     pub kind: Kind,
     pub cwd: String,
@@ -32,6 +33,8 @@ pub struct Open {
 /// What a session is, beyond its screen.
 #[derive(Clone, Debug)]
 pub struct Session {
+    /// Keeps private launch state alive until this terminal is closed.
+    pub _web_launch: Option<Arc<crate::core::web_launch::Launch>>,
     pub terminal: Arc<Terminal>,
     pub kind: Kind,
     pub title: String,
@@ -250,7 +253,10 @@ fn open_session(
     control_path: &dyn Fn() -> Option<String>,
 ) -> Result<Session, String> {
     let request = plan::Request { kind: open.kind, cwd: &open.cwd, profile: open.profile.as_ref(), companion: open.companion, local_shell: &open.local_shell };
-    let plan = plan::build(&request, control_path)?;
+    let plan = match &open.web_launch {
+        Some(launch) => launch.build(&request)?,
+        None => plan::build(&request, control_path)?,
+    };
     let created = host.handle("session.create", plan.host)?;
     let id = created["id"].as_str().ok_or("终端主机没有返回会话 id。")?.to_string();
     let nonce = created["shellNonce"].as_str().unwrap_or_default().to_string();
@@ -264,5 +270,5 @@ fn open_session(
         let _ = host.handle("session.close", json!({ "id": id }));
         return Err(error);
     }
-    Ok(Session { terminal, kind: open.kind, title: plan.title, cwd: open.cwd.clone(), powershell: plan.powershell, profile: open.profile.clone(), companion: plan.companion, nonce, warning: plan.warning })
+    Ok(Session { terminal, kind: open.kind, title: plan.title, cwd: open.cwd.clone(), powershell: plan.powershell, profile: if open.web_launch.is_some() { None } else { open.profile.clone() }, companion: plan.companion, nonce, warning: plan.warning, _web_launch: open.web_launch.clone() })
 }

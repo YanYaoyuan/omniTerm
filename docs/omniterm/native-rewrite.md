@@ -53,6 +53,26 @@ cargo run --release -- --smoke out.png # 打开窗口，在真实 Shell 里执�
 
 快捷键：macOS 用 ⌘，其他平台用 Ctrl+Shift。T 新标签、W 关闭窗格、E/D 向右分屏、O/⇧D 向下分屏、Enter 最大化窗格、[ ] 切换窗格、C/V 复制粘贴、= - 0 字号；F11（macOS ⌃⌘F）全屏。Ctrl+C 有选中内容时复制，否则发送中断。
 
+### 终端内容高亮
+
+默认启用 MobaXterm 风格的本地内容高亮：JSON/配置字段为蓝色，字符串为绿色，数字为
+金色，布尔值和空值为紫色，IP/路径为青色，时间为淡紫色；ERROR/FAILED 用红色、
+WARNING/TIMEOUT 用橙色、SUCCESS/OK 用绿色。暗色与亮色主题使用各自的可读配色。
+在“设置 → 内容高亮”或终端右键菜单可立即切换，选项保存为 `syntaxHighlighting`。
+
+可选 10 种高亮设置：跟随界面主题、Moba（经典）、Dracula、Tokyo Night、Catppuccin、
+Nord、Gruvbox、Solarized、One Dark / Light、Rosé Pine。选项独立于界面主题，保存为
+`highlightStyle`，切换立即影响已打开的终端；设置中附相同 JSON/日志片段的实时预览。
+“跟随界面主题”匹配已有同名主题，其他主题回退到经典风格。
+深浅变体随背景选择，必要时自动提高对比度。这里将开源色板映射到本地终端词法规则，
+并非移植编辑器的完整语法插件。来源、改动说明和许可证见
+`omniterm-native/assets/highlight-licenses/NOTICE.md`，安装包会携带这些声明。
+旧设置不含 `highlightStyle` 时保留经典配色；未知的新风格回退到经典，不丢失其他设置。
+
+高亮只作用于默认前景色和默认背景色的普通输出，不改写终端数据、选择和复制的文本，
+保留程序指定的 ANSI 颜色。备用屏幕（例如 Vim/top）和自行设置前景色的程序不套用该规则。
+按软换行重组逻辑行，支持滚动回看和中文宽字符；额外上下文限制为每侧 64 Ki 个单元格。
+
 ### 本地 Shell
 
 在“设置 → 本地 Shell”填写程序名称或完整路径（例如 `/bin/zsh`、`pwsh.exe`、
@@ -79,6 +99,22 @@ cargo run --release -- --smoke out.png # 打开窗口，在真实 Shell 里执�
 - macOS 的 CI 只构建、单测和基准测试，不开真实窗口；Linux（lavapipe 软件 Vulkan）和 Windows（WARP）在 CI 里开真实窗口做冒烟测试。
 
 ## SFTP 回归测试
+
+齐治资产透传：SSH 连接的用户名使用 `堡垒机账号/资产IP/资产账号`，打开连接后左侧自动建立
+独立 SFTP，不复用堡垒机可能拒绝的 SSH 会话通道，也不需要每次导出或导入 WinSCP JSON。
+使用连接中配置的堡垒机地址和端口，远端仍需开放 SFTP 透传权限；菜单式登录不能据此推断资产。
+自动账号透传仅用于未额外配置 ProxyJump 或私钥的连接，避免绕过用户显式配置的登录路径。
+在连接编辑页开启“记住首次登录密码”后，固定密码仅进入系统钥匙串，动态验证码每次手动输入。
+已有文件参数绑定的资产可点“改用账号透传自动连接”切换；普通 SSH 的文件面板继续使用原方式。
+
+验证独立 SFTP 的固定密码、动态码和再次登录（临时钥匙串、回环服务器与 Xvfb）：
+
+```sh
+OMNITERM_SFTP_AUTH_TEST=1 python3 omniterm-native/scripts/test-ssh-password.py
+```
+
+该测试使用真实 OpenSSH 认证和独立 SFTP 的认证助手，不代表特定公司部署已允许透传。
+普通单测另外覆盖直接列目录、断线重连、认证状态清理，均无需参数导出文件。
 
 Linux 安装 `openssh-server` 后，在 `omniterm-native` 目录运行：
 

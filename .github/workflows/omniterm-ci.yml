@@ -177,6 +177,12 @@ jobs:
         run: python3 scripts/test-sftp.py -- cargo test --locked sftp_end_to_end -- --ignored --nocapture
       - name: Build the release app
         run: cargo build --release --locked
+      - name: Saved SSH password and manual OTP end to end (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y python3-paramiko python3-secretstorage gnome-keyring libxtst6
+          /usr/bin/python3 scripts/test-ssh-password.py
+          OMNITERM_SSH_TEST_ROUTED=1 /usr/bin/python3 scripts/test-ssh-password.py
       - name: Measure emulation throughput and frame building
         run: target/release/omniterm-app --bench 32 | tee bench-${{ runner.os }}.json
       # A real window on a GPU adapter (lavapipe on Linux, WARP on Windows): a shell starts,

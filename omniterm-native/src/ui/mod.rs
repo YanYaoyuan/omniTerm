@@ -5,6 +5,10 @@
 mod agent_panel;
 mod chrome;
 mod dialogs;
+mod highlighting;
+mod file_connection;
+mod web_files;
+mod file_drop;
 mod dock;
 mod monitor_view;
 mod opening;
@@ -12,6 +16,7 @@ mod process_window;
 mod palette;
 mod remote_panel;
 pub mod shortcuts;
+pub mod ssh_auth;
 mod sidebar;
 pub mod style;
 mod terminals;
@@ -52,6 +57,8 @@ pub struct Pane {
 
 #[derive(Clone, Copy, PartialEq)]
 struct BuildKey {
+    highlight_style: crate::highlight::Style,
+    syntax_highlighting: bool,
     generation: u64,
     size: [u32; 2],
     focused: bool,
@@ -92,6 +99,7 @@ pub enum Dialog {
     Connection(Box<dialogs::ConnectionForm>),
     Delete { profile: Profile, error: Option<String> },
     SshImport(dialogs::ImportState),
+    FileConnection(file_connection::Import),
 }
 
 #[derive(Default)]
@@ -123,6 +131,11 @@ pub enum Intent {
     SetRatio { tab: u64, path: Vec<usize>, ratio: f32 },
     ChooseDirectory,
     Dialog(Dialog),
+    ForgetSshPassword(Profile),
+    ImportFileConnection(String),
+    ConfirmFileConnection,
+    ReconnectFileConnection(String),
+    UseRoutedFileConnection(String),
     CloseDialog,
     SaveProfile { profile: Profile, connect: bool, persist: bool },
     DeleteProfile(String),
@@ -153,6 +166,8 @@ pub enum Intent {
 }
 
 pub struct App {
+    web_files: Option<web_files::Window>,
+    external_launch: bool,
     backend: Backend,
     render_state: egui_wgpu::RenderState,
     fonts: Fonts,
@@ -194,6 +209,7 @@ pub struct App {
     dragging_pane: Option<String>,
     /// A file to drag out of the window once this frame's intents are applied.
     drag_out: Option<std::path::PathBuf>,
+    file_drop: file_drop::FrameDrop,
     /// Terminal panes docked on a window edge, beside the panels, outside every tab.
     docked: Vec<(String, dock::Edge)>,
     /// The docked pane with the keyboard, when one has it rather than the active tab.
@@ -203,8 +219,10 @@ pub struct App {
     agent_state: agent_panel::AgentState,
     workspace_layout: Option<serde_json::Value>,
     file_panels: HashMap<String, remote_panel::PanelState>,
+    file_connection_errors: HashMap<String, String>,
     sidebar_files: bool,
     watched: Option<String>,
+    credential_work: Vec<std::sync::mpsc::Receiver<Result<(), String>>>,
     background: Option<(std::path::PathBuf, egui::TextureHandle)>,
     applied_theme: Option<&'static str>,
     blink_epoch: Instant,
@@ -232,7 +250,7 @@ fn next_counter(counter: &mut u64) -> u64 {
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, settings: Settings, window_transparent: bool, smoke: Option<crate::smoke::Smoke>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, settings: Settings, window_transparent: bool, smoke: Option<crate::smoke::Smoke>, web_launch: Option<crate::core::web_launch::Incoming>) -> Self {
         let render_state = cc.wgpu_render_state.clone().expect("omniTerm draws with wgpu");
         gpu::install(&render_state);
         style::install_fonts(&cc.egui_ctx);
@@ -252,6 +270,8 @@ impl App {
         let cwd = std::env::current_dir().ok().map(|dir| dir.to_string_lossy().into_owned()).filter(|dir| dir != "/" && std::path::Path::new(dir).is_dir()).unwrap_or_else(|| home.clone());
         let fonts = Fonts::new(settings.font_size * scale, settings.line_height, settings.font_family.candidates());
         let mut app = Self {
+            web_files: None,
+            external_launch: web_launch.is_some(),
             backend,
             render_state,
             fonts,
@@ -291,14 +311,17 @@ impl App {
             dragging_panel: None,
             dragging_pane: None,
             drag_out: None,
+            file_drop: Default::default(),
             docked: Vec::new(),
             docked_focus: None,
             frame_uploads: Arc::default(),
             agent_state: agent_panel::AgentState::with_profile(ui_state.agent_profile.clone()),
             workspace_layout: None,
             file_panels: HashMap::new(),
+            file_connection_errors: HashMap::new(),
             sidebar_files: true,
             watched: None,
+            credential_work: Vec::new(),
             background: None,
             applied_theme: None,
             blink_epoch: Instant::now(),
@@ -310,7 +333,24 @@ impl App {
             Ok(profiles) => app.profiles = profiles,
             Err(error) => app.notify(error, true),
         }
-        app.start();
+        match web_launch {
+            Some(crate::core::web_launch::Incoming::Ssh(launch)) => {
+                let mut open = app.request(Kind::Ssh, Some(launch.profile().clone()), None);
+                open.companion = false;
+                open.web_launch = Some(launch);
+                open.token = next_counter(&mut app.next_id);
+                app.pending.insert(open.token, Placement::NewTab);
+                app.backend.open(open);
+            }
+            Some(crate::core::web_launch::Incoming::Sftp(connection)) => {
+                let id = format!("web-sftp-{}", uuid::Uuid::new_v4());
+                app.web_files = Some(web_files::Window { id: id.clone(), title: connection.title.clone() });
+                if let Err(error) = app.remotes.attach_qizhi(&id, connection) {
+                    app.file_connection_errors.insert(id, error);
+                }
+            }
+            None => app.start(),
+        }
         app
     }
 
@@ -389,6 +429,7 @@ impl App {
 
     fn request(&self, kind: Kind, profile: Option<Profile>, cwd: Option<String>) -> Open {
         Open {
+            web_launch: None,
             token: 0,
             kind,
             cwd: cwd.unwrap_or_else(|| self.cwd.clone()),
@@ -431,9 +472,10 @@ impl App {
             live_cwd: None,
             exit: None,
             quads: Arc::default(),
-            built: BuildKey { generation: 0, size: [0, 0], focused: false, dim: false, cursor_on: false, theme: std::ptr::null(), cell: (0, 0), atlas: u64::MAX, alpha: 0 },
+            built: BuildKey { generation: 0, size: [0, 0], focused: false, dim: false, cursor_on: false, theme: std::ptr::null(), cell: (0, 0), atlas: u64::MAX, alpha: 0, syntax_highlighting: false, highlight_style: crate::highlight::Style::Moba },
             version: 0,
         });
+        self.reconnect_file_connection(&id);
         self.mark_workspace();
         id
     }
@@ -555,6 +597,7 @@ impl App {
         }
         self.remotes.detach(id);
         self.file_panels.remove(id);
+        self.file_connection_errors.remove(id);
         self.backend.close(id);
         self.panes.remove(id);
         if self.search.open && self.focused().is_none_or(|pane| pane.id() == id) {
@@ -589,6 +632,7 @@ impl App {
         for id in ids {
             self.remotes.detach(&id);
             self.file_panels.remove(&id);
+            self.file_connection_errors.remove(&id);
             self.backend.close(&id);
             self.panes.remove(&id);
         }
@@ -790,6 +834,21 @@ impl App {
                 }
             }
             Intent::Dialog(dialog) => self.dialog = Some(dialog),
+            Intent::ImportFileConnection(id) => self.import_file_connection(&id),
+            Intent::ConfirmFileConnection => self.confirm_file_connection(),
+            Intent::ReconnectFileConnection(id) => self.reconnect_file_connection(&id),
+            Intent::UseRoutedFileConnection(id) => {
+                if let Err(error) = self.use_routed_file_connection(&id) { self.notify(error, true); }
+            }
+            Intent::ForgetSshPassword(profile) => {
+                let (send, receive) = std::sync::mpsc::channel();
+                self.credential_work.push(receive);
+                let ctx = ctx.clone();
+                std::thread::spawn(move || {
+                    let _ = send.send(crate::core::ssh_auth::forget(&profile));
+                    ctx.request_repaint();
+                });
+            }
             // Closing the import list counts as having seen those hosts, so it asks only once.
             Intent::CloseDialog => {
                 if matches!(self.dialog, Some(Dialog::SshImport(_))) {
@@ -798,7 +857,10 @@ impl App {
                     self.dialog = None;
                 }
             }
-            Intent::SaveProfile { profile, connect, persist } => {
+            Intent::SaveProfile { mut profile, connect, persist } => {
+                if (persist || !connect) && profile.id.is_none() {
+                    profile.id = Some(uuid::Uuid::new_v4().to_string());
+                }
                 let saved = if persist || !connect { self.store.save(&profile).map(Some) } else { profile.validate(true).map(|_| None) };
                 match saved {
                     Ok(list) => {
@@ -953,12 +1015,25 @@ impl App {
     }
 
     fn handle_notices(&mut self) {
+        let mut credential_results = Vec::new();
+        self.credential_work.retain(|receive| match receive.try_recv() {
+            Ok(result) => { credential_results.push(result); false }
+            Err(std::sync::mpsc::TryRecvError::Empty) => true,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => { credential_results.push(Err("SSH 密码清理未完成，请重试。".into())); false }
+        });
+        for result in credential_results {
+            match result {
+                Ok(()) => self.notify("已忘记这个连接保存的首次密码。", false),
+                Err(error) => self.notify(error, true),
+            }
+        }
         while let Ok(notice) = self.backend.notices.try_recv() {
             match notice {
                 Notice::Opened { token, result } => self.opened(token, result),
                 Notice::Exited { id, code } => {
                     if let Some(pane) = self.panes.get_mut(&id) {
                         pane.exit = Some(code);
+                        pane.session._web_launch.take();
                     }
                 }
                 Notice::Title { id, title } => {
@@ -1009,6 +1084,7 @@ impl App {
     }
 
     fn save_workspace(&mut self, force: bool) {
+        if self.external_launch { return; }
         let Some(since) = self.workspace_dirty else { return };
         if !force && since.elapsed() < Duration::from_millis(400) {
             return;
@@ -1034,6 +1110,7 @@ impl App {
     }
 
     fn save_ui_state(&self) {
+        if self.external_launch { return; }
         let state = UiState { sidebar_hidden: !self.sidebar_visible, agent_hidden: !self.agent_visible, seen_ssh_hosts: self.seen_hosts.iter().cloned().collect(), agent_profile: self.agent_state.profile.clone(), monitor_visible: self.monitor_visible, dock: Some(self.dock.clone()) };
         if let Ok(json) = serde_json::to_vec(&state) {
             let _ = paths::write_atomically(&paths::file(UI_STATE), &json);
@@ -1083,22 +1160,24 @@ impl App {
     }
 
     pub fn open_processes(&mut self) {
-        let host = self.focused().filter(|pane| pane.session.kind == Kind::Ssh && self.remotes.get(pane.id()).is_some()).map(|pane| pane.id().to_string());
+        let host = self.focused().filter(|pane| pane.session.kind == Kind::Ssh && self.remotes.get(pane.id()).is_some_and(|remote| !remote.is_independent())).map(|pane| pane.id().to_string());
         self.processes.open_for(host);
     }
 
     /// The SSH companion of the focused pane, when the file panel and metrics are on.
     pub fn focused_remote(&self) -> Option<Arc<crate::remote::manager::Remote>> {
+        if let Some(window) = &self.web_files { return self.remotes.get(&window.id); }
         let pane = self.focused()?;
-        if !self.settings.remote_panels {
+        let remote = self.remotes.get(pane.id())?;
+        if !self.settings.remote_panels && !remote.is_independent() {
             return None;
         }
-        self.remotes.get(pane.id())
+        Some(remote)
     }
 
     /// Only the focused SSH tab samples its host; the others stop until they are shown.
     fn watch_metrics(&mut self) {
-        let focused = self.focused_remote().map(|remote| remote.id().to_string());
+        let focused = self.focused_remote().filter(|remote| !remote.is_independent()).map(|remote| remote.id().to_string());
         if focused == self.watched {
             return;
         }
@@ -1185,15 +1264,16 @@ impl eframe::App for App {
             style::apply_visuals(&ctx, &palette);
         }
         let modal = self.dialog.is_some() || self.palette.is_some();
+        self.file_drop = file_drop::FrameDrop::capture(frame, &ctx, modal);
         self.frame_uploads = Arc::default();
         let epoch = self.fonts.epoch;
-        if !modal {
+        if !modal && self.web_files.is_none() {
             self.global_keys(&ctx);
         }
 
         let mut intents = Vec::new();
         chrome::backdrop(self, ui, scene);
-        if !self.focus_mode {
+        if !self.focus_mode && self.web_files.is_none() {
             chrome::title_bar(self, ui, &mut intents);
             chrome::status_bar(self, ui, &mut intents);
         }
@@ -1203,10 +1283,14 @@ impl eframe::App for App {
             self.monitor_visible = true;
             self.pending_seen.extend(pending);
         }
-        dock::show(self, ui, &mut intents, self.focus_mode);
-        dock::drag_overlay(self, &ctx);
-        dock::pane_overlay(self, &ctx, &mut intents);
-        egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| terminals::show(self, ui, &mut intents, modal));
+        if self.web_files.is_some() {
+            egui::CentralPanel::default().frame(egui::Frame::new().inner_margin(16)).show(ui, |ui| web_files::show(self, ui, &mut intents));
+        } else {
+            dock::show(self, ui, &mut intents, self.focus_mode);
+            dock::drag_overlay(self, &ctx);
+            dock::pane_overlay(self, &ctx, &mut intents);
+            egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| terminals::show(self, ui, &mut intents, modal));
+        }
         dialogs::show(self, &ctx, &mut intents);
         palette::show(self, &ctx, &mut intents);
         let hosts: Vec<(String, String)> = self.panes.values().filter(|pane| self.remotes.get(pane.id()).is_some()).map(|pane| (pane.id().to_string(), pane.title.clone())).collect();
