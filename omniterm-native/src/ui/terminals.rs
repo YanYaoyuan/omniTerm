@@ -571,6 +571,11 @@ fn pane(app: &mut App, ui: &mut Ui, id: &str, rect: Rect, focused: bool, many: b
             intents.push(Intent::Action(Action::Find));
         }
         ui.checkbox(&mut app.settings.syntax_highlighting, "内容高亮");
+        ui.add_enabled_ui(app.settings.syntax_highlighting, |ui| {
+            ui.menu_button("高亮风格", |ui| {
+                super::highlighting::choices(ui, &mut app.settings.highlight_style);
+            });
+        });
         if ui.button(format!("{}  清空屏幕", icons::TRASH)).clicked() {
             intents.push(Intent::Action(Action::Clear));
         }
@@ -614,6 +619,7 @@ fn pane(app: &mut App, ui: &mut Ui, id: &str, rect: Rect, focused: bool, many: b
     let pane = app.panes.get_mut(id).expect("pane exists");
     let built = super::BuildKey {
         syntax_highlighting: app.settings.syntax_highlighting,
+        highlight_style: app.settings.highlight_style,
         generation: terminal.generation.load(std::sync::atomic::Ordering::Acquire),
         size: [size_px[0] as u32, size_px[1] as u32],
         focused: focused && response.has_focus(),
@@ -625,7 +631,7 @@ fn pane(app: &mut App, ui: &mut Ui, id: &str, rect: Rect, focused: bool, many: b
         alpha: alpha_bits.to_bits(),
     };
     if pane.built != built {
-        let frame = grid::Frame { theme, size: size_px, focused: built.focused, background_alpha: alpha_bits, dim, cursor_on, syntax_highlighting: built.syntax_highlighting };
+        let frame = grid::Frame { theme, size: size_px, focused: built.focused, background_alpha: alpha_bits, dim, cursor_on, syntax_highlighting: built.syntax_highlighting, highlight_style: built.highlight_style };
         pane.quads = Arc::new(grid::build(&terminal.lock(), &mut app.fonts, &frame));
         pane.built = built;
         pane.version += 1;

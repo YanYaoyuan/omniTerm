@@ -5,6 +5,7 @@
 mod agent_panel;
 mod chrome;
 mod dialogs;
+mod highlighting;
 mod file_connection;
 mod web_files;
 mod file_drop;
@@ -56,6 +57,7 @@ pub struct Pane {
 
 #[derive(Clone, Copy, PartialEq)]
 struct BuildKey {
+    highlight_style: crate::highlight::Style,
     syntax_highlighting: bool,
     generation: u64,
     size: [u32; 2],
@@ -470,7 +472,7 @@ impl App {
             live_cwd: None,
             exit: None,
             quads: Arc::default(),
-            built: BuildKey { generation: 0, size: [0, 0], focused: false, dim: false, cursor_on: false, theme: std::ptr::null(), cell: (0, 0), atlas: u64::MAX, alpha: 0, syntax_highlighting: false },
+            built: BuildKey { generation: 0, size: [0, 0], focused: false, dim: false, cursor_on: false, theme: std::ptr::null(), cell: (0, 0), atlas: u64::MAX, alpha: 0, syntax_highlighting: false, highlight_style: crate::highlight::Style::Moba },
             version: 0,
         });
         self.reconnect_file_connection(&id);

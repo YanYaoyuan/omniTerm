@@ -52,7 +52,7 @@ pub fn run(megabytes: usize) -> serde_json::Value {
 
     let mut fonts = Fonts::new(14.0, 1.22, &[]);
     let size = [200.0 * fonts.cell.width + 16.0, 60.0 * fonts.cell.height + 16.0];
-    let frame = Frame { theme: &THEMES[0], size, focused: true, background_alpha: 1.0, dim: false, cursor_on: true, syntax_highlighting: true };
+    let frame = Frame { theme: &THEMES[0], size, focused: true, background_alpha: 1.0, dim: false, cursor_on: true, syntax_highlighting: true, highlight_style: crate::highlight::Style::Moba };
     let started = Instant::now();
     let first = grid::build(&terminal.lock(), &mut fonts, &frame).len();
     let cold = started.elapsed().as_secs_f64() * 1000.0;

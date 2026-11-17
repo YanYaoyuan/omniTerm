@@ -343,6 +343,10 @@ fn settings(app: &mut App, ctx: &egui::Context, intents: &mut Vec<Intent>) -> bo
             setting_row(ui, "内容高亮", "为 JSON 字段、数字、地址和日志级别着色，保留程序原有颜色", |ui| {
                 toggle(ui, &mut settings.syntax_highlighting, "内容高亮");
             });
+            setting_row(ui, "高亮风格", "立即切换配色；浅色背景自动适配可读性", |ui| {
+                super::highlighting::selector(ui, settings);
+            });
+            super::highlighting::preview(ui, settings);
             section(ui, "行为与性能");
             setting_row(ui, "选中即复制", "选择文本后自动写入剪贴板", |ui| {
                 toggle(ui, &mut settings.copy_on_select, "选中即复制");

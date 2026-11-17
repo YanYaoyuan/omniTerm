@@ -34,6 +34,7 @@ pub struct Frame<'a> {
     /// The blinking cursor's current phase.
     pub cursor_on: bool,
     pub syntax_highlighting: bool,
+    pub highlight_style: crate::highlight::Style,
 }
 
 /// Builds every quad for one pane: background runs, glyphs, decorations, then the cursor.
@@ -46,6 +47,7 @@ pub fn build(term: &Term<Listener>, fonts: &mut Fonts, frame: &Frame) -> Vec<Ins
     let highlights = (frame.syntax_highlighting && !content.mode.contains(TermMode::ALT_SCREEN)
         && overrides(NamedColor::Foreground as usize).is_none())
         .then(|| crate::highlight::screen(term));
+    let palette = highlights.as_ref().map(|_| crate::highlight::Palette::new(frame.highlight_style, theme));
     let offset = content.display_offset as i32;
     let rows = term.screen_lines() as i32;
     let mut out = Vec::with_capacity(term.columns() * term.screen_lines() / 2 + 16);
@@ -86,7 +88,7 @@ pub fn build(term: &Term<Listener>, fonts: &mut Fonts, frame: &Frame) -> Vec<Ins
         let mut bg = theme.resolve(cell_ref.bg, &overrides);
         let default_bg = matches!(cell_ref.bg, Color::Named(NamedColor::Background));
         if default_bg && matches!(cell_ref.fg, Color::Named(NamedColor::Foreground)) && !flags.intersects(Flags::INVERSE | Flags::HIDDEN)
-            && let Some(color) = highlights.as_ref().and_then(|roles| roles[(row as usize)*term.columns()+column].color(theme.light))
+            && let Some(color) = highlights.as_ref().and_then(|roles| palette.as_ref()?.color(roles[(row as usize)*term.columns()+column]))
         {
             fg = color;
         }
@@ -202,12 +204,17 @@ mod tests {
         terminal.feed(b"ERROR \x1b[32mERROR\x1b[0m \x1b[41mERROR\x1b[0m");
         let before = terminal.screen_text();
         let mut fonts = Fonts::new(14.0,1.2,&[]);
-        let mut frame = Frame {theme:&THEMES[0],size:[800.0,90.0],focused:true,background_alpha:1.0,dim:false,cursor_on:false,syntax_highlighting:true};
-        let semantic = rgba(crate::highlight::Role::Error.color(false).unwrap(),1.0);
-        let quads = build(&terminal.lock(),&mut fonts,&frame);
-        for color in [semantic,rgba(THEMES[0].ansi[2],1.0),rgba(THEMES[0].foreground,1.0)] {
-            assert!(quads.iter().any(|quad|quad.kind==MASK && quad.color==color));
+        let mut frame = Frame {theme:&THEMES[0],size:[800.0,90.0],focused:true,background_alpha:1.0,dim:false,cursor_on:false,syntax_highlighting:true,highlight_style:crate::highlight::Style::Moba};
+        let semantic = rgba(crate::highlight::Palette::new(crate::highlight::Style::Moba,&THEMES[0]).color(crate::highlight::Role::Error).unwrap(),1.0);
+        for style in crate::highlight::Style::ALL {
+            frame.highlight_style=style;
+            let semantic=rgba(crate::highlight::Palette::new(style,&THEMES[0]).color(crate::highlight::Role::Error).unwrap(),1.0);
+            let quads=build(&terminal.lock(),&mut fonts,&frame);
+            for color in [semantic,rgba(THEMES[0].ansi[2],1.0),rgba(THEMES[0].foreground,1.0)] {
+                assert!(quads.iter().any(|quad|quad.kind==MASK && quad.color==color),"{}",style.name());
+            }
         }
+        frame.highlight_style=crate::highlight::Style::Moba;
         frame.syntax_highlighting=false;
         assert!(!build(&terminal.lock(),&mut fonts,&frame).iter().any(|q|q.kind==MASK && q.color==semantic));
         frame.syntax_highlighting=true;
@@ -224,7 +231,7 @@ mod tests {
         let terminal = Terminal::new("t".into(), Size { cols: 10, rows: 2 }, options, sender);
         terminal.feed(b"\x1b[41mab\x1b[0m c");
         let mut fonts = Fonts::new(14.0, 1.2, &[]);
-        let frame = Frame { theme: &THEMES[0], size: [200.0, 60.0], focused: true, background_alpha: 1.0, dim: false, cursor_on: true, syntax_highlighting: true };
+        let frame = Frame { theme: &THEMES[0], size: [200.0, 60.0], focused: true, background_alpha: 1.0, dim: false, cursor_on: true, syntax_highlighting: true, highlight_style: crate::highlight::Style::Moba };
         let quads = build(&terminal.lock(), &mut fonts, &frame);
         let solids: Vec<_> = quads.iter().filter(|quad| quad.kind == SOLID).collect();
         // Pane background, the red run covering both cells, and the block cursor.

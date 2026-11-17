@@ -60,6 +60,15 @@ cargo run --release -- --smoke out.png # 打开窗口，在真实 Shell 里执�
 WARNING/TIMEOUT 用橙色、SUCCESS/OK 用绿色。暗色与亮色主题使用各自的可读配色。
 在“设置 → 内容高亮”或终端右键菜单可立即切换，选项保存为 `syntaxHighlighting`。
 
+可选 10 种高亮设置：跟随界面主题、Moba（经典）、Dracula、Tokyo Night、Catppuccin、
+Nord、Gruvbox、Solarized、One Dark / Light、Rosé Pine。选项独立于界面主题，保存为
+`highlightStyle`，切换立即影响已打开的终端；设置中附相同 JSON/日志片段的实时预览。
+“跟随界面主题”匹配已有同名主题，其他主题回退到经典风格。
+深浅变体随背景选择，必要时自动提高对比度。这里将开源色板映射到本地终端词法规则，
+并非移植编辑器的完整语法插件。来源、改动说明和许可证见
+`omniterm-native/assets/highlight-licenses/NOTICE.md`，安装包会携带这些声明。
+旧设置不含 `highlightStyle` 时保留经典配色；未知的新风格回退到经典，不丢失其他设置。
+
 高亮只作用于默认前景色和默认背景色的普通输出，不改写终端数据、选择和复制的文本，
 保留程序指定的 ANSI 颜色。备用屏幕（例如 Vim/top）和自行设置前景色的程序不套用该规则。
 按软换行重组逻辑行，支持滚动回看和中文宽字符；额外上下文限制为每侧 64 Ki 个单元格。

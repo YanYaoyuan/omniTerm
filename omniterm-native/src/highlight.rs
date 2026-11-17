@@ -6,7 +6,8 @@ use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::Term;
 use alacritty_terminal::term::cell::Flags;
-use alacritty_terminal::vte::ansi::Rgb;
+mod palette;
+pub use palette::{Palette, Style};
 use crate::terminal::Listener;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -15,30 +16,6 @@ pub enum Role {
     Key, String, Number, Literal, Address, Path, Time, Error, Warning, Success, Info,
 }
 
-impl Role {
-    pub fn color(self, light: bool) -> Option<Rgb> {
-        let value = match (light, self) {
-            (_, Self::Plain) => return None,
-            (false, Self::Key | Self::Info) => 0x79b8ff,
-            (false, Self::String | Self::Success) => 0x98d99b,
-            (false, Self::Number) => 0xf0cb7c,
-            (false, Self::Literal) => 0xc5a3ef,
-            (false, Self::Address | Self::Path) => 0x69d5d0,
-            (false, Self::Time) => 0xa9afff,
-            (false, Self::Error) => 0xff7587,
-            (false, Self::Warning) => 0xffb66b,
-            (true, Self::Key | Self::Info) => 0x1e5da9,
-            (true, Self::String | Self::Success) => 0x23743b,
-            (true, Self::Number) => 0x946000,
-            (true, Self::Literal) => 0x8047a9,
-            (true, Self::Address | Self::Path) => 0x007478,
-            (true, Self::Time) => 0x6250a1,
-            (true, Self::Error) => 0xba263e,
-            (true, Self::Warning) => 0x995000,
-        };
-        Some(Rgb { r: (value >> 16) as u8, g: (value >> 8) as u8, b: value as u8 })
-    }
-}
 
 fn time(value: &str) -> bool {
     let b = value.as_bytes();
@@ -76,7 +53,7 @@ fn word_role(word: &str) -> Role {
 
 /// Token offsets are Unicode scalar positions, matching terminal cells rather
 /// than UTF-8 byte offsets. Quoted IDs remain one string, never numeric fragments.
-fn classify(chars: &[char]) -> Vec<Role> {
+pub fn classify(chars: &[char]) -> Vec<Role> {
     let mut roles = vec![Role::Plain; chars.len()];
     let mut i = 0;
     while i < chars.len() {

@@ -121,6 +121,7 @@ pub struct Settings {
     pub option_as_meta: bool,
     pub dim_inactive: bool,
     pub syntax_highlighting: bool,
+    pub highlight_style: crate::highlight::Style,
     pub restore_workspace: bool,
     pub remote_panels: bool,
     pub ssh_config_prompt: bool,
@@ -148,6 +149,7 @@ impl Default for Settings {
             option_as_meta: false,
             dim_inactive: true,
             syntax_highlighting: true,
+            highlight_style: crate::highlight::Style::default(),
             restore_workspace: true,
             remote_panels: true,
             ssh_config_prompt: true,
@@ -246,6 +248,22 @@ mod tests {
         let settings = Settings { local_shell: LocalShell { program: "a shell with spaces".into(), args: vec!["-c".into(), "argument with spaces; $(literal)".into(), String::new()] }, ..Settings::default() };
         let restored: Settings = serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
         assert_eq!(restored.local_shell, settings.local_shell);
+    }
+
+    #[test]
+    fn highlighting_styles_survive_upgrade_and_save_independently_of_the_theme() {
+        use crate::highlight::Style;
+        let legacy: Settings = serde_json::from_str(r#"{"theme":"nord","fontSize":15}"#).unwrap();
+        assert_eq!(legacy.highlight_style,Style::Moba);
+        for style in Style::ALL {
+            let settings = Settings {highlight_style:style,syntax_highlighting:false,theme:"daylight".into(),..Settings::default()};
+            let restored: Settings = serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
+            assert_eq!(restored,settings);
+        }
+        let future: Settings = serde_json::from_str(r#"{"highlightStyle":"future-style","theme":"nord","fontSize":15}"#).unwrap();
+        assert_eq!(future.highlight_style,Style::Moba);
+        assert_eq!(future.theme,"nord");
+        assert_eq!(future.font_size,15.0);
     }
 
     #[test]
