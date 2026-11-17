@@ -17,9 +17,11 @@ path = "src/main.rs"
 [dependencies]
 alacritty_terminal = "0.26"
 arboard = { version = "3", default-features = false }
+base64 = "0.22"
 bytemuck = { version = "1", features = ["derive"] }
 cosmic-text = "0.19"
 eframe = "0.37"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 keyring = { version = "3.6", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 rfd = "0.17"

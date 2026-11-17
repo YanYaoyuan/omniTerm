@@ -340,6 +340,9 @@ fn settings(app: &mut App, ctx: &egui::Context, intents: &mut Vec<Intent>) -> bo
             setting_row(ui, "淡化非活动窗格", "分屏时突出当前焦点窗格", |ui| {
                 toggle(ui, &mut settings.dim_inactive, "淡化非活动窗格");
             });
+            setting_row(ui, "内容高亮", "为 JSON 字段、数字、地址和日志级别着色，保留程序原有颜色", |ui| {
+                toggle(ui, &mut settings.syntax_highlighting, "内容高亮");
+            });
             section(ui, "行为与性能");
             setting_row(ui, "选中即复制", "选择文本后自动写入剪贴板", |ui| {
                 toggle(ui, &mut settings.copy_on_select, "选中即复制");

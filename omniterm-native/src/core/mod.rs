@@ -3,6 +3,8 @@
 //! settings and the workspace. Nothing here draws or blocks on the UI thread.
 
 pub mod paths;
+pub mod accessclient;
+pub mod web_launch;
 pub mod plan;
 pub mod profile;
 pub mod settings;

@@ -3211,10 +3211,12 @@ version = "0.2.0"
 dependencies = [
  "alacritty_terminal",
  "arboard",
+ "base64",
  "bytemuck",
  "cosmic-text",
  "drag",
  "eframe",
+ "flate2",
  "image",
  "keyring",
  "objc2 0.6.5",

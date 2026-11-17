@@ -158,6 +158,7 @@ pub fn disconnected_file_panel(app: &App, ui: &mut Ui, id: &str, intents: &mut V
 
 pub fn file_panel(app: &mut App, ui: &mut Ui, remote: &Arc<Remote>, intents: &mut Vec<Intent>) {
     let palette = style::palette(ui);
+    let web_authorized = app.web_files.as_ref().is_some_and(|window| window.id == remote.id());
     let routed_login = app.panes.get(remote.id()).and_then(|pane| pane.session.profile.as_ref()).is_some_and(|profile| profile.file_connection.is_none() && profile.routed_file_login());
     let panel = ui.available_rect_before_wrap();
     file_connection_actions(app, ui, remote.id(), intents);
@@ -174,7 +175,9 @@ pub fn file_panel(app: &mut App, ui: &mut Ui, remote: &Arc<Remote>, intents: &mu
                         ui.add(egui::Label::new(RichText::new(detail).monospace().size(9.5).color(palette.faint())).wrap());
                     }
                     if remote.is_independent() {
-                        let guidance = if routed_login {
+                        let guidance = if web_authorized {
+                            "本次网页文件授权无法重用。请在堡垒机网页重新打开该资产的文件连接。"
+                        } else if routed_login {
                             "文件连接使用堡垒机账号直接认证，不依赖导出文件。请核对密码、动态验证码及该资产的文件传输权限，然后重新连接。"
                         } else if *reason == crate::remote::manager::Reason::Auth {
                             "导出的文件凭据可能已过期、失效，或服务端需要额外认证。请在堡垒机重新打开该资产的文件连接，更新参数文件后重连。保存的终端密码不一定适用于此文件入口。"
@@ -183,7 +186,7 @@ pub fn file_panel(app: &mut App, ui: &mut Ui, remote: &Arc<Remote>, intents: &mu
                         };
                         ui.add(egui::Label::new(RichText::new(guidance).size(10.5).color(palette.muted())).wrap());
                     }
-                    if style::secondary_button(ui, "重新连接").clicked() {
+                    if !web_authorized && style::secondary_button(ui, "重新连接").clicked() {
                         if remote.is_independent() {
                             intents.push(Intent::ReconnectFileConnection(remote.id().into()));
                         } else {

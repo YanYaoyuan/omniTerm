@@ -29,6 +29,7 @@ pub struct Connection {
     pub title: String,
     secret: Option<String>,
     account: Option<AccountAuth>,
+    web_authorized: bool,
 }
 
 fn paired<'a>(data: &'a Value, upper: &str, lower: &str) -> Result<Option<&'a Value>, String> {
@@ -159,6 +160,7 @@ fn parse(bytes: &[u8]) -> Result<Connection, String> {
         title,
         secret: Some(secret),
         account: None,
+        web_authorized: false,
     })
 }
 
@@ -178,6 +180,48 @@ pub fn load(path: &Path) -> Result<Connection, String> {
 }
 
 impl Connection {
+    pub fn from_web(data: &Value) -> Result<Self, String> {
+        for key in ["control_mode", "proxy_protocol", "guiservice_token", "wsurl", "url_path", "header", "batch_url", "scsession_url_path", "opc_host", "opc_header", "sessionData", "session_data"] {
+            if data.get(key).is_some_and(|value| !value.is_null() && !value.as_str().is_some_and(|s| s.trim().is_empty())) {
+                return Err("这组网页文件参数需要尚未支持的代理或扩展。".into());
+            }
+        }
+        let bytes = serde_json::to_vec(data).map_err(|_| "网页文件参数无效。")?;
+        let mut connection = parse(&bytes)?;
+        connection.web_authorized = true;
+        Ok(connection)
+    }
+
+    pub fn web_ssh(profile: &Profile, secret: String) -> Result<Self, String> {
+        let profile = profile.validate(true)?;
+        if profile.kind != Some(crate::core::profile::Kind::Ssh) || !valid_answer(&secret) {
+            return Err("网页 SSH 认证参数无效。".into());
+        }
+        Ok(Self {
+            host: profile.host.ok_or("缺少网页 SSH 入口。")?,
+            user: profile.username.ok_or("缺少网页 SSH 账号。")?,
+            port: profile.port.unwrap_or(22), initial_directory: ".".into(),
+            title: "网页授权 SSH".into(), secret: Some(secret), account: None, web_authorized: false,
+        })
+    }
+
+    pub fn prepare_terminal_auth(&mut self, websid: &str) -> Result<(Auth, PathBuf), String> {
+        if websid.is_empty() || websid.len() > 4096 || !websid.chars().all(|c| c.is_ascii_alphanumeric() || "._-:@+/=%".contains(c)) {
+            return Err("网页会话引用格式不受支持。".into());
+        }
+        let auth = self.prepare_auth()?;
+        let path = auth.root.join("ssh-config");
+        // SSH reads the session reference from a private config, never argv/env.
+        write_private(&path, format!("Host *\n  SetEnv \"SHTERM_WEBSID={websid}\"\n").as_bytes())
+            .map_err(|_| "无法准备网页 SSH 会话。".to_string())?;
+        let bytes = std::fs::read(auth.root.join(METADATA)).map_err(|_| "无法准备网页认证提示。")?;
+        let mut metadata: Metadata = serde_json::from_slice(&bytes).map_err(|_| "无法准备网页认证提示。")?;
+        metadata.context = Some("网页授权 SSH".into());
+        let bytes = serde_json::to_vec(&metadata).map_err(|_| "无法准备网页认证提示。")?;
+        std::fs::write(auth.root.join(METADATA), bytes).map_err(|_| "无法准备网页认证提示。")?;
+        Ok((auth, path))
+    }
+
     /// Account authentication does not rely on an exported ticket or source file.
     /// A reconnect authenticates again, with manual MFA when required.
     pub fn from_profile(profile: &Profile) -> Result<Self, String> {
@@ -193,6 +237,7 @@ impl Connection {
             title: profile.display_name(),
             secret: None,
             account: Some(AccountAuth { scope: ssh_auth::scope(&profile), remember: profile.remember_password }),
+            web_authorized: false,
         })
     }
 
@@ -212,7 +257,7 @@ impl Connection {
             "ControlMaster=no".into(),
             "ControlPath=none".into(),
             "ControlPersist=no".into(),
-            if self.account.is_some() { "StrictHostKeyChecking=ask".into() } else { "StrictHostKeyChecking=yes".into() },
+            if self.account.is_some() || self.web_authorized { "StrictHostKeyChecking=ask".into() } else { "StrictHostKeyChecking=yes".into() },
             "NumberOfPasswordPrompts=1".into(),
             "PreferredAuthentications=password,keyboard-interactive".into(),
             "BatchMode=no".into(),
@@ -273,6 +318,7 @@ impl Connection {
             user: self.user.clone(),
             port: self.port,
             account: self.account.clone(),
+            context: self.web_authorized.then(|| "网页授权 SFTP".into()),
         };
         let encoded =
             serde_json::to_vec(&metadata).map_err(|_| "无法准备 SFTP 认证。".to_string())?;
@@ -320,6 +366,8 @@ struct Metadata {
     port: u16,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     account: Option<AccountAuth>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    context: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -336,6 +384,7 @@ pub fn prompt_context() -> Option<String> {
     let root = PathBuf::from(std::env::var_os(STATE)?);
     let bytes = std::fs::read(root.join(METADATA)).ok().filter(|bytes| bytes.len() <= 8192)?;
     let metadata: Metadata = serde_json::from_slice(&bytes).ok()?;
+    if let Some(context) = metadata.context { return Some(context); }
     metadata.account.as_ref()?;
     Some(format!("资产文件连接（SFTP） · {}@{}:{}", metadata.user, metadata.host, metadata.port))
 }
@@ -478,13 +527,17 @@ fn answer(
     let guidance = if !confirm && account_password(prompt, &metadata)
         && root.join("password-attempted").exists()
     {
-        "已尝试导出文件中的凭据，但文件服务仍要求认证。凭据可能已失效；若不确定此处需要哪项认证，请取消，在堡垒机重新打开该资产的文件连接，更新导出的参数后重连。\n\n"
+        if metadata.context.is_some() {
+            "本次网页认证材料已提交，但服务器仍要求认证。若不是额外验证码，请取消并从堡垒机网页重新打开资产，不要在此反复输入固定密码。\n\n"
+        } else {
+            "已尝试导出文件中的凭据，但文件服务仍要求认证。凭据可能已失效；若不确定此处需要哪项认证，请取消，在堡垒机重新打开该资产的文件连接，更新导出的参数后重连。\n\n"
+        }
     } else {
         ""
     };
     let display = format!(
-        "SFTP · {}@{}:{}\n\n{guidance}{prompt}",
-        metadata.user, metadata.host, metadata.port
+        "{} · {}@{}:{}\n\n{guidance}{prompt}",
+        metadata.context.as_deref().unwrap_or("SFTP"), metadata.user, metadata.host, metadata.port
     );
     let value = ask(&metadata.scope, &display, false, confirm)?;
     (root.is_dir() && valid_answer(&value)).then_some(value)
@@ -530,6 +583,27 @@ mod tests {
 
     fn connection() -> Connection {
         parse(&serde_json::to_vec(&exported()).unwrap()).unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    #[test]
+    fn web_sftp_uses_lowercase_pwd_once_without_an_export_file() {
+        let data = exported()["parameters"].clone();
+        let mut connection = Connection::from_web(&data).unwrap();
+        assert!(connection.web_authorized);
+        assert!(connection.ssh_args().contains(&"StrictHostKeyChecking=ask".into()));
+        let auth = connection.prepare_auth().unwrap();
+        let root = auth.root.clone();
+        let metadata: Metadata = serde_json::from_slice(&std::fs::read(root.join(METADATA)).unwrap()).unwrap();
+        assert_eq!(metadata.context.as_deref(), Some("网页授权 SFTP"));
+        assert_eq!(automatic_answer(&root, &metadata, "Password:"), Some("fixture%2F+unchanged".into()));
+        assert!(!root.join(CREDENTIAL).exists());
+        assert_eq!(automatic_answer(&root, &metadata, "Password:"), None);
+        drop(auth);
+        assert!(!root.exists());
+        let mut missing = data.clone(); missing.as_object_mut().unwrap().remove("pwd");
+        assert!(Connection::from_web(&missing).is_err(), "uppercase PWD cannot replace lowercase pwd");
+        let mut extended = data; extended["control_mode"] = serde_json::json!("unsupported");
+        assert!(Connection::from_web(&extended).is_err());
     }
 
     #[test]

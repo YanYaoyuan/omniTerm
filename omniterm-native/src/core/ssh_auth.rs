@@ -52,10 +52,22 @@ pub fn cleanup() {
     }
 }
 
-/// Deliberately narrow: `2nd Password:`, OTPs and passphrases do not match.
+/// OpenSSH formats password and keyboard-interactive prompts differently. Keep
+/// the account identity case-sensitive while accepting those two wrappers.
+/// `2nd Password:`, OTPs and passphrases deliberately do not match.
+fn password_identity(prompt: &str) -> Option<&str> {
+    let prompt = prompt.trim();
+    let split = prompt.len().checked_sub("password:".len())?;
+    if !prompt.get(split..)?.eq_ignore_ascii_case("password:") { return None; }
+    let prefix = prompt.get(..split)?.trim_end();
+    if prefix.is_empty() { return Some(""); }
+    prefix.strip_prefix('(').and_then(|prefix| prefix.strip_suffix(')'))
+        .or_else(|| prefix.strip_suffix("'s"))
+        .filter(|account| !account.is_empty())
+}
+
 fn account_password(prompt: &str) -> bool {
-    let prompt = prompt.trim().to_ascii_lowercase();
-    prompt == "password:" || prompt.ends_with(") password:") || prompt.ends_with("'s password:")
+    password_identity(prompt).is_some()
 }
 
 fn first_password(prompt: &str, state: &Path) -> bool {
@@ -82,7 +94,8 @@ fn entry(scope: &str) -> Result<keyring::Entry, keyring::Error> {
 
 fn decode_saved(encoded: &str, prompt: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(encoded).ok()?;
-    (value["prompt"].as_str()? == prompt.trim())
+    let saved_prompt = value["prompt"].as_str()?;
+    (saved_prompt == prompt.trim() || password_identity(saved_prompt).zip(password_identity(prompt)).is_some_and(|(saved, current)| saved == current))
         .then(|| value["password"].as_str().map(String::from))
         .flatten()
 }
@@ -175,7 +188,7 @@ mod tests {
     }
 
     #[test]
-    fn credential_identity_includes_connection_and_exact_authentication_prompt() {
+    fn credential_identity_includes_connection_and_authentication_account() {
         let saved = json!({ "prompt": "(alice@a) Password:", "password": "fixture" }).to_string();
         assert_eq!(decode_saved(&saved, "(alice@a) Password: "), Some("fixture".into()));
         assert_eq!(decode_saved(&saved, "(bob@a) Password:"), None);
@@ -193,6 +206,17 @@ mod tests {
         }
         for value in ["", "bad\nvalue", "bad\0value", "bad\rvalue"] {
             assert!(!valid_secret(value));
+        }
+    }
+
+    #[test]
+    fn saved_password_matches_both_openssh_account_prompt_formats() {
+        let saved = json!({ "prompt": "(alice/192.0.2.10/root@gateway) Password:", "password": "fixture" }).to_string();
+        assert_eq!(decode_saved(&saved, "alice/192.0.2.10/root@gateway's password: "), Some("fixture".into()));
+        let reverse = json!({ "prompt": "alice/192.0.2.10/root@gateway's password:", "password": "fixture" }).to_string();
+        assert_eq!(decode_saved(&reverse, "(alice/192.0.2.10/root@gateway) Password:"), Some("fixture".into()));
+        for prompt in ["Password:", "(bob@gateway) Password:", "(alice/192.0.2.10/root@other) Password:", "2nd Password:", "OTP:", "Enter passphrase for key 'id':"] {
+            assert_eq!(decode_saved(&saved, prompt), None, "{prompt}");
         }
     }
 }

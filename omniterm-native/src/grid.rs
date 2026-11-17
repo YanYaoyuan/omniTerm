@@ -33,6 +33,7 @@ pub struct Frame<'a> {
     pub dim: bool,
     /// The blinking cursor's current phase.
     pub cursor_on: bool,
+    pub syntax_highlighting: bool,
 }
 
 /// Builds every quad for one pane: background runs, glyphs, decorations, then the cursor.
@@ -42,6 +43,9 @@ pub fn build(term: &Term<Listener>, fonts: &mut Fonts, frame: &Frame) -> Vec<Ins
     let content = term.renderable_content();
     let colors = content.colors;
     let overrides = |index: usize| colors[index];
+    let highlights = (frame.syntax_highlighting && !content.mode.contains(TermMode::ALT_SCREEN)
+        && overrides(NamedColor::Foreground as usize).is_none())
+        .then(|| crate::highlight::screen(term));
     let offset = content.display_offset as i32;
     let rows = term.screen_lines() as i32;
     let mut out = Vec::with_capacity(term.columns() * term.screen_lines() / 2 + 16);
@@ -81,6 +85,11 @@ pub fn build(term: &Term<Listener>, fonts: &mut Fonts, frame: &Frame) -> Vec<Ins
         let mut fg = theme.resolve(cell_ref.fg, &overrides);
         let mut bg = theme.resolve(cell_ref.bg, &overrides);
         let default_bg = matches!(cell_ref.bg, Color::Named(NamedColor::Background));
+        if default_bg && matches!(cell_ref.fg, Color::Named(NamedColor::Foreground)) && !flags.intersects(Flags::INVERSE | Flags::HIDDEN)
+            && let Some(color) = highlights.as_ref().and_then(|roles| roles[(row as usize)*term.columns()+column].color(theme.light))
+        {
+            fg = color;
+        }
         let mut has_bg = !default_bg;
         if flags.contains(Flags::INVERSE) {
             std::mem::swap(&mut fg, &mut bg);
@@ -187,13 +196,35 @@ mod tests {
     use std::sync::mpsc::channel;
 
     #[test]
+    fn highlighting_preserves_ansi_colors_and_alternate_screen_applications() {
+        let (sender, _receiver) = channel();
+        let terminal = Terminal::new("colors".into(), Size {cols:60,rows:3}, crate::terminal::Options {scrollback:100,cursor:CursorShape::Block,blinking:false}, sender);
+        terminal.feed(b"ERROR \x1b[32mERROR\x1b[0m \x1b[41mERROR\x1b[0m");
+        let before = terminal.screen_text();
+        let mut fonts = Fonts::new(14.0,1.2,&[]);
+        let mut frame = Frame {theme:&THEMES[0],size:[800.0,90.0],focused:true,background_alpha:1.0,dim:false,cursor_on:false,syntax_highlighting:true};
+        let semantic = rgba(crate::highlight::Role::Error.color(false).unwrap(),1.0);
+        let quads = build(&terminal.lock(),&mut fonts,&frame);
+        for color in [semantic,rgba(THEMES[0].ansi[2],1.0),rgba(THEMES[0].foreground,1.0)] {
+            assert!(quads.iter().any(|quad|quad.kind==MASK && quad.color==color));
+        }
+        frame.syntax_highlighting=false;
+        assert!(!build(&terminal.lock(),&mut fonts,&frame).iter().any(|q|q.kind==MASK && q.color==semantic));
+        frame.syntax_highlighting=true;
+        terminal.feed(b"\x1b[?1049hERROR");
+        assert!(!build(&terminal.lock(),&mut fonts,&frame).iter().any(|q|q.kind==MASK && q.color==semantic));
+        terminal.feed(b"\x1b[?1049l");
+        assert_eq!(terminal.screen_text(),before);
+    }
+
+    #[test]
     fn text_backgrounds_and_the_cursor_become_quads() {
         let (sender, _receiver) = channel();
         let options = crate::terminal::Options { scrollback: 100, cursor: CursorShape::Block, blinking: false };
         let terminal = Terminal::new("t".into(), Size { cols: 10, rows: 2 }, options, sender);
         terminal.feed(b"\x1b[41mab\x1b[0m c");
         let mut fonts = Fonts::new(14.0, 1.2, &[]);
-        let frame = Frame { theme: &THEMES[0], size: [200.0, 60.0], focused: true, background_alpha: 1.0, dim: false, cursor_on: true };
+        let frame = Frame { theme: &THEMES[0], size: [200.0, 60.0], focused: true, background_alpha: 1.0, dim: false, cursor_on: true, syntax_highlighting: true };
         let quads = build(&terminal.lock(), &mut fonts, &frame);
         let solids: Vec<_> = quads.iter().filter(|quad| quad.kind == SOLID).collect();
         // Pane background, the red run covering both cells, and the block cursor.

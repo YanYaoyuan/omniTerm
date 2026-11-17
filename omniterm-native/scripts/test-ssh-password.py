@@ -50,6 +50,7 @@ assert APP.is_file() and XVFB.is_file(), (
 PASS = "fixturepassword938"
 OTPS = ["371682", "825139"]
 DIRECT_SFTP = os.environ.get("OMNITERM_SFTP_AUTH_TEST") == "1"
+PROMPT_VARIANTS = os.environ.get("OMNITERM_SSH_TEST_PROMPT_VARIANTS") == "1"
 LOGIN_USER = "fixture/192.0.2.10/root" if DIRECT_SFTP or os.environ.get("OMNITERM_SSH_TEST_ROUTED") == "1" else "fixture"
 
 
@@ -89,10 +90,20 @@ class Server(paramiko.ServerInterface):
         self.done = threading.Event()
 
     def get_allowed_auths(self, username):
+        if PROMPT_VARIANTS and self.attempt == 1 and self.stage == 0:
+            return "password"
         return "keyboard-interactive"
+
+    def check_auth_password(self, username, password):
+        if PROMPT_VARIANTS and self.attempt == 1 and username == LOGIN_USER and password == PASS:
+            self.stage = 1
+            return paramiko.AUTH_PARTIALLY_SUCCESSFUL
+        return paramiko.AUTH_FAILED
 
     def check_auth_interactive(self, username, submethods):
         assert username == LOGIN_USER
+        if self.stage == 1:
+            return paramiko.InteractiveQuery("", "", ("2nd Password:", False))
         return paramiko.InteractiveQuery(
             "Password authentication", "", ("Password:", False)
         )
@@ -377,7 +388,7 @@ with tempfile.TemporaryDirectory(prefix="omniterm-password-test-") as tmp:
                     "-o",
                     "IdentityAgent=none",
                     "-o",
-                    "PreferredAuthentications=keyboard-interactive",
+                    "PreferredAuthentications=password,keyboard-interactive" if PROMPT_VARIANTS else "PreferredAuthentications=keyboard-interactive",
                     "-o",
                     "NumberOfPasswordPrompts=1",
                     "-o",
