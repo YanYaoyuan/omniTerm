@@ -92,16 +92,6 @@ impl Backend {
         let wake = Arc::new(wake);
         let (outbox, frames) = Outbox::channel();
         let host = Host::new(outbox);
-        let automation = if std::env::var("OMNITERM_DISABLE_AUTOMATION").as_deref() == Ok("1") {
-            None
-        } else {
-            let directory = std::env::var_os("OMNITERM_AUTOMATION_DIR").map(std::path::PathBuf::from)
-                .unwrap_or_else(|| crate::core::paths::file("automation"));
-            match omniterm_terminal_host::automation::Automation::start(host.clone(), &directory) {
-                Ok(bridge) => Some(bridge),
-                Err(error) => { eprintln!("omniTerm external CLI unavailable: {error}"); None }
-            }
-        };
         let terminals: Arc<Mutex<HashMap<String, Arc<Terminal>>>> = Arc::default();
         let (notify, notices) = channel();
         let (requests, request_queue) = channel::<Request>();
@@ -201,7 +191,20 @@ impl Backend {
                 .expect("open thread");
         }
 
-        Self { host, automation, terminals, writes, opens, requests, control_path, notices }
+        Self { host, automation: None, terminals, writes, opens, requests, control_path, notices }
+    }
+
+    pub fn start_automation(&mut self, extension: omniterm_terminal_host::automation::Extension) {
+        self.automation = if std::env::var("OMNITERM_DISABLE_AUTOMATION").as_deref() == Ok("1") {
+            None
+        } else {
+            let directory = std::env::var_os("OMNITERM_AUTOMATION_DIR").map(std::path::PathBuf::from)
+                .unwrap_or_else(|| crate::core::paths::file("automation"));
+            match omniterm_terminal_host::automation::Automation::start_with_extension(self.host.clone(), &directory, Some(extension)) {
+                Ok(bridge) => Some(bridge),
+                Err(error) => { eprintln!("omniTerm external CLI unavailable: {error}"); None }
+            }
+        };
     }
 
     /// Opens a session right away. Only for local shells at launch, whose plans never wait.

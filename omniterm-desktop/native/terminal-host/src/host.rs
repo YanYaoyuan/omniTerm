@@ -686,6 +686,13 @@ impl Host {
                 self.publish(changed);
                 Ok(json!(true))
             }
+            "task.invalidate" => {
+                let task_id = params.get("taskId").and_then(Value::as_str).ok_or("taskId is required")?;
+                let reason = params.get("reason").and_then(Value::as_str).unwrap_or("The Agent engine stopped.");
+                let changed = self.broker().invalidate_task(task_id, reason);
+                self.publish(changed);
+                Ok(json!(true))
+            }
             "task.invalidateAll" => {
                 let reason = params.get("reason").and_then(Value::as_str).unwrap_or("The Agent engine restarted.").to_string();
                 let changed = self.broker().invalidate_all(&reason);

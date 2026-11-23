@@ -343,10 +343,8 @@ impl Service {
 
     /// Engine loss ends the task: approvals and queued work must not survive into a new process.
     fn engine_lost(&self, message: &str) {
-        if lock(&self.conversation).take().is_none() {
-            return;
-        }
-        let _ = self.host.handle("task.invalidateAll", json!({ "reason": "The Agent engine stopped; approvals and queued operations were voided." }));
+        let Some(conversation) = lock(&self.conversation).take() else { return; };
+        let _ = self.host.handle("task.invalidate", json!({ "taskId": conversation.task, "reason": "The Agent engine stopped; approvals and queued operations were voided." }));
         self.fail(message);
         self.emit(AgentEvent::Reset);
     }

@@ -10,6 +10,7 @@
 
 mod agent;
 mod backend;
+mod automation;
 mod bench;
 mod core;
 mod drag_out;

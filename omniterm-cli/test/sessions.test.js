@@ -1,6 +1,6 @@
 // Copyright 2026 omniTerm contributors. SPDX-License-Identifier: Apache-2.0
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -35,15 +35,17 @@ async function fixture(t, handler = () => ({}), instance = "fixture-one") {
     await new Promise((resolve) => server.close(resolve));
     await rm(directory, { recursive: true, force: true });
   });
-  const run = async (args) => {
+  const run = async (args, group = "session") => {
     let stdout = "", stderr = "";
-    const code = await main(["session", ...args], { env: { OMNITERM_AUTOMATION_DIR: directory }, output: (s) => { stdout += s; }, errorOutput: (s) => { stderr += s; } });
+    const code = await main([group, ...args], { env: { OMNITERM_AUTOMATION_DIR: directory }, output: (s) => { stdout += s; }, errorOutput: (s) => { stderr += s; } });
     return { code, stdout, stderr, value: JSON.parse(stdout || stderr) };
   };
   return { descriptor, directory, calls, run };
 }
 
 test("native discovery follows platform data directory conventions", () => {
+  assert.equal(discoveryDirectory({ OMNITERM_DATA_DIR: "/preview" }, "linux"), "/preview/automation");
+  assert.equal(discoveryDirectory({ OMNITERM_DATA_DIR: "/preview", OMNITERM_AUTOMATION_DIR: "/bridge" }, "linux"), "/bridge");
   assert.equal(discoveryDirectory({ HOME: "/u" }, "linux"), "/u/.config/omniTerm/automation");
   assert.equal(discoveryDirectory({ HOME: "/u", XDG_CONFIG_HOME: "/config" }, "linux"), "/config/omniTerm/automation");
   assert.equal(discoveryDirectory({ HOME: "/u", XDG_CONFIG_HOME: "relative" }, "linux"), "/u/.config/omniTerm/automation");
@@ -144,4 +146,59 @@ test("file payload preserves multiline text without local shell evaluation", asy
   assert.equal(f.calls.find((call) => call.method === "exec").params.command, payload);
   const invalid = await f.run(["exec", "abcdefgh", "--epoch", "1", "--command-file", filename, "--command", "ls"]);
   assert.equal(invalid.code, 1);
+});
+
+test("terminal bindings pin instance and epoch, reject conflicting selectors and never store a token", async (t) => {
+  const f = await fixture(t, (method) => method === "info" ? { ref: { sessionId: "abcdefgh-1234", epoch: 7 }, label: "asset" } : { operation: { status: "completed", exitCode: 0 } });
+  const filename = path.join(f.directory, "asset.json");
+  const bind = await f.run(["bind", "abcdefgh", "--epoch", "7", "--out", filename]);
+  assert.equal(bind.code, 0);
+  const text = await readFile(filename, "utf8");
+  assert.ok(!text.includes(f.descriptor.token));
+  const exec = await f.run(["exec", "--target", filename, "--command", "pwd"]);
+  assert.equal(exec.code, 0);
+  assert.equal(f.calls.find((c) => c.method === "exec").params.epoch, 7);
+  assert.equal((await f.run(["info", "--target", filename, "--instance", "other"])).code, 1);
+  assert.equal((await f.run(["info", "--target", filename, "--epoch", "1"])).code, 1);
+  assert.equal((await f.run(["bind", "abcdefgh", "--epoch", "7", "--out", filename])).code, 1);
+});
+
+test("terminal wait reports readiness or a distinct pending exit, and search keeps its query literal", async (t) => {
+  let ready = false;
+  const f = await fixture(t, (method, params) => method === "info" ? { interaction: { state: ready ? "ready" : "busy" } } : method === "read" ? { seqEnd: 50, lines: [] } : { matches: [{ text: params.query }] });
+  assert.equal((await f.run(["wait", "abcdefgh", "--epoch", "1", "--wait-ms", "0"])).code, 2);
+  ready = true;
+  assert.equal((await f.run(["wait", "abcdefgh", "--epoch", "1", "--wait-ms", "0"])).code, 0);
+  assert.equal((await f.run(["wait", "abcdefgh", "--epoch", "1", "--until", "output", "--since", "40", "--wait-ms", "0"])).code, 0);
+  const search = await f.run(["search", "abcdefgh", "--epoch", "1", "--query=--help"]);
+  assert.equal(search.value.matches[0].text, "--help");
+});
+
+test("SFTP bindings, exact paths and request polling use file methods on the selected instance", async (t) => {
+  const f = await fixture(t, (method, params) => method === "files.info" ? { ref: { fileSessionId: "web-sftp-1234", generation: "connection:2" }, label: "files" } : method === "files.upload" ? { requestId: params.requestId, operation: { status: "running" } } : { requestId: params.requestId, operation: { status: "completed", bytes: 42, total: 42 } });
+  const filename = path.join(f.directory, "files.json");
+  assert.equal((await f.run(["bind", "web-sftp-1234", "--generation", "connection:2", "--out", filename], "files")).code, 0);
+  const result = await f.run(["upload", "--target", filename, "--local", "source.txt", "--remote", "/exact/name.txt", "--request-id", "up1", "--wait-ms", "1000"], "files");
+  assert.equal(result.code, 0);
+  const upload = f.calls.find((c) => c.method === "files.upload");
+  assert.equal(upload.params.remote, "/exact/name.txt");
+  assert.equal(upload.params.local, path.resolve("source.txt"));
+  assert.equal(upload.params.overwrite, false);
+  assert.equal(upload.params.recursive, false);
+  assert.ok(f.calls.some((c) => c.method === "files.result"));
+  assert.ok(!(await readFile(filename, "utf8")).includes(f.descriptor.token));
+  assert.equal((await f.run(["info", "--target", filename])).code, 1); // target kind is enforced
+});
+
+test("SFTP refuses malformed operations before dispatch and distinguishes unknown outcomes", async (t) => {
+  const f = await fixture(t, () => ({ operation: { status: "outcomeUnknown", completionKnown: false } }));
+  for (const args of [
+    ["remove", "files", "--path", "/a"],
+    ["upload", "files", "--generation", "g", "--local", "x", "--remote", "relative"],
+    ["rename", "files", "--generation", "g", "--path", "/from"],
+    ["ls", "files", "--generation", "g", "--path", "/", "--limit", "0"],
+    ["remove", "files", "--generation", "g", "--path", "/a", "--recursive"],
+  ]) assert.equal((await f.run(args, "files")).code, 1);
+  assert.ok(!f.calls.some((c) => c.method !== "ping"));
+  assert.equal((await f.run(["result", "old", "--wait-ms", "0"], "files")).code, 2);
 });

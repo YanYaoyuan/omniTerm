@@ -18,7 +18,10 @@ struct Call {
     operation: String,
     task: String,
 }
+pub type Extension = Arc<dyn Fn(&str, Value) -> Result<Value, String> + Send + Sync>;
+
 struct Service {
+    extension: Option<Extension>,
     host: Arc<Host>,
     calls: Mutex<HashMap<String, Call>>,
 }
@@ -67,9 +70,12 @@ impl Service {
 
     fn handle(&self, method: &str, params: Value) -> Result<Value, String> {
         match method {
-            "ping" => Ok(json!({"protocol": 1, "pid": std::process::id()})),
+            "ping" => Ok(
+                json!({"protocol": 1, "pid": std::process::id(), "capabilities": if self.extension.is_some() { vec!["terminal", "files"] } else { vec!["terminal"] }}),
+            ),
+            "info" => self.terminal(&params),
             "list" => self.host.handle("workspace.list", json!({})),
-            "read" | "setup" | "write" => {
+            "read" | "search" | "setup" | "write" => {
                 let terminal = self.terminal(&params)?;
                 let id = terminal["ref"]["sessionId"]
                     .as_str()
@@ -100,6 +106,12 @@ impl Service {
                     if !matches!(terminal["kind"].as_str(), Some("ssh" | "shell")) {
                         return Err("Only shell and SSH sessions support setup.".into());
                     }
+                    if terminal["interaction"]["state"] == "ready" && terminal["autoSubmit"] == true
+                    {
+                        return Ok(
+                            json!({"status":"ready","ref":terminal["ref"],"note":"Readiness integration is already active; no input was sent."}),
+                        );
+                    }
                     let script = self.host.handle("session.integration", json!({"id": id}))?;
                     self.host.handle("session.write", json!({"id": id, "data": format!("{}\r", script.as_str().ok_or("No integration script")?)}))?;
                     if terminal["kind"] == "ssh" {
@@ -117,7 +129,11 @@ impl Service {
                     "task.begin",
                     json!({"taskId": task, "context": [terminal["ref"]]}),
                 )?;
-                let result = self.host.handle("context.read", json!({"taskId": task, "terminal": id, "sinceSeq": params["sinceSeq"], "maxLines": params["maxLines"]}));
+                let result = if method == "search" {
+                    self.host.handle("context.search", json!({"taskId": task, "terminal": id, "query": params["query"], "maxMatches": params["maxMatches"]}))
+                } else {
+                    self.host.handle("context.read", json!({"taskId": task, "terminal": id, "sinceSeq": params["sinceSeq"], "maxLines": params["maxLines"]}))
+                };
                 let _ = self.host.handle("task.end", json!({"taskId": task}));
                 result
             }
@@ -186,6 +202,9 @@ impl Service {
                 }
                 self.result(&call.operation, &call.task)
             }
+            _ if method.starts_with("files.") => self.extension.as_ref().ok_or(
+                "This omniTerm build does not support the files CLI; update and restart the app",
+            )?(method, params),
             _ => Err(format!("Unknown external method: {method}")),
         }
     }
@@ -197,6 +216,14 @@ pub struct Automation {
 }
 impl Automation {
     pub fn start(host: Arc<Host>, directory: &Path) -> std::io::Result<Self> {
+        Self::start_with_extension(host, directory, None)
+    }
+
+    pub fn start_with_extension(
+        host: Arc<Host>,
+        directory: &Path,
+        extension: Option<Extension>,
+    ) -> std::io::Result<Self> {
         std::fs::create_dir_all(directory)?;
         #[cfg(unix)]
         {
@@ -228,6 +255,7 @@ impl Automation {
         let stopped = Arc::new(AtomicBool::new(false));
         let stop = stopped.clone();
         let service = Arc::new(Service {
+            extension,
             host,
             calls: Mutex::default(),
         });
@@ -295,6 +323,9 @@ fn serve(
         if request["token"].as_str() != Some(token) {
             return Err("Authentication failed".into());
         }
+        if !request["params"].is_object() {
+            return Err("params must be a JSON object".into());
+        }
         service.handle(
             request["method"].as_str().ok_or("method is required")?,
             request["params"].clone(),
@@ -323,12 +354,16 @@ mod tests {
     }
     impl Fixture {
         fn new() -> Self {
+            Self::with_extension(None)
+        }
+        fn with_extension(extension: Option<Extension>) -> Self {
             let (outbox, frames) = Outbox::channel();
             std::thread::spawn(move || for _ in frames {});
             let host = Host::new(outbox);
             let directory =
                 std::env::temp_dir().join(format!("omniterm-bridge-test-{}", uuid::Uuid::new_v4()));
-            let bridge = Automation::start(host.clone(), &directory).expect("bridge");
+            let bridge = Automation::start_with_extension(host.clone(), &directory, extension)
+                .expect("bridge");
             let descriptor =
                 serde_json::from_slice(&std::fs::read(&bridge.descriptor).expect("descriptor"))
                     .expect("json");
@@ -461,6 +496,43 @@ mod tests {
         assert!(!fixture.bridge.descriptor.exists());
     }
 
+    #[test]
+    fn native_file_extension_is_authenticated_and_not_an_arbitrary_host_proxy() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let fixture = Fixture::with_extension(Some(Arc::new(move |method, _| {
+            count.fetch_add(1, Ordering::Relaxed);
+            Ok(json!({"received":method}))
+        })));
+        assert_eq!(
+            fixture.request("wrong", "files.list", json!({}))["ok"],
+            false
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            fixture.call("files.list", json!({}))["received"],
+            "files.list"
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            fixture.request(
+                fixture.descriptor["token"].as_str().unwrap(),
+                "task.grant",
+                json!({})
+            )["ok"],
+            false
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            fixture.request(
+                fixture.descriptor["token"].as_str().unwrap(),
+                "files.list",
+                json!("invalid")
+            )["ok"],
+            false
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn tracked_ssh_handshake_output_exit_code_and_idempotency() {
@@ -471,6 +543,23 @@ mod tests {
         let params = json!({"terminal": terminal["terminal"], "epoch": terminal["epoch"], "requestId": "once", "command": "printf 'BRIDGE_RESULT_42\\n'; false", "timeoutMs": 5000});
         let first = fixture.call("exec", params.clone());
         let result = fixture.completed("once");
+        let info = fixture.call("info", terminal.clone());
+        assert_eq!(info["ref"]["sessionId"], terminal["terminal"]);
+        let mut search = terminal.clone();
+        search["query"] = json!("BRIDGE_RESULT_42");
+        assert!(
+            !fixture.call("search", search)["matches"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        let mut setup = terminal.clone();
+        setup["shell"] = json!(if cfg!(target_os = "macos") {
+            "zsh"
+        } else {
+            "bash"
+        });
+        assert_eq!(fixture.call("setup", setup)["status"], "ready");
         assert_eq!(result["operation"]["exitCode"], 1);
         assert!(
             result["output"]["lines"]

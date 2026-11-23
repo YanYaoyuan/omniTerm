@@ -2,7 +2,7 @@
 # Copyright 2026 omniTerm contributors. SPDX-License-Identifier: Apache-2.0
 """Run SFTP regression tests against a private, rate-limited loopback sshd.
 
-Usage: python3 scripts/test-sftp.py -- cargo test --locked sftp_end_to_end -- --ignored --nocapture
+Usage: python3 scripts/test-sftp.py -- cargo test --locked remote::manager::integration_tests::sftp_end_to_end -- --ignored --nocapture
 Also serves as the fixture's SFTP subsystem. No personal SSH config or keys are used.
 """
 

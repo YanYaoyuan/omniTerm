@@ -156,6 +156,7 @@ struct State {
     linked: bool,
     listing: Listing,
     transfers: Vec<Transfer>,
+    tracked_transfers: HashMap<u64, Transfer>,
     queue: VecDeque<Job>,
     running: usize,
     uploads_done: u64,
@@ -168,6 +169,7 @@ struct State {
 
 pub struct Remote {
     id: String,
+    identity: String,
     target: Target,
     state: Mutex<State>,
     closed: AtomicBool,
@@ -349,7 +351,8 @@ impl Remote {
         }
     }
 
-    fn client(&self) -> Result<Arc<Client>, String> {
+    pub(crate) fn client(&self) -> Result<Arc<Client>, String> {
+        if self.closed.load(Ordering::Acquire) { return Err("SFTP connection closed.".into()); }
         let state = lock(&self.state);
         match (&state.phase, &state.client) {
             (Phase::Ready, Some(client)) => Ok(client.clone()),
@@ -549,6 +552,11 @@ impl Remote {
                     loop {
                         let alive = lock(&child).try_wait().is_ok_and(|status| status.is_none());
                         if !alive { break; }
+                        if client.closed() {
+                            stop_channel(&child, authentication.as_deref(), independent);
+                            let _ = lock(&child).wait();
+                            break;
+                        }
                         std::thread::sleep(POLL);
                     }
                     if let Some(authentication) = &authentication { authentication.cancel(); }
@@ -675,46 +683,67 @@ impl Remote {
         }
     }
 
-    /// Lists a directory in the background; the newest request wins.
-    pub fn list(self: &Arc<Self>, path: String) {
-        let ticket = {
+    fn begin_listing(&self) -> (u64, String) {
+        let (ticket, generation) = {
             let mut state = lock(&self.state);
             state.listing.ticket += 1;
             state.listing.loading = true;
-            state.listing.ticket
+            (state.listing.ticket, format!("{}:{}", self.identity, state.attempt))
         };
         (self.wake)();
+        (ticket, generation)
+    }
+
+    /// Lists a directory in the background; the newest request wins.
+    pub fn list(self: &Arc<Self>, path: String) {
+        // Reserve before returning so callers and the UI immediately observe loading=true.
+        let (ticket, generation) = self.begin_listing();
         let remote = self.clone();
-        std::thread::spawn(move || {
-            let result = remote.client().and_then(|client| {
-                let directory = client.realpath(&path).map_err(|error| error.to_string())?;
-                let entries = client.readdir(&directory).map_err(|error| error.to_string())?;
-                let entries = entries
-                    .into_iter()
-                    .map(|entry| {
-                        // Symlinks report their own metadata; resolve them so linked folders open.
-                        let target = if entry.attributes.symlink() { client.stat(&join(&directory, &entry.name)).ok() } else { None };
-                        let shown = target.unwrap_or(entry.attributes);
-                        FileEntry { directory: shown.directory(), symlink: entry.attributes.symlink(), size: shown.size.unwrap_or(0), mtime: shown.mtime.unwrap_or(0), mode: entry.attributes.mode.unwrap_or(0), name: entry.name }
-                    })
-                    .collect();
-                Ok((directory, entries))
-            });
-            remote.publish(|state| {
-                if state.listing.ticket != ticket {
-                    return;
+        std::thread::spawn(move || match remote.client() {
+            Ok(client) => { let _ = remote.browse_at(&client, &path, ticket, &generation); }
+            Err(error) => remote.publish(|state| {
+                if state.listing.ticket == ticket && format!("{}:{}", remote.identity, state.attempt) == generation {
+                    state.listing.loading = false;
+                    state.listing.error = Some(error);
                 }
-                state.listing.loading = false;
-                match result {
-                    Ok((directory, entries)) => {
-                        state.listing.path = Some(directory);
-                        state.listing.entries = entries;
-                        state.listing.error = None;
-                    }
-                    Err(error) => state.listing.error = Some(error),
-                }
-            });
+            }),
         });
+    }
+
+    /// Uses a pinned client so a reconnect cannot redirect an external operation.
+    pub(crate) fn reserve_browse(&self, client: &Arc<Client>) -> Result<(u64, String), String> {
+        let (ticket, generation) = {
+            let mut state = lock(&self.state);
+            if self.closed.load(Ordering::Acquire) || !state.client.as_ref().is_some_and(|current| Arc::ptr_eq(current, client)) {
+                return Err("SFTP connection changed before browsing; nothing was sent.".into());
+            }
+            state.listing.ticket += 1;
+            state.listing.loading = true;
+            (state.listing.ticket, format!("{}:{}", self.identity, state.attempt))
+        };
+        (self.wake)();
+        Ok((ticket, generation))
+    }
+
+    pub(crate) fn browse_at(&self, client: &Client, path: &str, ticket: u64, generation: &str) -> Result<Listing, String> {
+        let result: Result<Listing, String> = (|| {
+            let directory = client.realpath(path).map_err(|error| error.to_string())?;
+            let entries = client.readdir(&directory).map_err(|error| error.to_string())?.into_iter().map(|entry| {
+                let target = if entry.attributes.symlink() { client.stat(&join(&directory, &entry.name)).ok() } else { None };
+                let shown = target.unwrap_or(entry.attributes);
+                FileEntry { directory: shown.directory(), symlink: entry.attributes.symlink(), size: shown.size.unwrap_or(0), mtime: shown.mtime.unwrap_or(0), mode: entry.attributes.mode.unwrap_or(0), name: entry.name }
+            }).collect();
+            Ok(Listing { path: Some(directory), entries, error: None, loading: false, ticket })
+        })();
+        self.publish(|state| {
+            if state.listing.ticket != ticket || format!("{}:{}", self.identity, state.attempt) != generation || self.closed.load(Ordering::Acquire) { return; }
+            state.listing.loading = false;
+            match &result {
+                Ok(listing) => state.listing = listing.clone(),
+                Err(error) => state.listing.error = Some(error.clone()),
+            }
+        });
+        result
     }
 
     /// Runs a file operation in the background and reports a failure through `done`.
@@ -809,13 +838,25 @@ impl Remote {
         Ok(())
     }
 
-    fn enqueue(self: &Arc<Self>, upload: bool, name: String, drag_source: Option<String>, run: Work) {
+    fn enqueue(self: &Arc<Self>, upload: bool, name: String, drag_source: Option<String>, run: Work) -> u64 {
+        self.enqueue_tracked(upload, name, drag_source, run, false)
+    }
+
+    fn enqueue_tracked(self: &Arc<Self>, upload: bool, name: String, drag_source: Option<String>, run: Work, tracked: bool) -> u64 {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         self.publish(|state| {
-            state.transfers.push(Transfer::queued(id, upload, name));
+            let transfer = Transfer::queued(id, upload, name);
+            if tracked { state.tracked_transfers.insert(id, transfer.clone()); }
+            state.transfers.push(transfer);
             state.queue.push_back(Job { transfer: id, run, drag_source });
         });
         self.pump();
+        id
+    }
+
+    pub(crate) fn tracked_transfer(&self, id: u64) -> Option<Transfer> {
+        let state = lock(&self.state);
+        state.transfers.iter().find(|t| t.id == id).cloned().or_else(|| state.tracked_transfers.get(&id).cloned())
     }
 
     fn pump(self: &Arc<Self>) {
@@ -854,6 +895,9 @@ impl Remote {
                             }
                         }
                     }
+                    if state.tracked_transfers.contains_key(&job.transfer)
+                        && let Some(transfer) = state.transfers.iter().find(|t| t.id == job.transfer).cloned()
+                    { state.tracked_transfers.insert(job.transfer, transfer); }
                     let finished: Vec<u64> = state.transfers.iter().filter(|transfer| transfer.finished()).map(|transfer| transfer.id).collect();
                     let stale = finished.len().saturating_sub(MAX_FINISHED);
                     let stale: Vec<u64> = finished.into_iter().take(stale).collect();
@@ -874,6 +918,9 @@ impl Remote {
                         state.drags.remove(source);
                     }
                     state.queue.retain(|job| job.transfer != transfer);
+                    if state.tracked_transfers.contains_key(&transfer)
+                        && let Some(item) = state.transfers.iter().find(|t| t.id == transfer).cloned()
+                    { state.tracked_transfers.insert(transfer, item); }
                 }
             }
         });
@@ -919,6 +966,10 @@ impl Remote {
     /// into place only when complete.
     fn run_upload(&self, id: u64, source: &Path, target: &str) -> Result<usize, String> {
         let client = self.client()?;
+        self.run_upload_on(id, source, target, &client, true)
+    }
+
+    fn run_upload_on(&self, id: u64, source: &Path, target: &str, client: &Client, overwrite: bool) -> Result<usize, String> {
         let canceled = self.canceled(id);
         enum Step {
             Directory(String),
@@ -967,9 +1018,9 @@ impl Remote {
                 Step::File(local, remote, mode) => {
                     let partial = format!("{remote}.omniterm-{}.part", &uuid::Uuid::new_v4().simple().to_string()[..8]);
                     lock(&self.state).partial_uploads.insert(partial.clone());
-                    let result = client.upload(&local, &partial, Some(mode), &canceled, &mut progress).and_then(|_| client.replace(&partial, &remote));
+                    let result = client.upload(&local, &partial, Some(mode), &canceled, &mut progress).and_then(|_| if overwrite { client.replace(&partial, &remote) } else { client.rename(&partial, &remote) });
                     if let Err(error) = result {
-                        self.remove_partial(&client, &partial);
+                        self.remove_partial(client, &partial);
                         return Err(error.to_string());
                     }
                     lock(&self.state).partial_uploads.remove(&partial);
@@ -981,6 +1032,11 @@ impl Remote {
 
     fn run_download(&self, id: u64, source: &str, target: &Path, limit: Option<u64>) -> Result<usize, String> {
         let client = self.client()?;
+        self.run_download_on(id, source, target, limit, &client, true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_download_on(&self, id: u64, source: &str, target: &Path, limit: Option<u64>, client: &Client, overwrite: bool) -> Result<usize, String> {
         let canceled = self.canceled(id);
         enum Step {
             Directory(PathBuf),
@@ -1035,6 +1091,11 @@ impl Remote {
                     let partial = directory.join(format!(".{}.omniterm-part", &uuid::Uuid::new_v4().simple().to_string()[..8]));
                     // The user confirmed replacing an existing file; Windows renames refuse one.
                     let result = client.download(&remote, &partial, Some(mode), &canceled, &mut progress).map_err(|error| error.to_string()).and_then(|_| {
+                        if !overwrite {
+                            std::fs::hard_link(&partial, &local).map_err(|error| error.to_string())?;
+                            let _ = std::fs::remove_file(&partial);
+                            return Ok(());
+                        }
                         if cfg!(windows) && local.is_file() {
                             std::fs::remove_file(&local).map_err(|error| error.to_string())?;
                         }
@@ -1069,6 +1130,8 @@ impl Remote {
                 transfer.canceled.store(true, Ordering::Relaxed);
                 if transfer.status == TransferStatus::Queued { transfer.status = TransferStatus::Canceled; }
             }
+            let tracked: Vec<_> = state.transfers.iter().filter(|t| state.tracked_transfers.contains_key(&t.id)).cloned().collect();
+            for transfer in tracked { state.tracked_transfers.insert(transfer.id, transfer); }
             state.queue.clear();
             state.drags.clear();
         }
@@ -1132,6 +1195,7 @@ impl Manager {
     fn install(&self, id: &str, target: Target) {
         let remote = Arc::new(Remote {
             id: id.to_string(),
+            identity: uuid::Uuid::new_v4().to_string(),
             target,
             state: Mutex::new(State {
                 phase: Phase::Waiting,
@@ -1148,6 +1212,7 @@ impl Manager {
                 linked: false,
                 listing: Listing::default(),
                 transfers: Vec::new(),
+                tracked_transfers: HashMap::new(),
                 queue: VecDeque::new(),
                 running: 0,
                 uploads_done: 0,
@@ -1164,6 +1229,10 @@ impl Manager {
             self.track_close(previous.close_channels(false));
         }
         remote.wait_for_login();
+    }
+
+    pub(crate) fn all(&self) -> Vec<Arc<Remote>> {
+        lock(&self.remotes).values().cloned().collect()
     }
 
     pub fn get(&self, id: &str) -> Option<Arc<Remote>> {
@@ -1223,6 +1292,61 @@ impl Manager {
         for masters in lock(&self.preserved_masters).drain().map(|(_, masters)| masters) {
             for master in masters { stop_master(&master); }
         }
+    }
+}
+
+pub(crate) struct ExternalTransfer {
+    pub upload: bool,
+    pub local: PathBuf,
+    pub remote: String,
+    pub recursive: bool,
+    pub overwrite: bool,
+}
+
+impl Remote {
+    pub(crate) fn generation(&self) -> String {
+        format!("{}:{}", self.identity, lock(&self.state).attempt)
+    }
+
+    pub(crate) fn checked_client(&self, generation: &str) -> Result<Arc<Client>, String> {
+        let state = lock(&self.state);
+        if self.closed.load(Ordering::Acquire) || format!("{}:{}", self.identity, state.attempt) != generation {
+            return Err("SFTP connection changed or closed; list and bind the file session again. Nothing was sent.".into());
+        }
+        match (&state.phase, &state.client) {
+            (Phase::Ready, Some(client)) if !client.closed() => Ok(client.clone()),
+            _ => Err("SFTP is not ready; finish authentication in the window first.".into()),
+        }
+    }
+
+    pub(crate) fn public_endpoint(&self) -> serde_json::Value {
+        match &self.target {
+            Target::Shared(target) => serde_json::json!({"source": "terminal-companion", "destination": target.destination}),
+            Target::Independent { connection, .. } => {
+                let connection = lock(connection);
+                serde_json::json!({"source": "independent-sftp", "host": connection.host, "user": connection.user, "port": connection.port, "title": connection.title})
+            }
+        }
+    }
+
+    pub(crate) fn start_external_transfer(self: &Arc<Self>, client: Arc<Client>, plan: ExternalTransfer) -> u64 {
+        let name = if plan.upload { plan.local.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default() } else { basename(&plan.remote).to_string() };
+        self.enqueue_tracked(plan.upload, name, None, Box::new(move |remote, id| {
+            if !Arc::ptr_eq(&remote.client()?, &client) { return Err("SFTP connection changed before transfer; nothing was sent.".into()); }
+            if plan.upload {
+                let metadata = std::fs::symlink_metadata(&plan.local).map_err(|error| error.to_string())?;
+                if metadata.file_type().is_symlink() || !(metadata.is_file() || metadata.is_dir()) { return Err("Upload source must be a regular file or directory, not a symlink.".into()); }
+                if metadata.is_dir() && !plan.recursive { return Err("Directory upload requires --recursive.".into()); }
+                if !plan.overwrite && client.exists(&plan.remote).map_err(|e| e.to_string())? { return Err("Remote destination exists; use --overwrite only when replacement is intended.".into()); }
+                remote.run_upload_on(id, &plan.local, &plan.remote, &client, plan.overwrite)
+            } else {
+                let metadata = client.lstat(&plan.remote).map_err(|error| error.to_string())?;
+                if metadata.symlink() || !(metadata.file() || metadata.directory()) { return Err("Download source must be a regular file or directory, not a symlink.".into()); }
+                if metadata.directory() && !plan.recursive { return Err("Directory download requires --recursive.".into()); }
+                if !plan.overwrite && std::fs::symlink_metadata(&plan.local).is_ok() { return Err("Local destination exists; use --overwrite only when replacement is intended.".into()); }
+                remote.run_download_on(id, &plan.remote, &plan.local, None, &client, plan.overwrite)
+            }
+        }), true)
     }
 }
 

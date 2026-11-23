@@ -573,3 +573,35 @@ fn shutdown_closes_preserved_masters_once_after_repeated_file_replacements() {
     fixture.manager.shutdown();
     assert_eq!(fixture.events().len(), events.len(), "repeated shutdown cannot exit a master again");
 }
+
+#[test]
+#[ignore = "needs isolated loopback sshd; run scripts/test-sftp.py"]
+fn sftp_end_to_end_external_generation_pinning_and_retained_results() {
+    let fixture = Fixture::new();
+    let generation = fixture.remote.generation();
+    let client = fixture.remote.checked_client(&generation).expect("current connection");
+    assert!(fixture.remote.checked_client("stale-generation").is_err());
+    let source = fixture.local.join("external.txt");
+    std::fs::write(&source, b"external-byte-integrity").unwrap();
+    let target = fixture.server.join("external.txt");
+    let id = fixture.remote.start_external_transfer(client.clone(), ExternalTransfer {
+        upload: true, local: source.clone(), remote: target.to_string_lossy().into_owned(), recursive: false, overwrite: false,
+    });
+    until("external upload", 10, || fixture.remote.tracked_transfer(id).is_some_and(|t|t.finished()));
+    assert_eq!(fixture.remote.tracked_transfer(id).unwrap().status, TransferStatus::Done);
+    fixture.remote.clear_finished();
+    assert_eq!(fixture.remote.tracked_transfer(id).unwrap().status, TransferStatus::Done, "UI clearing must not erase an agent's result");
+    assert_eq!(std::fs::read(&target).unwrap(), b"external-byte-integrity");
+    std::fs::write(&source,b"replacement must be refused").unwrap();
+    let id = fixture.remote.start_external_transfer(client, ExternalTransfer {
+        upload: true, local: source, remote: target.to_string_lossy().into_owned(), recursive: false, overwrite: false,
+    });
+    until("refused overwrite", 10, || fixture.remote.tracked_transfer(id).is_some_and(|t|t.finished()));
+    assert_eq!(fixture.remote.tracked_transfer(id).unwrap().status, TransferStatus::Failed);
+    assert_eq!(std::fs::read(&target).unwrap(), b"external-byte-integrity");
+    fixture.drop_connection();
+    fixture.reconnect();
+    assert_ne!(fixture.remote.generation(), generation);
+    assert!(fixture.remote.checked_client(&generation).is_err());
+    fixture.no_partials();
+}

@@ -509,8 +509,21 @@ impl Broker {
 
     /// An engine restart or crash voids every approval and pending operation.
     pub fn invalidate_all(&mut self, reason: &str) -> Vec<Operation> {
-        self.tasks.values_mut().for_each(|task| task.grants.clear());
-        let ids: Vec<String> = self.order.iter().cloned().collect();
+        self.invalidate_scope(None, reason)
+    }
+
+    /// Losing one engine must not invalidate independent external-agent tasks.
+    pub fn invalidate_task(&mut self, task_id: &str, reason: &str) -> Vec<Operation> {
+        let changed = self.invalidate_scope(Some(task_id), reason);
+        self.tasks.remove(task_id);
+        changed
+    }
+
+    fn invalidate_scope(&mut self, task_id: Option<&str>, reason: &str) -> Vec<Operation> {
+        for (id, task) in &mut self.tasks {
+            if task_id.is_none_or(|target| target == id) { task.grants.clear(); }
+        }
+        let ids: Vec<String> = self.order.iter().filter(|id| task_id.is_none_or(|target| self.operations.get(*id).is_some_and(|op| op.task_id == target))).cloned().collect();
         let mut changed = Vec::new();
         for id in ids {
             let Some(status) = self.operations.get(&id).map(|operation| operation.status) else {
@@ -1531,6 +1544,24 @@ mod tests {
         broker.invalidate_all("The Agent engine restarted.");
         assert_eq!(status(&broker, &running), OperationStatus::OutcomeUnknown);
         assert_eq!(status(&broker, &waiting), OperationStatus::Invalidated);
+    }
+
+    #[test]
+    fn losing_one_engine_preserves_other_agent_operations() {
+        let (fake, mut broker) = fixture();
+        let running = propose(&mut broker, &fake, "1", "sleep 100");
+        approve(&mut broker, &fake, &running);
+        broker.execute(&running, 1000).unwrap();
+        broker.tick(&fake, 1100);
+        broker.begin_task("external", vec![reference("b")], vec![reference("b")]);
+        let external = broker.propose(&fake, "external", "x", &reference("b"), "next", None, 1200).unwrap().operation_id;
+        broker.approve(&fake, &external, ApprovalScope::Once, SubmitMode::Run, None, 1200).unwrap();
+        broker.invalidate_task("task", "Engine stopped");
+        assert_eq!(status(&broker, &running), OperationStatus::OutcomeUnknown);
+        assert_eq!(status(&broker, &external), OperationStatus::Approved);
+        assert!(broker.task("external").is_ok());
+        assert!(broker.task("task").is_err());
+        assert_eq!(fake.written().len(), 1, "No unrelated input or interrupt may be sent");
     }
 
     #[test]

@@ -36,6 +36,7 @@ def main():
         env["XDG_CONFIG_HOME"] = str(folder / "config")
         env["OMNITERM_AUTOMATION_DIR"] = str(folder / "discovery")
         config = folder / "config/omniTerm"
+        env["OMNITERM_DATA_DIR"] = str(config)
         config.mkdir(parents=True)
         (config / "native-settings.json").write_text(json.dumps({
             "restoreWorkspace": False, "sshConfigPrompt": False,
@@ -93,6 +94,14 @@ def main():
                 read = call("read", *target)
                 delta = call("read", *target, "--since", read["seqEnd"])
                 assert delta["lines"] == [], delta
+                binding = folder / "terminal-target.json"
+                call("bind", *target, "--out", binding)
+                assert "token" not in binding.read_text()
+                bound = call("info", "--target", binding)
+                assert bound["ref"]["sessionId"] == session
+                call("wait", "--target", binding, "--until", "ready", "--wait-ms", "1000")
+                found = call("search", "--target", binding, "--query", "NATIVE_CLI_RESULT_42")
+                assert found["matches"], found
                 long = call("exec", *target, "--request-id", "long-check", "--command", "sleep 10", "--wait-ms", "0", expected=2)
                 assert long["operation"]["status"] in ("queued", "running"), long
                 cancelled = call("cancel", "long-check", expected=1)
@@ -115,7 +124,7 @@ def main():
                 close_window(env["DISPLAY"], window)
                 assert app.wait(timeout=10) == 0
                 assert not list((folder / "discovery").glob("*.json")), "Discovery file survived normal close"
-                report = {"passed": True, "sessionKind": terminal["kind"], "checks": ["native-window-discovery", "setup", "tracked-exec", "nonzero-exit-code", "output", "idempotency", "incremental-read", "long-command-cancel", "normal-shutdown-cleanup"]}
+                report = {"passed": True, "sessionKind": terminal["kind"], "checks": ["native-window-discovery", "setup", "tracked-exec", "nonzero-exit-code", "output", "idempotency", "incremental-read", "target-binding", "readiness-wait", "output-search", "long-command-cancel", "normal-shutdown-cleanup"]}
                 if args.report:
                     args.report.parent.mkdir(parents=True, exist_ok=True)
                     args.report.write_text(json.dumps(report, indent=2) + "\n")

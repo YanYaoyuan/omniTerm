@@ -5,6 +5,7 @@ import { constants as osConstants } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runSession } from "./sessions.js";
+import { runFiles } from "./files.js";
 
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
 const version = JSON.parse(
@@ -17,6 +18,7 @@ Usage: omniterm <command> [arguments...]
 
 Commands:
   session <action>   Control existing native desktop sessions (JSON API)
+  files <action>     Operate existing SFTP pages and their transfer queues
   agent [args...]     Run Codex (all arguments are passed through)
   shell [args...]     Open your local shell, or pass arguments to it
   ssh [args...]       Run the system OpenSSH client
@@ -376,6 +378,7 @@ export async function main(argv, inputOptions = {}) {
     return 0;
   }
   try {
+    if (command === "files") return await runFiles(rawArgs, { ...options, output, errorOutput });
     if (command === "session") return await runSession(rawArgs, { ...options, output, errorOutput });
     if (command === "doctor") {
       if (rawArgs.length) throw new Error("Usage: omniterm doctor");

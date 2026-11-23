@@ -119,7 +119,7 @@ OMNITERM_SFTP_AUTH_TEST=1 python3 omniterm-native/scripts/test-ssh-password.py
 Linux 安装 `openssh-server` 后，在 `omniterm-native` 目录运行：
 
 ```sh
-python3 scripts/test-sftp.py -- cargo test --locked sftp_end_to_end -- --ignored --nocapture
+python3 scripts/test-sftp.py -- cargo test --locked remote::manager::integration_tests::sftp_end_to_end -- --ignored --nocapture
 ```
 
 脚本在私有临时目录生成测试密钥和配置，启动只监听回环地址随机端口的 sshd，

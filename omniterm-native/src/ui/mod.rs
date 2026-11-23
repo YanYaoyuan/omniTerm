@@ -255,9 +255,11 @@ impl App {
         gpu::install(&render_state);
         style::install_fonts(&cc.egui_ctx);
         let context = cc.egui_ctx.clone();
-        let backend = Backend::new(move || context.request_repaint(), crate::remote::control_path);
+        let mut backend = Backend::new(move || context.request_repaint(), crate::remote::control_path);
         let context = cc.egui_ctx.clone();
         let remotes = Arc::new(crate::remote::manager::Manager::new(move || context.request_repaint()));
+        let files = crate::automation::Files::new(backend.host().clone(), remotes.clone());
+        backend.start_automation(Arc::new(move |method, params| files.handle(method, params)));
         let context = cc.egui_ctx.clone();
         let agent = crate::agent::service::Service::new(backend.host().clone(), paths::file("agent-home"), move || context.request_repaint());
         let context = cc.egui_ctx.clone();

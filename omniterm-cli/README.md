@@ -55,6 +55,47 @@ CLI 退出码：`0` 成功/读/发送成功，`1` 错误或被阻止/取消，`2
 
 可直接分发 [skills/omniterm-control/SKILL.md](skills/omniterm-control/SKILL.md)。也可把整个 `omniterm-control` 文件夹放进智能体的 skill 目录，例如 Codex 的 `~/.codex/skills/` 或 Claude Code 的 `~/.claude/skills/`。运行 CLI 的智能体需与 omniTerm 在同一操作系统中；WSL、容器和远程开发机不能自动共享宿主机的发现文件与本机端口。
 
+## 稳定绑定资产终端和 SFTP 页面
+
+外部智能体可以把目标固定在本地 JSON 文件，避免每次复制 ID/连接代次。绑定文件不包含控制 token，也不覆盖已有文件；重连或进程重启后确认目标并创建新绑定。
+
+```sh
+omniterm session bind SESSION_ID --epoch EPOCH --instance INSTANCE_ID --out asset.json
+omniterm session info --target asset.json
+omniterm session wait --target asset.json --until ready --wait-ms 10000
+omniterm session exec --target asset.json --request-id check-001 --command 'hostname; pwd'
+omniterm session search --target asset.json --query error
+omniterm session wait --target asset.json --until output --since LAST_SEQ_END
+```
+
+内置 Agent 引擎异常退出只撤销自己的任务，不会撤销其他外部智能体的操作。
+
+SFTP 页面使用独立的 `files` 子命令，可操作网页授权的独立文件窗口及 SSH 附属面板：
+
+```sh
+omniterm files list
+omniterm files bind FILE_SESSION_ID --generation GENERATION --instance INSTANCE_ID --out files.json
+omniterm files info --target files.json
+omniterm files ls --target files.json --path /home/user --limit 200
+omniterm files stat --target files.json --path /home/user/report.txt
+omniterm files upload --target files.json --local ./report.txt --remote /home/user/report.txt --request-id upload-001
+omniterm files download --target files.json --remote /home/user/report.txt --local ./copy.txt --request-id download-001
+omniterm files result upload-001 --target files.json --wait-ms 30000
+omniterm files cancel upload-001 --target files.json
+omniterm files transfers --target files.json
+omniterm files cancel-transfer --target files.json --transfer-id TRANSFER_ID
+omniterm files mkdir --target files.json --path /home/user/new-folder
+omniterm files rename --target files.json --path /home/user/a.txt --to /home/user/b.txt
+omniterm files remove --target files.json --path /home/user/b.txt
+omniterm files remove --target files.json --path /home/user/empty-folder --directory
+```
+
+远端路径必须绝对，传输目标是包含名字的精确路径；本地路径由 CLI 转成绝对路径，必须在应用所在文件系统可访问。默认拒绝覆盖；确需替换才传 `--overwrite`。目录传输需 `--recursive`，删除只支持单文件或空目录。`ls` 同步实际页面，传输进入同一队列，变更后刷新目录。CLI 列表通过 `--offset/--limit` 分页；检查 `nextOffset` 和 `truncated`。
+
+文件操作通过 request-id 去重，修改动作或完整参数会拒绝；`files result` 查询状态/进度，CLI 等待超时不自动重发。连接更换/重连后 generation 变化，旧绑定不能发送新操作；原 request-id 仍可查询原结果。UI 清除已完成项不清除 CLI 结果。每实例最多 4096 个文件任务，仅在内存保存。元数据操作派发后不能安全取消；传输取消后仍应查询最终状态，递归任务不保证整体回滚。
+
+更多边界和智能体操作流程见 [SFTP skill 参考](skills/omniterm-control/references/sftp.md)。桌面及 CLI 现在都遵循绝对的 `OMNITERM_DATA_DIR`（其 `automation/` 子目录），`OMNITERM_AUTOMATION_DIR` 优先级更高。
+
 ## Run from source
 
 Requires Node.js 22 or later. This package has no npm runtime dependencies.

@@ -177,7 +177,7 @@ jobs:
           DISPLAY=:99 OMNITERM_E2E_SSH="$USER@127.0.0.1" cargo test --locked x11_forwarding_end_to_end -- --ignored --nocapture
       - name: SFTP transfers end to end (Linux)
         if: runner.os == 'Linux'
-        run: python3 scripts/test-sftp.py -- cargo test --locked sftp_end_to_end -- --ignored --nocapture
+        run: python3 scripts/test-sftp.py -- cargo test --locked remote::manager::integration_tests::sftp_end_to_end -- --ignored --nocapture
       - name: Build the release app
         run: cargo build --release --locked
       - name: Control the native window through the external CLI (Linux)
@@ -189,6 +189,15 @@ jobs:
           sudo apt-get install -y python3-paramiko python3-secretstorage gnome-keyring libxtst6
           /usr/bin/python3 scripts/test-ssh-password.py
           OMNITERM_SSH_TEST_ROUTED=1 /usr/bin/python3 scripts/test-ssh-password.py
+      - name: Operate a real SFTP page through the agent CLI (Linux)
+        if: runner.os == 'Linux'
+        env:
+          OMNITERM_WEB_TEST_APP: ${{ github.workspace }}/omniterm-native/target/release/omniterm-app
+          OMNITERM_XVFB: /usr/bin/Xvfb
+          OMNITERM_WEB_GUI_SCREENSHOT: ${{ github.workspace }}/omniterm-native/sftp-cli.png
+        run: |
+          sudo apt-get install -y python3-pil
+          /usr/bin/python3 scripts/test-web-authorized-sftp.py --cli-gui
       - name: Measure emulation throughput and frame building
         run: target/release/omniterm-app --bench 32 | tee bench-${{ runner.os }}.json
       # A real window on a GPU adapter (lavapipe on Linux, WARP on Windows): a shell starts,

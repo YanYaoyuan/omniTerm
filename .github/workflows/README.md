@@ -11,7 +11,9 @@ The `omniterm-ci.yml` workflow covers Linux, macOS, and Windows:
 - `terminal-host` runs the Rust host's tests on all three platforms, builds it,
   and exercises a real PTY or ConPTY through it.
 - `native-app` tests and builds the Rust desktop app, including a Linux window
-  controlled through the external CLI in an isolated Xvfb display.
+  controlled through the external CLI in an isolated Xvfb display. It also operates
+  a real SFTP page against a loopback fixture, checking exact target binding, file
+  mutations, transfer integrity, overwrite refusal and cancellation without a shell.
 - `engine` tests the provider protocols and the dynamic-tools-only boundary, and
   type-checks the Agent binary on Ubuntu.
 
