@@ -35,7 +35,7 @@
 | `layout.js` 窗格部分 | `layout.rs` | 0 |
 | `shortcuts.js` | `app.rs` 快捷键 | 0 / 1 |
 | `themes.js` | `theme.rs`（13 个主题） | 0 / 1 |
-| `command-plan.mjs`、`shell-integration.mjs` | `core/plan.rs`、`backend.rs`、`assets/shell-integration.txt` | 0 / 1 |
+| `command-plan.mjs`、`shell-integration.mjs` | `core/plan.rs`、`backend.rs`、`terminal-host/assets/shell-integration.txt` | 0 / 1 |
 | `workspace.js`、设置 | `core/workspace.rs`、`core/settings.rs` | 1 |
 | `ssh-config.mjs`、`profile-store.mjs`、`remote-manager.mjs`、`sftp-client.mjs`、`remote-metrics.mjs` | `core/ssh_config.rs`、`core/profile.rs`、`remote/` | 2 |
 | `agent-*.mjs`、`provider-store.mjs`、`AgentPanel.jsx` | `agent/`、`ui/agent_panel.rs` | 3 |

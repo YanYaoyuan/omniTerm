@@ -58,6 +58,14 @@ const notices = async (directory) => {
   await cp(path.join(native, "assets/highlight-licenses"), path.join(directory, "highlight-licenses"), { recursive: true });
 };
 
+// Distribute the dependency-free Node CLI and the agent skill beside every native app.
+const bundleCli = async (directory) => {
+  await mkdir(directory, { recursive: true });
+  for (const name of ["bin", "src", "skills", "package.json", "README.md", "LICENSE", "NOTICE"]) {
+    await cp(path.join(repository, "omniterm-cli", name), path.join(directory, name), { recursive: true });
+  }
+};
+
 const stage = path.join(os.tmpdir(), `omniterm-native-${process.pid}`);
 await rm(stage, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
@@ -74,6 +82,7 @@ if (process.platform === "darwin") {
   await cp(path.join(desktop, "assets/icon.icns"), path.join(contents, "Resources/omniTerm.icns"));
   if (!withoutAgent) await cp(agent, path.join(contents, "Resources/omniterm-agent"), { recursive: true });
   await notices(path.join(contents, "Resources/licenses"));
+  await bundleCli(path.join(contents, "Resources/omniterm-cli"));
   await writeFile(path.join(contents, "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -100,6 +109,7 @@ if (process.platform === "darwin") {
   await cp(binary, path.join(root, "omniTerm.exe"));
   if (!withoutAgent) await cp(agent, path.join(root, "omniterm-agent"), { recursive: true });
   await notices(path.join(root, "licenses"));
+  await bundleCli(path.join(root, "omniterm-cli"));
   const artifact = path.join(output, `omniTerm-native-${releaseVersion}-windows-x64${suffix}.zip`);
   run("python", ["-c", "import pathlib,sys,zipfile; root=pathlib.Path(sys.argv[1]); out=pathlib.Path(sys.argv[2]); z=zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED,compresslevel=6); [z.write(p,p.relative_to(root.parent)) for p in sorted(root.rglob('*')) if p.is_file()]; z.close()", root, artifact]);
   artifacts.push(artifact);
@@ -110,6 +120,7 @@ if (process.platform === "darwin") {
   await cp(binary, path.join(root, "omniterm"));
   if (!withoutAgent) await cp(agent, path.join(root, "omniterm-agent"), { recursive: true });
   await notices(path.join(root, "licenses"));
+  await bundleCli(path.join(root, "omniterm-cli"));
   const tarball = path.join(output, `omniTerm-native-${releaseVersion}-linux-x64${suffix}.tar.gz`);
   run("tar", ["-czf", tarball, "-C", stage, path.basename(root)]);
   artifacts.push(tarball);

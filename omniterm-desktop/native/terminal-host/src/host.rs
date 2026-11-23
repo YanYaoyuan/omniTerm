@@ -629,6 +629,11 @@ impl Host {
                 let IdParams { id } = parse(params)?;
                 Ok(self.require(&id)?.replay())
             }
+            "session.integration" => {
+                let IdParams { id } = parse(params)?;
+                let session = self.require(&id)?;
+                Ok(json!(crate::shell_integration(&session.nonce).ok_or("No shell integration nonce")?))
+            }
             "session.close" => {
                 let IdParams { id } = parse(params)?;
                 let session = self.sessions().remove(&id);

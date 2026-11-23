@@ -18,7 +18,7 @@ omniTerm 使用 Electron、React、xterm.js 和 Rust 终端后端实现桌面终
 | --- | --- | --- |
 | 桌面 renderer | [`omniterm-desktop/src`](../../omniterm-desktop/src) | React 工作台、xterm.js 多标签终端、Agent 分栏、连接表单、搜索与显示设置 |
 | Electron 主进程 | [`omniterm-desktop/electron`](../../omniterm-desktop/electron) | 窗口、受限 IPC、命令参数校验、连接配置保存、Agent 运行时与模型配置 |
-| 可选 CLI | [`omniterm-cli`](../../omniterm-cli) | 在现有终端启动 Agent、shell、SSH、SFTP、转发与串口；桌面复用其底层命令解析 |
+| 可选 CLI | [`omniterm-cli`](../../omniterm-cli) | 启动 Agent、shell、SSH、SFTP、转发与串口；`session` 通过[本机接入通道](external-cli.md)控制原生桌面已有会话，供外部智能体复用连接 |
 | Agent 包构建 | [`scripts/codex_package`](../../scripts/codex_package) | 从 Rust 源码编译 codex、code-mode host 与必要平台资源，组装完整包 |
 | Agent CLI / TUI | [`codex-rs/cli`](../../codex-rs/cli)、[`codex-rs/tui`](../../codex-rs/tui) | 当前桌面 Agent 分栏运行的交互入口 |
 | Agent 核心 | [`codex-rs/core`](../../codex-rs/core) 及相关 crate | 模型、工具执行、会话、认证、配置、审批与平台隔离 |

@@ -12,11 +12,12 @@
     "omniterm": "bin/omniterm.js"
   },
   "scripts": {
-    "test": "node --test test/cli.test.js"
+    "test": "node --test test/*.test.js"
   },
   "files": [
     "bin/",
     "src/",
+    "skills/",
     "README.md",
     "LICENSE",
     "NOTICE"

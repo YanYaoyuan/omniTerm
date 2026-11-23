@@ -1,7 +1,8 @@
 //! Agent operations on terminals.
 //!
 //! Every Agent write passes through here, away from the renderer's broadcast path. The model
-//! can propose and request execution; only an approval from the desktop UI can authorize one.
+//! can propose and request execution; a local approval from the desktop UI or the authenticated
+//! external CLI authorizes one. The model-facing tools cannot issue approvals themselves.
 //! Operations are pinned to `session + connection epoch`, independent of focus or layout, and
 //! live only in this process, so a restart can never resume an approval. A command that was
 //! written is never written again: when its outcome is unknown it stays unknown.
@@ -389,7 +390,7 @@ impl Broker {
         }
     }
 
-    /// Called only for a decision made in the desktop UI.
+    /// Called for a local decision from the desktop UI or an authenticated external CLI exec.
     pub fn approve(
         &mut self,
         terminals: &dyn Terminals,

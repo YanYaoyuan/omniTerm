@@ -51,9 +51,7 @@ pub struct Session {
 /// The readiness marks script for bash 4.4+ and zsh, from the desktop app's
 /// `shell-integration.mjs`, for the user to submit in a shell they chose.
 pub fn shell_integration(nonce: &str) -> Option<String> {
-    const PLACEHOLDER: &str = "f00df00df00df00df00df00df00df00d";
-    let valid = nonce.len() == 32 && nonce.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
-    valid.then(|| include_str!("../assets/shell-integration.txt").replace(PLACEHOLDER, nonce))
+    omniterm_terminal_host::shell_integration(nonce)
 }
 
 /// What the UI hears about, apart from output.
@@ -74,6 +72,7 @@ enum Write {
 
 pub struct Backend {
     host: Arc<Host>,
+    automation: Option<omniterm_terminal_host::automation::Automation>,
     terminals: Arc<Mutex<HashMap<String, Arc<Terminal>>>>,
     writes: Sender<Write>,
     opens: Sender<Open>,
@@ -93,6 +92,16 @@ impl Backend {
         let wake = Arc::new(wake);
         let (outbox, frames) = Outbox::channel();
         let host = Host::new(outbox);
+        let automation = if std::env::var("OMNITERM_DISABLE_AUTOMATION").as_deref() == Ok("1") {
+            None
+        } else {
+            let directory = std::env::var_os("OMNITERM_AUTOMATION_DIR").map(std::path::PathBuf::from)
+                .unwrap_or_else(|| crate::core::paths::file("automation"));
+            match omniterm_terminal_host::automation::Automation::start(host.clone(), &directory) {
+                Ok(bridge) => Some(bridge),
+                Err(error) => { eprintln!("omniTerm external CLI unavailable: {error}"); None }
+            }
+        };
         let terminals: Arc<Mutex<HashMap<String, Arc<Terminal>>>> = Arc::default();
         let (notify, notices) = channel();
         let (requests, request_queue) = channel::<Request>();
@@ -192,7 +201,7 @@ impl Backend {
                 .expect("open thread");
         }
 
-        Self { host, terminals, writes, opens, requests, control_path, notices }
+        Self { host, automation, terminals, writes, opens, requests, control_path, notices }
     }
 
     /// Opens a session right away. Only for local shells at launch, whose plans never wait.
@@ -241,6 +250,7 @@ impl Backend {
     }
 
     pub fn shutdown(&self) {
+        if let Some(automation) = &self.automation { automation.stop(); }
         self.host.shutdown();
     }
 }
