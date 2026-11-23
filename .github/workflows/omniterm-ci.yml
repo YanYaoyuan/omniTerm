@@ -30,7 +30,7 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - name: Test the omniTerm launcher
-        run: node --test omniterm-cli/test/cli.test.js
+        run: node --test omniterm-cli/test/cli.test.js omniterm-cli/test/sessions.test.js
       - name: Check the command entry point
         run: node omniterm-cli/bin/omniterm.js --help
 
@@ -147,6 +147,9 @@ jobs:
       CARGO_INCREMENTAL: "0"
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
       - name: Install the repository Rust toolchain
         run: |
           rustup toolchain install 1.95.0 --profile minimal --component clippy
@@ -177,6 +180,9 @@ jobs:
         run: python3 scripts/test-sftp.py -- cargo test --locked sftp_end_to_end -- --ignored --nocapture
       - name: Build the release app
         run: cargo build --release --locked
+      - name: Control the native window through the external CLI (Linux)
+        if: runner.os == 'Linux'
+        run: python3 scripts/test-external-cli.py --report external-cli-Linux.json
       - name: Saved SSH password and manual OTP end to end (Linux)
         if: runner.os == 'Linux'
         run: |

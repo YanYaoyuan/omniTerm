@@ -312,6 +312,7 @@ fn serve(
 mod tests {
     use super::*;
     use crate::protocol::Outbox;
+    #[cfg(unix)]
     use std::time::Instant;
 
     struct Fixture {
@@ -364,7 +365,13 @@ mod tests {
         }
         #[cfg(unix)]
         fn shell(&self, kind: &str) -> Value {
-            let created = self.host.handle("session.create", json!({"executable": "/bin/bash", "args": ["--noprofile", "--norc", "-i"], "cwd": "/tmp", "kind": kind, "title": "fixture", "env": {"HISTFILE": "/dev/null", "PS1": "fixture> "}})).unwrap();
+            // macOS ships bash 3.2; its system zsh supports the readiness integration.
+            let (executable, args) = if cfg!(target_os = "macos") {
+                ("/bin/zsh", vec!["-f", "-i"])
+            } else {
+                ("/bin/bash", vec!["--noprofile", "--norc", "-i"])
+            };
+            let created = self.host.handle("session.create", json!({"executable": executable, "args": args, "cwd": "/tmp", "kind": kind, "title": "fixture", "env": {"HISTFILE": "/dev/null", "PS1": "fixture> ", "EDITOR": "emacs"}})).unwrap();
             let started = self
                 .host
                 .handle("session.start", json!({"id": created["id"]}))
@@ -372,8 +379,14 @@ mod tests {
             std::thread::sleep(Duration::from_millis(150));
             json!({"terminal": started["id"], "epoch": started["epoch"]})
         }
+        #[cfg(unix)]
         fn ready(&self, terminal: &Value) {
-            self.call("setup", json!({"terminal": terminal["terminal"], "epoch": terminal["epoch"], "shell": "bash"}));
+            let shell = if cfg!(target_os = "macos") {
+                "zsh"
+            } else {
+                "bash"
+            };
+            self.call("setup", json!({"terminal": terminal["terminal"], "epoch": terminal["epoch"], "shell": shell}));
             let deadline = Instant::now() + Duration::from_secs(6);
             loop {
                 let list = self.call("list", json!({}));
@@ -390,6 +403,7 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(50));
             }
         }
+        #[cfg(unix)]
         fn completed(&self, request: &str) -> Value {
             let deadline = Instant::now() + Duration::from_secs(8);
             loop {
