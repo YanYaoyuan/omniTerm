@@ -4,13 +4,13 @@
 
 **让本地终端、远程连接和 Codex Agent 在同一个开源桌面工作台中协作。**
 
-**v0.2.0 原生预览版正在准备中。** 本版在 Electron 应用之外新增 Rust 原生应用，提供 GPU 终端渲染、SSH X11 转发及改进的 SFTP 传输。改动、验证记录和剩余平台实测项见 [v0.2.0 发布说明](docs/omniterm/releases/v0.2.0.md)。新安装包发布前，下方下载链接仍对应已有的 0.1.0 版本。
+**v0.2.0 原生预览版**在 Electron 应用之外新增 Rust 原生应用，提供 GPU 终端渲染、SSH X11 转发、改进的 SFTP 传输，以及供外部智能体操作终端/SFTP 页面的 CLI。详见 [发布说明](docs/omniterm/releases/v0.2.0.md)和 [独立 Skill 安装指南](omniterm-cli/skills/README.md)。
 
-[下载 0.1.0](https://github.com/YanYaoyuan/omniTerm/releases) · [桌面指南](omniterm-desktop/README.md) · [构建 Agent](docs/omniterm/local-build.md) · [反馈问题](https://github.com/YanYaoyuan/omniTerm/issues) · [参与贡献](CONTRIBUTING.md)
+[下载 0.2.0 预览版](https://github.com/YanYaoyuan/omniTerm/releases/tag/v0.2.0) · [桌面指南](omniterm-desktop/README.md) · [构建 Agent](docs/omniterm/local-build.md) · [反馈问题](https://github.com/YanYaoyuan/omniTerm/issues) · [参与贡献](CONTRIBUTING.md)
 
 omniTerm 面向 **macOS、Linux 和 Windows**，把 Shell 多标签、分屏、SSH、图形 SFTP 文件面板、串口和端口转发放在同一个桌面应用中。旁边是从本仓库源码构建、在本机运行的 Codex Agent：选中终端输出，发送到 Agent 输入框，由你决定何时提交。
 
-项目采用 **Apache-2.0**，当前版本为 **0.1.0**。核心价值是把日常终端操作、远程运维和可审阅的 Agent 实现组合起来。这是早期版本：提供平台包、通过某项运行检查，不代表三平台的全部功能都已完成人工验收。
+项目采用 **Apache-2.0**，当前版本为 **0.2.0（预览版）**。核心价值是把日常终端操作、远程运维和可审阅的 Agent 实现组合起来。这是早期版本：提供平台包、通过某项运行检查，不代表三平台的全部功能都已完成人工验收。
 
 ## 下载
 
@@ -115,6 +115,8 @@ npm --prefix omniterm-desktop run build
 ```
 
 仓库提供三平台代码检查，以及单独的原生运行/打包检查。特定构建已进行 macOS GUI 检查和 Ubuntu 安装、PTY、Electron 检查；自动化 IPC 输入不等同于真实键盘或输入法验收，串口硬件、不同远程服务器及 Windows 人工覆盖仍需专门验证。请结合[交互验收清单](docs/omniterm/desktop-test-plan.md)与每个 Release 的验证记录判断适用范围。
+
+原生安装包随带[外部终端/SFTP CLI 和智能体 Skill](omniterm-cli/skills/README.md)，让 Codex、Claude Code 复用已登录的资产连接。此 CLI 需要同一操作系统中的 Node.js 22+。
 
 可选的 [CLI 启动器](omniterm-cli/README.md) 在已有终端中提供 `agent`、`shell`、`ssh`、`sftp`、`tunnel`、`serial` 和 `doctor`：
 

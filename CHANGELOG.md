@@ -1,5 +1,15 @@
 # omniTerm changelog
 
+## 0.2.0 — Native Preview
+
+- Add the Rust native application with GPU terminal rendering, X11 forwarding and improved SFTP transfer handling.
+- Add web-authorized SSH/SFTP asset windows and configurable terminal content highlighting.
+- Let external coding agents bind existing terminals and SFTP pages, execute commands, read results and manage remote files through the bundled CLI.
+- Publish the complete `omniterm-control` Skill separately, including its portable launcher and task-specific references.
+- Fix external control discovery and transport behavior across Windows, macOS and Linux.
+
+See [release notes](docs/omniterm/releases/v0.2.0.md) and [Skill installation](omniterm-cli/skills/README.md).
+
 ## 0.1.0
 
 - Add the Rust terminal host and terminal-aware Agent with scoped context, command approval, cancellation and configurable providers.

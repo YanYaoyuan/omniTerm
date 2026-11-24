@@ -105,12 +105,14 @@ are cached; compiler objects are removed from ephemeral runner storage after
 license notices are collected. Every platform builds the terminal host, runs
 desktop tests, verifies its packaged runtime, and produces the native artifact.
 
+The standalone Skill job tests its portable launcher and packages the entire Skill directory with licensing, per-file hashes and release provenance.
+
 The final job downloads all three desktop artifacts and validates completeness,
 version, source commit, Agent provenance, sizes and SHA-256 hashes. It adds
 `SHA256SUMS` and uploads `omniterm-complete-release-COMMIT`. Download that complete
 set, rerun `python scripts/release/validate-release.py dist/release` from the exact
 release checkout, and attach it to a draft GitHub release. Review the assets and
-validation record before publishing. Do not label an incomplete platform set as
+validation record before publishing. It also validates all four native packages (including the Linux portable archive), the exact bundled CLI/Skill files, original or signed Agent payload hashes, and the independent Skill ZIP. The complete artifact contains `release/`, `release-native/` and `release-skills/` directories. Rerun `python scripts/release/validate-native-release.py release-native release-skills` after download; attach their contents with the desktop assets. `SHA256SUMS-native` and `SHA256SUMS-skills` cover these separate asset groups. Do not label an incomplete platform set as
 a complete release.
 
 ## Signatures and verification scope
