@@ -17,6 +17,7 @@ on:
       - 'omniterm-desktop/native/**'
       - 'omniterm-desktop/scripts/package*.mjs'
       - 'omniterm-native/**'
+      - 'omniterm-cli/**'
   workflow_dispatch:
     inputs:
       reuse_agent_run_id:
@@ -168,7 +169,7 @@ jobs:
       matrix:
         include:
           - name: macOS arm64
-            os: macos-14
+            os: macos-latest
             target: aarch64-apple-darwin
             slug: macos-arm64
             reuse_input: reuse_macos_agent_run_id
@@ -288,9 +289,31 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+  skill:
+    name: Package standalone agent Skill
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: node --test omniterm-cli/test/skill-launcher.test.js
+      - run: python scripts/release/package-skill.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: omniterm-skill-${{ github.sha }}
+          path: dist/release-skills/*
+          if-no-files-found: error
+          retention-days: 14
+
   release-assets:
     name: Validate three-platform release assets
-    needs: [windows, unix]
+    needs: [windows, unix, skill]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -308,10 +331,26 @@ jobs:
         run: |
           python -m unittest discover -s scripts/release -p 'test_validate_release.py'
           python scripts/release/validate-release.py dist/release
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: omniterm-native-*-${{ github.sha }}
+          merge-multiple: true
+          path: dist/release-native
+      - uses: actions/download-artifact@v4
+        with:
+          name: omniterm-skill-${{ github.sha }}
+          path: dist/release-skills
+      - name: Verify native packages, bundled CLI and standalone Skill
+        run: |
+          python -m unittest discover -s scripts/release -p 'test_validate_native_release.py'
+          python scripts/release/validate-native-release.py dist/release-native dist/release-skills
       - uses: actions/upload-artifact@v4
         with:
           name: omniterm-complete-release-${{ github.sha }}
-          path: dist/release/*
+          path: |
+            dist/release/*
+            dist/release-native/*
+            dist/release-skills/*
           compression-level: 0
           retention-days: 14
           if-no-files-found: error

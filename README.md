@@ -4,13 +4,13 @@
 
 **An open-source terminal workspace with a Codex Agent beside your local and remote sessions.**
 
-**v0.2.0 Native Preview is being prepared.** It adds a Rust application with GPU-rendered terminals, SSH X11 forwarding and improved SFTP transfers alongside the Electron app. See the [v0.2.0 release notes](docs/omniterm/releases/v0.2.0.md) for changes, validation and remaining platform checks. The download links below refer to the existing 0.1.0 release until new assets are published.
+**v0.2.0 Native Preview** adds a Rust application with GPU-rendered terminals, SSH X11 forwarding, improved SFTP transfers and an external terminal/SFTP CLI for coding agents. See the [release notes](docs/omniterm/releases/v0.2.0.md) and [standalone Skill installation](omniterm-cli/skills/README.md).
 
-[Download 0.1.0](https://github.com/YanYaoyuan/omniTerm/releases) · [Desktop guide](omniterm-desktop/README.md) · [Build the Agent](docs/omniterm/local-build.md) · [Report an issue](https://github.com/YanYaoyuan/omniTerm/issues) · [Contribute](CONTRIBUTING.md)
+[Download 0.2.0 Preview](https://github.com/YanYaoyuan/omniTerm/releases/tag/v0.2.0) · [Desktop guide](omniterm-desktop/README.md) · [Build the Agent](docs/omniterm/local-build.md) · [Report an issue](https://github.com/YanYaoyuan/omniTerm/issues) · [Contribute](CONTRIBUTING.md)
 
 omniTerm brings shell tabs, split panes, SSH, a graphical SFTP browser, serial connections and port forwarding into one desktop app for **macOS, Linux and Windows**. A locally running, source-built Codex Agent shares the workspace. Select terminal output, send it to the Agent's input, and decide what to submit.
 
-The project is **Apache-2.0 licensed** and at **version 0.1.0**. It combines familiar terminal and remote-operation workflows with an inspectable Agent implementation. This is an early release: platform packages and individual runtime checks should not be read as complete three-platform manual acceptance.
+The project is **Apache-2.0 licensed** and at **version 0.2.0 (preview)**. It combines familiar terminal and remote-operation workflows with an inspectable Agent implementation. This is an early release: platform packages and individual runtime checks should not be read as complete three-platform manual acceptance.
 
 ## Download
 
@@ -115,6 +115,8 @@ npm --prefix omniterm-desktop run build
 ```
 
 The repository has three-platform code checks and separate native runtime/packaging checks. macOS GUI checks and Ubuntu installation, PTY and Electron checks have been performed for specific builds. Automated IPC input is not equivalent to keyboard/IME testing, and serial hardware, remote-server variants and Windows manual coverage still require dedicated acceptance. Use the [interaction checklist](docs/omniterm/desktop-test-plan.md) and the validation notes attached to each release.
+
+The native app bundles an [external terminal/SFTP CLI and agent Skill](omniterm-cli/skills/README.md): Codex and Claude Code can reuse an already connected asset without another login. Node.js 22+ is required for this external CLI.
 
 The optional [CLI launcher](omniterm-cli/README.md) provides `agent`, `shell`, `ssh`, `sftp`, `tunnel`, `serial` and `doctor` in an existing terminal:
 

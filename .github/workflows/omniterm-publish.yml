@@ -1,0 +1,109 @@
+# Publish only a complete, validated build selected explicitly by run and commit.
+name: Publish omniTerm release
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Successful omniTerm release builds run ID
+        required: true
+        type: string
+      source_commit:
+        description: Exact 40-character source SHA used by that build and release tag
+        required: true
+        type: string
+      release_tag:
+        description: Existing tag and draft release to publish
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: omniterm-publish-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BUILD_RUN: ${{ inputs.build_run_id }}
+      SOURCE_COMMIT: ${{ inputs.source_commit }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+      - name: Check selected build and existing tag
+        shell: bash
+        run: |
+          [[ "$BUILD_RUN" =~ ^[0-9]+$ ]]
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          gh api "repos/$GH_REPO/actions/runs/$BUILD_RUN" > "$RUNNER_TEMP/build.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          run = json.loads((Path(os.environ['RUNNER_TEMP']) / 'build.json').read_text())
+          assert run['status'] == 'completed' and run['conclusion'] == 'success', 'Build must pass first'
+          assert run['head_sha'] == os.environ['SOURCE_COMMIT'], 'Build commit mismatch'
+          assert run['path'] == '.github/workflows/omniterm-release.yml', 'Unexpected build workflow'
+          assert run['head_repository']['full_name'] == os.environ['GH_REPO'], 'Unexpected source repository'
+          PY
+          tag_commit=$(gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG" --jq '.object.sha')
+          tag_type=$(gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG" --jq '.object.type')
+          if [ "$tag_type" = tag ]; then
+            tag_commit=$(gh api "repos/$GH_REPO/git/tags/$tag_commit" --jq '.object.sha')
+          fi
+          test "$tag_commit" = "$SOURCE_COMMIT"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_commit }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.build_run_id }}
+          name: omniterm-complete-release-${{ inputs.source_commit }}
+          path: dist/publish
+      - name: Validate complete packages and Skill again
+        run: |
+          python scripts/release/validate-release.py dist/publish/release
+          python scripts/release/validate-native-release.py dist/publish/release-native dist/publish/release-skills
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          version = json.loads(Path('omniterm-desktop/package.json').read_text())['version']
+          assert os.environ['RELEASE_TAG'] == 'v' + version, 'Release tag/version mismatch'
+          PY
+      - name: Upload all assets to the draft and publish
+        shell: bash
+        run: |
+          gh release view "$RELEASE_TAG" --json isDraft,targetCommitish > "$RUNNER_TEMP/release.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          release = json.loads((Path(os.environ['RUNNER_TEMP']) / 'release.json').read_text())
+          assert release['isDraft'], 'Refusing to overwrite a published release'
+          assert release['targetCommitish'] == os.environ['SOURCE_COMMIT'], 'Draft source mismatch'
+          PY
+          mapfile -d '' assets < <(find dist/publish/release dist/publish/release-native dist/publish/release-skills -type f -print0)
+          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+          gh release view "$RELEASE_TAG" --json assets > "$RUNNER_TEMP/uploaded.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          expected = {p.name for p in Path('dist/publish').rglob('*') if p.is_file()}
+          uploaded = json.loads((Path(os.environ['RUNNER_TEMP']) / 'uploaded.json').read_text())['assets']
+          assert {p['name'] for p in uploaded} == expected, 'Published asset set mismatch'
+          PY
+          gh release edit "$RELEASE_TAG" --draft=false --prerelease --latest=false
+          gh release view "$RELEASE_TAG" --json url,isDraft,assets --jq '{url,isDraft,assets:[.assets[].name]}'

@@ -18,6 +18,10 @@ const desktop = path.join(repository, "omniterm-desktop");
 const output = path.join(repository, "dist/release-native");
 const withoutAgent = process.argv.includes("--without-agent");
 const run = (executable, args, options = {}) => execFileSync(executable, args, { cwd: repository, stdio: "inherit", ...options });
+const git = (...args) => execFileSync("git", args, { cwd: repository, encoding: "utf8" }).trim();
+const sourceCommit = git("rev-parse", "HEAD");
+const sourceDirty = Boolean(git("status", "--porcelain", "--untracked-files=normal"));
+if (!withoutAgent && sourceDirty) throw new Error("Release packaging requires a clean source checkout");
 
 const manifest = await readFile(path.join(native, "Cargo.toml"), "utf8");
 const version = /^version\s*=\s*"([^"]+)"/m.exec(manifest)?.[1];
@@ -72,6 +76,7 @@ await mkdir(output, { recursive: true });
 const provenance = withoutAgent ? null : await verifyAgent(agent);
 const suffix = withoutAgent ? "-app-only" : "";
 const artifacts = [];
+let packagedSignedBinarySha256;
 
 if (process.platform === "darwin") {
   const app = path.join(stage, "omniTerm.app");
@@ -100,6 +105,13 @@ if (process.platform === "darwin") {
 `);
   // Ad hoc only: no Developer ID or notarization credentials are used.
   run("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", app]);
+  run("/usr/bin/codesign", ["--verify", "--deep", "--strict", app]);
+  if (provenance) {
+    packagedSignedBinarySha256 = {};
+    for (const relative of Object.keys(provenance.binarySha256)) {
+      packagedSignedBinarySha256[relative] = await sha256(path.join(contents, "Resources/omniterm-agent", relative));
+    }
+  }
   const artifact = path.join(output, `omniTerm-native-${releaseVersion}-macos-${process.arch}${suffix}.zip`);
   run("/usr/bin/ditto", ["-c", "-k", "--sequesterRsrc", "--keepParent", app, artifact]);
   artifacts.push(artifact);
@@ -143,7 +155,7 @@ for (const artifact of artifacts) {
   const filename = path.basename(artifact);
   const checksum = await sha256(artifact);
   await writeFile(`${artifact}.sha256`, `${checksum}  ${filename}\n`);
-  await writeFile(`${artifact}.manifest.json`, `${JSON.stringify({ schemaVersion: 1, app: "omniterm-native", version: releaseVersion, platform: process.platform, arch: process.arch, agent: provenance, signed: false }, null, 2)}\n`);
+  await writeFile(`${artifact}.manifest.json`, `${JSON.stringify({ schemaVersion: 1, app: "omniterm-native", version: releaseVersion, desktopSourceCommit: sourceCommit, sourceDirty, platform: process.platform, arch: process.arch, agent: provenance, signed: false, adHocSigned: process.platform === "darwin", developerIDSigned: false, notarized: false, ...(packagedSignedBinarySha256 ? { packagedSignedBinarySha256 } : {}), artifact: { filename, bytes: (await stat(artifact)).size, sha256: checksum } }, null, 2)}\n`);
   console.log(`Native artifact: ${artifact}\nSHA-256: ${checksum}`);
 }
 await rm(stage, { recursive: true, force: true });
