@@ -112,7 +112,7 @@ jobs:
         if: env.OMNITERM_REUSE_AGENT_RUN_ID == ''
         run: python scripts/release/build-agent.py --target x86_64-pc-windows-msvc
       - name: Preserve the source-built Agent before desktop packaging
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: omniterm-agent-windows-x64-${{ github.sha }}
           path: dist/omniterm-agent/
@@ -146,7 +146,7 @@ jobs:
           cargo build --release --locked --manifest-path omniterm-native/Cargo.toml
           node omniterm-native/scripts/package.mjs
       - name: Upload native app artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: omniterm-native-windows-x64-${{ github.sha }}
           path: dist/release-native/*
@@ -154,7 +154,7 @@ jobs:
           retention-days: 14
           if-no-files-found: error
       - name: Upload desktop release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: omniterm-release-windows-x64-${{ github.sha }}
           path: dist/release/*
@@ -241,7 +241,7 @@ jobs:
         if: env.OMNITERM_REUSE_AGENT_RUN_ID == ''
         run: python scripts/release/build-agent.py --target ${{ matrix.target }}
       - name: Preserve the source-built Agent
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: omniterm-agent-${{ matrix.slug }}-${{ github.sha }}
           path: dist/omniterm-agent/
@@ -273,7 +273,7 @@ jobs:
           cargo build --release --locked --manifest-path omniterm-native/Cargo.toml
           node omniterm-native/scripts/package.mjs
       - name: Upload native app artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: omniterm-native-${{ matrix.slug }}-${{ github.sha }}
           path: dist/release-native/*
@@ -281,7 +281,7 @@ jobs:
           retention-days: 14
           if-no-files-found: error
       - name: Upload desktop release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: omniterm-release-${{ matrix.slug }}-${{ github.sha }}
           path: dist/release/*
@@ -304,7 +304,7 @@ jobs:
           python-version: '3.12'
       - run: node --test omniterm-cli/test/skill-launcher.test.js
       - run: python scripts/release/package-skill.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: omniterm-skill-${{ github.sha }}
           path: dist/release-skills/*
@@ -344,7 +344,7 @@ jobs:
         run: |
           python -m unittest discover -s scripts/release -p 'test_validate_native_release.py'
           python scripts/release/validate-native-release.py dist/release-native dist/release-skills
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: omniterm-complete-release-${{ github.sha }}
           path: |
