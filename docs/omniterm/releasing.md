@@ -106,6 +106,7 @@ license notices are collected. Every platform builds the terminal host, runs
 desktop tests, verifies its packaged runtime, and produces the native artifact.
 
 The standalone Skill job tests its portable launcher and packages the entire Skill directory with licensing, per-file hashes and release provenance.
+The CLI tree is checked out with LF endings on every platform via `.gitattributes`, so Windows Git conversion cannot change bundled CLI/Skill bytes relative to the release source.
 
 The final job downloads all three desktop artifacts and validates completeness,
 version, source commit, Agent provenance, sizes and SHA-256 hashes. It adds
