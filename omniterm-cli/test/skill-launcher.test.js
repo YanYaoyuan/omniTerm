@@ -1,7 +1,7 @@
 // Copyright 2026 omniTerm contributors. SPDX-License-Identifier: Apache-2.0
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -31,10 +31,10 @@ async function fixture(t) {
   return { root, run, cli };
 }
 
-test("bundled skill locates its real CLI and shows help without asset access", () => {
+test("bundled skill locates its real CLI and shows help without asset access", async () => {
   const located = spawnSync(process.execPath, [launcher, "--locate"], { encoding: "utf8", env: { ...process.env, OMNITERM_CLI_ENTRY: "" } });
   assert.equal(located.status, 0, located.stderr);
-  assert.equal(JSON.parse(located.stdout).entry, fileURLToPath(new URL("../bin/omniterm.js", import.meta.url)));
+  assert.equal(JSON.parse(located.stdout).entry, await realpath(fileURLToPath(new URL("../bin/omniterm.js", import.meta.url))));
   const help = spawnSync(process.execPath, [launcher, "files", "--help"], { encoding: "utf8", env: { ...process.env, OMNITERM_CLI_ENTRY: "" } });
   assert.equal(help.status, 0, help.stderr);
   assert.match(help.stdout, /omniterm files upload/);
@@ -46,7 +46,7 @@ test("copied skill honors explicit CLI, preserves literal arguments and exit cod
   const env = { OMNITERM_CLI_ENTRY: entry };
   const located = f.run(["--locate"], env);
   assert.equal(located.status, 0, located.stderr);
-  assert.equal(JSON.parse(located.stdout).entry, entry);
+  assert.equal(JSON.parse(located.stdout).entry, await realpath(entry));
   const args = ["session", "exec", "--command", "printf '%s' '$HOME; $(unsafe)'\nfalse"];
   const command = f.run(args, env);
   assert.equal(command.status, 3, command.stderr);
@@ -73,7 +73,7 @@ test("standalone skill uses the actual launcher location and rejects ambiguous i
   await symlink(firstLauncher, path.join(bin, "omniterm-native-pr21"));
   const found = f.run(["--locate"]);
   assert.equal(found.status, 0, found.stderr);
-  assert.equal(JSON.parse(found.stdout).entry, first);
+  assert.equal(JSON.parse(found.stdout).entry, await realpath(first));
   const second = await f.cli("second-app/omniterm-cli");
   const secondLauncher = path.join(path.dirname(path.dirname(path.dirname(second))), "run.sh");
   await writeFile(secondLauncher, "#!/bin/sh\n");
@@ -90,4 +90,15 @@ test("missing installations give actionable discovery errors without running a G
   assert.equal(result.status, 1);
   assert.equal(result.stdout, "");
   assert.match(JSON.parse(result.stderr).error, /OMNITERM_CLI_ENTRY/);
+});
+
+
+test("CLI discovery canonicalizes an alias without changing which installation it selects", async (t) => {
+  const f = await fixture(t);
+  const entry = await f.cli("canonical-app");
+  const alias = path.join(f.root, "app-alias");
+  await symlink(path.dirname(path.dirname(entry)), alias, process.platform === "win32" ? "junction" : "dir");
+  const located = f.run(["--locate"], { OMNITERM_CLI_ENTRY: path.join(alias, "bin", "omniterm.js") });
+  assert.equal(located.status, 0, located.stderr);
+  assert.equal(JSON.parse(located.stdout).entry, await realpath(entry));
 });

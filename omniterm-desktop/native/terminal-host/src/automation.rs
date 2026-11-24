@@ -308,6 +308,9 @@ fn serve(
     service: &Service,
     stopped: &AtomicBool,
 ) -> std::io::Result<()> {
+    // Accepted sockets can inherit O_NONBLOCK on BSD/macOS. The listener stays
+    // nonblocking for shutdown polling; each worker uses blocking I/O with deadlines.
+    stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     let mut line = Vec::new();
@@ -457,6 +460,47 @@ mod tests {
             self.host.shutdown();
             let _ = std::fs::remove_dir_all(&self.directory);
         }
+    }
+
+    #[test]
+    fn inherited_nonblocking_stream_accepts_delayed_fragmented_requests() {
+        let fixture = Fixture::new();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let service = Service {
+            host: fixture.host.clone(),
+            extension: None,
+            calls: Mutex::default(),
+        };
+        let (ready, accepted) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            // BSD/macOS can inherit O_NONBLOCK from the listening socket. Force
+            // that state so this transport regression is reproducible on Linux.
+            stream.set_nonblocking(true).unwrap();
+            ready.send(()).unwrap();
+            serve(stream, "fixture-token", &service, &AtomicBool::new(false))
+        });
+        let mut client = TcpStream::connect(address).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        accepted.recv_timeout(Duration::from_secs(2)).unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        let request =
+            serde_json::to_vec(&json!({"token":"fixture-token","method":"ping","params":{}}))
+                .unwrap();
+        let middle = request.len() / 2;
+        client.write_all(&request[..middle]).unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        client.write_all(&request[middle..]).unwrap();
+        client.write_all(b"\n").unwrap();
+        let mut response = String::new();
+        BufReader::new(client).read_line(&mut response).unwrap();
+        let response: Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["result"]["protocol"], 1);
+        server.join().unwrap().unwrap();
     }
 
     #[test]

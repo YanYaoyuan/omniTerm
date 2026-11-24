@@ -5,13 +5,14 @@ import os from "node:os";
 import path from "node:path";
 
 export function discoveryDirectory(env = process.env, platform = process.platform) {
+  const paths = platform === "win32" ? path.win32 : path.posix;
   if (env.OMNITERM_AUTOMATION_DIR) return env.OMNITERM_AUTOMATION_DIR;
-  if (env.OMNITERM_DATA_DIR && path.isAbsolute(env.OMNITERM_DATA_DIR)) return path.join(env.OMNITERM_DATA_DIR, "automation");
+  if (env.OMNITERM_DATA_DIR && paths.isAbsolute(env.OMNITERM_DATA_DIR)) return paths.join(env.OMNITERM_DATA_DIR, "automation");
   const home = env[platform === "win32" ? "USERPROFILE" : "HOME"] || os.homedir();
-  const base = platform === "win32" ? (env.APPDATA || path.join(home, "AppData", "Roaming"))
-    : platform === "darwin" ? path.join(home, "Library", "Application Support")
-      : env.XDG_CONFIG_HOME && path.isAbsolute(env.XDG_CONFIG_HOME) ? env.XDG_CONFIG_HOME : path.join(home, ".config");
-  return path.join(base, "omniTerm", "automation");
+  const base = platform === "win32" ? (env.APPDATA || paths.join(home, "AppData", "Roaming"))
+    : platform === "darwin" ? paths.join(home, "Library", "Application Support")
+      : env.XDG_CONFIG_HOME && paths.isAbsolute(env.XDG_CONFIG_HOME) ? env.XDG_CONFIG_HOME : paths.join(home, ".config");
+  return paths.join(base, "omniTerm", "automation");
 }
 
 export function requestBridge(instance, method, params = {}, timeoutMs = 7000) {

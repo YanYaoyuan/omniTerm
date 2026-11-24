@@ -50,7 +50,10 @@ test("native discovery follows platform data directory conventions", () => {
   assert.equal(discoveryDirectory({ HOME: "/u", XDG_CONFIG_HOME: "/config" }, "linux"), "/config/omniTerm/automation");
   assert.equal(discoveryDirectory({ HOME: "/u", XDG_CONFIG_HOME: "relative" }, "linux"), "/u/.config/omniTerm/automation");
   assert.equal(discoveryDirectory({ HOME: "/u" }, "darwin"), "/u/Library/Application Support/omniTerm/automation");
-  assert.match(discoveryDirectory({ APPDATA: "/roaming" }, "win32"), /omniTerm.*automation$/);
+  assert.equal(discoveryDirectory({ APPDATA: "C:\\Users\\user\\AppData\\Roaming" }, "win32"), "C:\\Users\\user\\AppData\\Roaming\\omniTerm\\automation");
+  assert.equal(discoveryDirectory({ USERPROFILE: "C:\\Users\\user" }, "win32"), "C:\\Users\\user\\AppData\\Roaming\\omniTerm\\automation");
+  assert.equal(discoveryDirectory({ OMNITERM_DATA_DIR: "D:\\preview" }, "win32"), "D:\\preview\\automation");
+  assert.equal(discoveryDirectory({ HOME: "/u", OMNITERM_DATA_DIR: "C:\\preview" }, "linux"), "/u/.config/omniTerm/automation");
 });
 
 test("instances never expose tokens; malformed and stale discovery files are skipped", async (t) => {

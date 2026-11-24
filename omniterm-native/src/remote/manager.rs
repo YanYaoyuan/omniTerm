@@ -1113,7 +1113,7 @@ impl Remote {
 
     /// Ends the channels and the shared login, which otherwise outlives the terminal for
     /// ControlPersist seconds.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn close(self: &Arc<Self>) -> Option<std::thread::JoinHandle<()>> {
         self.close_channels(true)
     }
