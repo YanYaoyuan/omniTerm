@@ -30,7 +30,7 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - name: Test the omniTerm launcher
-        run: node --test omniterm-cli/test/cli.test.js omniterm-cli/test/sessions.test.js
+        run: node --test omniterm-cli/test/cli.test.js omniterm-cli/test/sessions.test.js omniterm-cli/test/skill-launcher.test.js
       - name: Check the command entry point
         run: node omniterm-cli/bin/omniterm.js --help
 

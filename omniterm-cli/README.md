@@ -53,7 +53,7 @@ CLI 退出码：`0` 成功/读/发送成功，`1` 错误或被阻止/取消，`2
 
 ### 给 Codex / Claude Code 的 skill
 
-可直接分发 [skills/omniterm-control/SKILL.md](skills/omniterm-control/SKILL.md)。也可把整个 `omniterm-control` 文件夹放进智能体的 skill 目录，例如 Codex 的 `~/.codex/skills/` 或 Claude Code 的 `~/.claude/skills/`。运行 CLI 的智能体需与 omniTerm 在同一操作系统中；WSL、容器和远程开发机不能自动共享宿主机的发现文件与本机端口。
+分发完整的 [omniterm-control](skills/omniterm-control/SKILL.md) 文件夹，包含 `SKILL.md`、`scripts/omniterm.mjs` 和 `references/`，以保留按需读取的终端/SFTP/恢复说明。可以将整个文件夹放到使用者选择的 skill 目录。入口脚本优先定位随包 CLI，单独复制 skill 时可查找实际安装启动器；无法定位或候选不唯一时设置 `OMNITERM_CLI_ENTRY` 为具体 `bin/omniterm.js`。`node <skill目录>/scripts/omniterm.mjs --locate` 仅定位程序，后续参数原样转交 CLI，保留 JSON 和退出码。运行 CLI 的智能体需与 omniTerm 在同一操作系统中；WSL、容器和远程开发机不能自动共享宿主机的发现文件与本机端口。
 
 ## 稳定绑定资产终端和 SFTP 页面
 
