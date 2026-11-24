@@ -61,7 +61,7 @@ jobs:
             tag_commit=$(gh api "repos/$GH_REPO/git/tags/$tag_commit" --jq '.object.sha')
           fi
           test "$tag_commit" = "$SOURCE_COMMIT"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.source_commit }}
           persist-credentials: false
