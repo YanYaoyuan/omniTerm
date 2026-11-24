@@ -54,7 +54,7 @@ export function validateProfile(input = {}, { kind = input.kind, requireConnecti
   if (input.host !== undefined && input.host !== "") result.host = host(input.host, "Host", true);
   if (input.username !== undefined && input.username !== "") {
     result.username = text(input.username, "Username", 128);
-    if (!/^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$/.test(result.username)) throw new Error("Invalid SSH username.");
+    if (!/^[a-zA-Z0-9_][a-zA-Z0-9_.-]*(?:\/[a-zA-Z0-9_][a-zA-Z0-9_.-]*)*$/.test(result.username)) throw new Error("Invalid SSH username.");
   }
   if (input.proxyJump !== undefined && input.proxyJump !== "") result.proxyJump = proxyJump(input.proxyJump);
   if (result.host?.includes("@") && result.username) throw new Error("Enter the username separately or in the host, not both.");
@@ -128,7 +128,7 @@ function destination(profile, kind) {
   const user = profile.username || (split >= 0 ? hostname.slice(0, split) : "");
   if (split >= 0) hostname = hostname.slice(split + 1);
   if (kind === "sftp" && hostname.includes(":") && !hostname.startsWith("[")) hostname = `[${hostname}]`;
-  return user ? `${user}@${hostname}` : hostname;
+  return user && !user.includes("/") ? `${user}@${hostname}` : hostname;
 }
 
 export async function buildCommandPlan(request, options = {}) {
@@ -157,6 +157,9 @@ export async function buildCommandPlan(request, options = {}) {
     if (!await serialProbe(command.python, env)) throw new Error(`Python 3 with pyserial is required for serial connections. Install pyserial for ${command.python.executable} (python -m pip install pyserial).`);
   } else {
     const args = [];
+    // Keep routing usernames out of sftp's destination/path parser.
+    const routedUser = profile.username?.includes("/") ? ["-o", `User=${profile.username}`] : [];
+    args.push(...routedUser);
     const socket = companion ? controlPath() : null;
     // A persisting master lets the file panel share this login, and its timeout
     // bounds how long the connection survives if omniTerm itself dies.
@@ -179,7 +182,7 @@ export async function buildCommandPlan(request, options = {}) {
     command = planCommand(request.kind, args, { ...options, env, platform });
     const split = profile.host.lastIndexOf("@");
     connection = { host: split >= 0 ? profile.host.slice(split + 1) : profile.host, user: profile.username || (split >= 0 ? profile.host.slice(0, split) : null), port: profile.port ?? null };
-    if (companion) remote = { executable: planCommand("ssh", [], { ...options, env, platform }).executable, destination: destination(profile, "ssh"), controlPath: socket, args: [...(profile.port ? ["-p", String(profile.port)] : []), ...(profile.keyPath ? ["-i", profile.keyPath] : []), ...jump] };
+    if (companion) remote = { executable: planCommand("ssh", [], { ...options, env, platform }).executable, destination: destination(profile, "ssh"), controlPath: socket, args: [...routedUser, ...(profile.port ? ["-p", String(profile.port)] : []), ...(profile.keyPath ? ["-i", profile.keyPath] : []), ...jump] };
   }
   const sessionEnv = Object.fromEntries(Object.entries({ ...env, TERM: "xterm-256color", COLORTERM: "truecolor", TERM_PROGRAM: "omniTerm" }).filter(([, value]) => typeof value === "string"));
   return { ...command, kind: request.kind, cwd, title: profile.name || ({ shell: "Terminal", agent: "Agent", ssh: `SSH · ${profile.host}`, sftp: `SFTP · ${profile.host}`, serial: `Serial · ${profile.device}`, tunnel: `Tunnel · ${profile.host}` })[request.kind], env: sessionEnv, connection, ...(remote ? { remote: { ...remote, env: sessionEnv } } : {}) };

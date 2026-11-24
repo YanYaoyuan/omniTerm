@@ -57,6 +57,23 @@ test("tunnel L/R/D always defaults to loopback binding", async () => {
   }
 });
 
+test("bastion routing usernames reach SSH, SFTP and companions as literal user options", async () => {
+  const username = "alice/192.0.2.10/root";
+  for (const kind of ["ssh", "sftp", "tunnel"]) {
+    const plan = await buildCommandPlan({ kind, profile: { host: "gateway", username, port: 60022, bindPort: 8080, forwardType: "D" } }, options);
+    assert.ok(plan.args.some((arg, index) => arg === "-o" && plan.args[index + 1] === `User=${username}`));
+    assert.equal(plan.args.at(-1), "gateway");
+    assert.equal(plan.connection.user, username);
+    if (kind !== "tunnel") {
+      assert.equal(plan.remote.destination, "gateway");
+      assert.deepEqual(plan.remote.args.slice(0, 2), ["-o", `User=${username}`]);
+    }
+  }
+  for (const username of ["/root", "alice//root", "alice/", "-oProxyCommand=x", "alice/-oProxyCommand", "alice/asset/root\n", "alice/asset/root;id", "alice/asset/root@host", "alice/asset/root x"]) {
+    assert.throws(() => validateProfile({ kind: "ssh", host: "gateway", username }));
+  }
+});
+
 test("serial checks the selected Python environment for pyserial", async () => {
   let probed;
   const request = { kind: "serial", profile: { device: "/dev/ttyUSB0", baud: "9600" } };

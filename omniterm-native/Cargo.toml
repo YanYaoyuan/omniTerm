@@ -17,9 +17,11 @@ path = "src/main.rs"
 [dependencies]
 alacritty_terminal = "0.26"
 arboard = { version = "3", default-features = false }
+base64 = "0.22"
 bytemuck = { version = "1", features = ["derive"] }
 cosmic-text = "0.19"
 eframe = "0.37"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 keyring = { version = "3.6", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 rfd = "0.17"
@@ -33,6 +35,13 @@ uuid = { version = "1", features = ["v4"] }
 # and the Wayland data device protocol itself, with crates winit already uses.
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 drag = "2.1"
+
+# Read the native drop position when AppKit sends file paths without mouse-motion events.
+# These versions already belong to eframe's native dependency graph.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSView", "NSWindow", "objc2-core-foundation"] }
+raw-window-handle = "0.6"
 
 # X11 forwarding: the short path of omniTerm itself, which ssh runs as its xauth.
 [target.'cfg(windows)'.dependencies]

@@ -192,7 +192,7 @@ test("the client rejects oversized packets instead of buffering them", async () 
 
 test("a failed handshake explains when the host has no SFTP subsystem", async () => {
   const states = [];
-  const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill() {} });
+  const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill() { queueMicrotask(() => this.emit("close", 255)); } });
   const manager = new RemoteManager({ spawnProcess: () => child, onState: (state) => states.push(state) });
   manager.attach("s1", target);
   child.stderr.write("subsystem request failed on channel 0\n");
@@ -204,7 +204,7 @@ test("a failed handshake explains when the host has no SFTP subsystem", async ()
 
 test("a silent refusal through a shared connection also means no SFTP", async () => {
   const states = [];
-  const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill() {} });
+  const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill() { queueMicrotask(() => this.emit("close", 255)); } });
   const manager = new RemoteManager({ exists: () => true, runSync: () => {}, spawnProcess: () => child, onState: (state) => states.push(state) });
   manager.attach("s1", { ...target, controlPath: "/tmp/x/1" });
   child.emit("close", 255);
@@ -212,10 +212,61 @@ test("a silent refusal through a shared connection also means no SFTP", async ()
   manager.detach("s1");
 });
 
+test("bastion channel refusal takes priority over a later authentication error", () => {
+  const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill() { queueMicrotask(() => this.emit("close", 255)); } });
+  const manager = new RemoteManager({ exists: () => true, runSync: () => {}, spawnProcess: () => child });
+  manager.attach("s1", { ...target, controlPath: "/tmp/test-master" });
+  child.stderr.write("mux_client_request_session: session request failed: Session open refused by peer\nPermission denied (password,keyboard-interactive,publickey).\n");
+  child.emit("close", 255);
+  assert.equal(manager.state("s1").reason, "channel-refused");
+  assert.match(manager.state("s1").detail, /Session open refused/);
+  manager.detach("s1");
+});
+
+test("shared-only channels cannot silently fall back to a new SSH login", () => {
+  const manager = new RemoteManager();
+  const args = manager.channelArgs({ ...target, controlPath: "/tmp/test-master", args: ["-o", "ProxyJump=company-gateway"] });
+  assert.ok(args.includes("ProxyCommand=false"));
+  assert.ok(args.indexOf("ProxyCommand=false") < args.indexOf("ProxyJump=company-gateway"));
+  assert.ok(!manager.channelArgs(target).includes("ProxyCommand=false"), "independent key-based channels remain supported");
+});
+
+test("real OpenSSH: a missing shared socket makes no new TCP connection", { skip: process.platform === "win32" || !existsSync("/usr/bin/ssh") }, async (t) => {
+  let connections = 0;
+  const listener = createServer((socket) => { connections++; socket.end("SSH-2.0-fixture\r\n"); });
+  await new Promise((resolve) => listener.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => listener.close(resolve)));
+  const manager = new RemoteManager();
+  const args = manager.channelArgs({ ...target, controlPath: path.join(scratch(t), "missing-master"), args: ["-F", "/dev/null", "-p", String(listener.address().port), "-o", "IdentityAgent=none"] });
+  const child = spawn("/usr/bin/ssh", [...args, "fixture@127.0.0.1", "true"], { stdio: "ignore" });
+  const code = await new Promise((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
+  assert.notEqual(code, 0);
+  assert.equal(connections, 0, "a companion must fail rather than open another login after losing its master");
+});
+
+test("monitor failures retain the refused-channel reason and SSH diagnostic", () => {
+  const samples = [];
+  const children = [];
+  const manager = new RemoteManager({ exists: () => true, runSync: () => {}, onMetrics: (sample) => samples.push(sample), spawnProcess: () => {
+    const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill() { queueMicrotask(() => this.emit("close", 255)); } });
+    children.push(child);
+    return child;
+  } });
+  manager.attach("s1", { ...target, controlPath: "/tmp/test-master" });
+  manager.watchMetrics({ id: "s1", enabled: true });
+  const child = children.at(-1);
+  child.stderr.write("Session open refused by peer\n");
+  child.emit("close", 255);
+  assert.equal(samples.at(-1).available, false);
+  assert.equal(samples.at(-1).reason, "channel-refused");
+  assert.equal(samples.at(-1).detail, "Session open refused by peer");
+  manager.detach("s1");
+});
+
 test("the panel waits for the login before opening any channel", async () => {
   let authenticated = false;
   const spawned = [];
-  const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill() {} });
+  const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill() { queueMicrotask(() => this.emit("close", 255)); } });
   const manager = new RemoteManager({ exists: () => authenticated, pollMs: 2, runSync: () => {}, spawnProcess: (_file, args) => { spawned.push(args); return child; } });
   manager.attach("s1", { ...target, controlPath: "/tmp/x/1" });
   await new Promise((resolve) => setTimeout(resolve, 15));

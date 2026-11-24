@@ -10,12 +10,15 @@
 
 mod agent;
 mod backend;
+mod automation;
 mod bench;
 mod core;
 mod drag_out;
+mod file_drop_position;
 mod glyphs;
 mod gpu;
 mod grid;
+mod highlight;
 mod icons;
 mod input;
 mod layout;
@@ -38,8 +41,57 @@ fn app_icon() -> Option<egui::IconData> {
 
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(code) = remote::qizhi::helper(&args, ui::ssh_auth::show) {
+        std::process::exit(code);
+    }
+    if let Some(code) = core::ssh_auth::helper(&args, ui::ssh_auth::show) {
+        std::process::exit(code);
+    }
+    if args.first().map(String::as_str) == Some("--inspect-accessclient") {
+        let code = (|| {
+            if args.len() != 1 { return Err("启动链接须通过标准输入传入。"); }
+            let summary = core::accessclient::inspect(std::io::stdin())?;
+            println!("{}", serde_json::to_string(&summary).map_err(|_| "无法生成诊断。")?);
+            Ok(())
+        })();
+        std::process::exit(match code { Ok(()) => 0, Err(error) => { eprintln!("{error}"); 2 } });
+    }
+    let validate_launch = args.first().map(String::as_str) == Some("--validate-accessclient");
+    let web_launch = if validate_launch || args.first().map(String::as_str) == Some("--open-accessclient") {
+        let launch = (|| {
+            use std::io::Read;
+            if args.len() != 1 { return Err("启动链接须通过标准输入传入。".to_string()); }
+            let mut input = String::new();
+            std::io::stdin().take((core::accessclient::MAX_WIRE_BYTES + 1) as u64).read_to_string(&mut input).map_err(|_| "无法读取启动请求。")?;
+            core::web_launch::Incoming::from_wire(&input)
+        })();
+        match launch {
+            Ok(launch) => {
+                if validate_launch { println!("{{\"ok\":true}}"); return Ok(()); }
+                Some(launch)
+            }
+            Err(error) => { eprintln!("{error}"); std::process::exit(2); }
+        }
+    } else { None };
     // ssh runs omniTerm as its `xauth` for X11 forwarding on Windows; answer and leave.
     if let Some(code) = core::x11::xauth_shim(&args) {
+        std::process::exit(code);
+    }
+    if args.first().map(String::as_str) == Some("--verify-file-connection") {
+        let code = match args.get(1) {
+            Some(path) if args.len() == 2 => remote::verify::run(std::path::Path::new(path)),
+            _ => {
+                eprintln!("Usage: omniTerm --verify-file-connection <connection-parameters.json>");
+                2
+            }
+        };
+        std::process::exit(code);
+    }
+    if args.first().map(String::as_str) == Some("--verify-routed-file-connection") {
+        let code = match args.get(1) {
+            Some(id) if args.len() == 2 => remote::verify::run_profile(id),
+            _ => { eprintln!("Usage: omniTerm --verify-routed-file-connection <saved-profile-id>"); 2 }
+        };
         std::process::exit(code);
     }
     if args.first().map(String::as_str) == Some("--bench") {
@@ -58,7 +110,9 @@ fn main() -> eframe::Result {
         .with_min_inner_size([1000.0, 650.0])
         .with_transparent(transparent);
     // The title bar is the app's own, in the theme's colors. macOS keeps its traffic lights.
-    viewport = if cfg!(target_os = "macos") {
+    viewport = if matches!(&web_launch, Some(core::web_launch::Incoming::Sftp(_))) {
+        viewport.with_title("omniTerm · SFTP").with_decorations(true)
+    } else if cfg!(target_os = "macos") {
         viewport.with_fullsize_content_view(true).with_titlebar_shown(false).with_title_shown(false)
     } else {
         viewport.with_decorations(false)
@@ -67,8 +121,9 @@ fn main() -> eframe::Result {
         viewport = viewport.with_icon(icon);
     }
     let options = eframe::NativeOptions { viewport, renderer: eframe::Renderer::Wgpu, ..Default::default() };
-    let result = eframe::run_native("omniTerm", options, Box::new(move |cc| Ok(Box::new(ui::App::new(cc, settings, transparent, smoke)))));
+    let result = eframe::run_native("omniTerm", options, Box::new(move |cc| Ok(Box::new(ui::App::new(cc, settings, transparent, smoke, web_launch)))));
     remote::cleanup();
     core::x11::shutdown();
+    core::ssh_auth::cleanup();
     result
 }

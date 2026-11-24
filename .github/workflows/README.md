@@ -1,14 +1,19 @@
 # omniTerm workflows
 
-The `omniterm-ci.yml` workflow has two jobs on Linux, macOS, and Windows:
+The `omniterm-ci.yml` workflow covers Linux, macOS, and Windows:
 
 - `terminal-cli` tests the optional command launcher with Node.js 22 and 24,
-  including help without Codex, OpenSSH, or serial hardware installed.
+  including help without Codex, OpenSSH, or serial hardware installed, plus
+  external-session discovery, input and execution against isolated local services.
 - `desktop` restores the desktop's independent npm lockfile with Node.js 24,
   runs backend tests with a mocked terminal host, and builds the Electron main
   process, preload, and React renderer.
 - `terminal-host` runs the Rust host's tests on all three platforms, builds it,
   and exercises a real PTY or ConPTY through it.
+- `native-app` tests and builds the Rust desktop app, including a Linux window
+  controlled through the external CLI in an isolated Xvfb display. It also operates
+  a real SFTP page against a loopback fixture, checking exact target binding, file
+  mutations, transfer integrity, overwrite refusal and cancellation without a shell.
 - `engine` tests the provider protocols and the dynamic-tools-only boundary, and
   type-checks the Agent binary on Ubuntu.
 
@@ -16,7 +21,8 @@ The desktop job uses `npm ci --ignore-scripts` and sets
 `ELECTRON_SKIP_BINARY_DOWNLOAD=1`. It skips Electron installation hooks. It does not launch an Electron window,
 package an application, or test graphical interaction.
 
-No job validates live SSH, SFTP, serial-device, or authenticated Agent sessions. Native runtime and GUI
+SSH/SFTP checks use isolated loopback fixtures. Hosted CI does not validate company assets,
+physical serial devices, or authenticated model services. Further native runtime and GUI
 verification follow the
 [desktop test plan](../../docs/omniterm/desktop-test-plan.md).
 

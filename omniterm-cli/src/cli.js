@@ -4,6 +4,8 @@ import { accessSync, constants, readFileSync, statSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { runSession } from "./sessions.js";
+import { runFiles } from "./files.js";
 
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
 const version = JSON.parse(
@@ -15,6 +17,8 @@ export const help = `omniTerm ${version} — terminal tools with a Codex Agent
 Usage: omniterm <command> [arguments...]
 
 Commands:
+  session <action>   Control existing native desktop sessions (JSON API)
+  files <action>     Operate existing SFTP pages and their transfer queues
   agent [args...]     Run Codex (all arguments are passed through)
   shell [args...]     Open your local shell, or pass arguments to it
   ssh [args...]       Run the system OpenSSH client
@@ -35,7 +39,7 @@ Examples:
   omniterm serial /dev/ttyUSB0 115200
 
 Set OMNITERM_CODEX_BIN to a Codex executable or its .js launcher.
-This initial CLI uses your existing terminal; a desktop UI is planned.
+Use omniterm session --help to control sessions already open in the native UI.
 `;
 
 function environmentValue(env, key, platform) {
@@ -374,6 +378,8 @@ export async function main(argv, inputOptions = {}) {
     return 0;
   }
   try {
+    if (command === "files") return await runFiles(rawArgs, { ...options, output, errorOutput });
+    if (command === "session") return await runSession(rawArgs, { ...options, output, errorOutput });
     if (command === "doctor") {
       if (rawArgs.length) throw new Error("Usage: omniterm doctor");
       let missing = false;

@@ -6,8 +6,10 @@ import {
 import { formatBytes, formatTime, formatUptime, joinRemote, nextSelection, parentRemote, percent, sortEntries, transferFinished, validEntryName } from "./remote-utils.js";
 
 const UNAVAILABLE = {
-  "no-sftp": "这台主机没有启用 SFTP，文件面板不可用。",
-  auth: "无法复用 SSH 登录。Windows 上文件面板需要密钥或 SSH Agent 认证。",
+  "no-sftp": "SSH 服务器未提供或不允许 SFTP，文件面板不可用。",
+  "channel-refused": "SSH 服务器拒绝新增会话通道。堡垒机菜单登录可能不支持共享 SFTP，请使用管理员提供的资产 SFTP 入口。",
+  "host-key": "SSH 主机身份验证失败，请核对主机指纹和 known_hosts。",
+  auth: "文件连接的 SSH 认证未通过。请检查认证方式与权限；终端登录成功不代表文件通道可复用该登录。",
   lost: "SFTP 连接已断开。",
   failed: "无法打开 SFTP 连接。",
 };
@@ -249,7 +251,7 @@ export function MetricsBar({ session, remote, store, api, notify }) {
   }, [api, id, notify]);
   const body = () => {
     if (remote.state === "waiting") return <span className="metrics-note">等待 SSH 登录完成…</span>;
-    if (metrics && !metrics.available) return <><span className="metrics-note">主机监控不可用：远程主机需要提供 POSIX shell。</span><button className="metrics-retry" onClick={() => Promise.resolve(api.remoteRetry(id)).catch((error) => notify(error.message))}>重试</button></>;
+    if (metrics && !metrics.available) return <><span className="metrics-note" title={metrics.detail}>主机监控不可用：{metrics.reason === "channel-refused" ? "SSH 服务器拒绝新增监控通道。" : metrics.reason === "auth" ? "监控连接的 SSH 认证未通过。" : metrics.reason === "host-key" ? "SSH 主机身份验证失败。" : "无法执行远程采样；服务器需允许额外会话和 POSIX shell 命令。"}</span><button className="metrics-retry" onClick={() => Promise.resolve(api.remoteRetry(id)).catch((error) => notify(error.message))}>重试</button></>;
     if (!metrics?.sample) return <span className="metrics-note"><CircleNotch className="spin" size={12} />正在采集主机信息…</span>;
     const { sample } = metrics;
     return <>

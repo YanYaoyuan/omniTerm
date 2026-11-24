@@ -1,9 +1,10 @@
 // Copyright 2026 omniTerm contributors. SPDX-License-Identifier: Apache-2.0
-//! One companion per SSH tab: it waits for the terminal's login to finish, opens an SFTP
-//! channel and a metrics channel over the shared connection, and runs file operations and a
-//! transfer queue on its own threads. The UI reads a snapshot each frame and never waits.
+//! One file connection per terminal pane: a shared SSH companion or an independently
+//! authenticated asset SFTP endpoint. File operations and transfer queues run on worker
+//! threads; the UI reads a snapshot each frame and never waits.
 
 use super::metrics::{self, Sample, Tracker};
+use super::qizhi;
 use super::sftp::{self, Client};
 use crate::core::plan::Companion;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -16,6 +17,8 @@ use std::time::{Duration, Instant};
 
 const POLL: Duration = Duration::from_millis(500);
 const HANDSHAKE: Duration = Duration::from_secs(20);
+/// Independent logins may need a password or OTP dialog before SFTP starts.
+const AUTHENTICATION: Duration = Duration::from_secs(5 * 60);
 const PROGRESS: Duration = Duration::from_millis(150);
 const CONCURRENT_TRANSFERS: usize = 2;
 const MAX_STDERR: usize = 4096;
@@ -28,6 +31,8 @@ const MAX_DRAG_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reason {
     NoSftp,
+    ChannelRefused,
+    HostKey,
     Auth,
     Lost,
     Failed,
@@ -36,8 +41,10 @@ pub enum Reason {
 impl Reason {
     pub fn message(self) -> &'static str {
         match self {
-            Reason::NoSftp => "这台主机没有启用 SFTP，文件面板不可用。",
-            Reason::Auth => "无法复用 SSH 登录。Windows 上文件面板需要密钥或 SSH Agent 认证。",
+            Reason::NoSftp => "SSH 服务器未提供或不允许 SFTP，文件面板不可用。",
+            Reason::ChannelRefused => "SSH 服务器拒绝新增会话通道。堡垒机菜单登录可能不支持共享 SFTP，请使用管理员提供的资产 SFTP 入口。",
+            Reason::HostKey => "SSH 主机身份验证失败，请核对主机指纹和 known_hosts。",
+            Reason::Auth => "文件连接的 SSH 认证未通过。请检查认证方式与权限；终端登录成功不代表文件通道可复用该登录。",
             Reason::Lost => "SFTP 连接已断开。",
             Reason::Failed => "无法打开 SFTP 连接。",
         }
@@ -139,6 +146,9 @@ struct State {
     home: Option<String>,
     client: Option<Arc<Client>>,
     sftp_child: Option<Arc<Mutex<Child>>>,
+    authentication: Option<Arc<qizhi::Auth>>,
+    attempt: u64,
+    connecting: bool,
     metrics_child: Option<Arc<Mutex<Child>>>,
     metrics_wanted: bool,
     metrics: Option<Sample>,
@@ -146,6 +156,7 @@ struct State {
     linked: bool,
     listing: Listing,
     transfers: Vec<Transfer>,
+    tracked_transfers: HashMap<u64, Transfer>,
     queue: VecDeque<Job>,
     running: usize,
     uploads_done: u64,
@@ -158,11 +169,58 @@ struct State {
 
 pub struct Remote {
     id: String,
-    target: Companion,
+    identity: String,
+    target: Target,
     state: Mutex<State>,
     closed: AtomicBool,
     wake: Arc<dyn Fn() + Send + Sync>,
     next: AtomicU64,
+}
+
+enum Target {
+    Shared(Companion),
+    Independent { connection: Mutex<qizhi::Connection>, executable: String },
+}
+
+/// Detect the protocol beginning without interpreting server text or changing SFTP parsing.
+struct ProtocolOutput<R> {
+    reader: R,
+    started: Arc<Mutex<Option<Instant>>>,
+}
+
+impl<R: Read> Read for ProtocolOutput<R> {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        let count = self.reader.read(bytes)?;
+        if count > 0 { lock(&self.started).get_or_insert_with(Instant::now); }
+        Ok(count)
+    }
+}
+
+fn stop_channel(child: &Arc<Mutex<Child>>, authentication: Option<&qizhi::Auth>, independent: bool) {
+    if let Some(authentication) = authentication { authentication.cancel(); }
+    let mut child = lock(child);
+    #[cfg(unix)]
+    if independent && child.try_wait().is_ok_and(|status| status.is_none()) {
+        // This child is spawned as a fresh group leader. Kill its askpass descendants too;
+        // killing ssh alone can leave an authentication window and its stdout pipe alive.
+        unsafe extern "C" { fn kill(pid: i32, signal: i32) -> i32; }
+        if let Ok(pid) = i32::try_from(child.id()) { unsafe { kill(-pid, 9); } }
+    }
+    #[cfg(not(unix))]
+    let _ = independent;
+    let _ = child.kill();
+}
+
+fn stop_master(target: &Companion) {
+    if let Some(path) = &target.control_path
+        && Path::new(path).exists()
+        && let Ok(mut child) = command(&target.executable).args(["-o", &format!("ControlPath={path}"), "-O", "exit", &target.destination]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
+    {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while child.try_wait().is_ok_and(|status| status.is_none()) && Instant::now() < deadline { std::thread::sleep(Duration::from_millis(20)); }
+        let _ = child.kill();
+        let _ = child.wait();
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -183,9 +241,13 @@ pub fn command(program: &str) -> Command {
 
 fn failure_reason(stderr: &str, fallback: Reason) -> Reason {
     let lower = stderr.to_lowercase();
-    if lower.contains("subsystem request failed") || (lower.contains("subsystem") && (lower.contains("not") || lower.contains("denied"))) {
+    if lower.contains("session open refused") || lower.contains("session request failed") || lower.contains("administratively prohibited") {
+        Reason::ChannelRefused
+    } else if lower.contains("subsystem request failed") || (lower.contains("subsystem") && (lower.contains("not") || lower.contains("denied"))) {
         Reason::NoSftp
-    } else if lower.contains("permission denied") || lower.contains("host key verification failed") || lower.contains("no supported authentication") {
+    } else if lower.contains("host key verification failed") || lower.contains("remote host identification has changed") {
+        Reason::HostKey
+    } else if lower.contains("permission denied") || lower.contains("no supported authentication") {
         Reason::Auth
     } else {
         fallback
@@ -241,13 +303,33 @@ fn basename(path: &str) -> &str {
 
 impl Remote {
     fn channel_args(&self) -> Vec<String> {
-        let control = match &self.target.control_path {
+        let Target::Shared(target) = &self.target else {
+            if let Target::Independent { connection, .. } = &self.target { return lock(connection).ssh_args(); }
+            unreachable!();
+        };
+        let control = match &target.control_path {
             Some(path) => format!("ControlPath={path}"),
             None => "ControlPath=none".into(),
         };
         let mut args: Vec<String> = ["-o", "BatchMode=yes", "-o", "ControlMaster=no", "-o", &control, "-o", "ClearAllForwardings=yes", "-o", "RemoteCommand=none", "-o", "RequestTTY=no", "-o", "ConnectTimeout=15"].iter().map(|s| s.to_string()).collect();
-        args.extend(self.target.args.iter().cloned());
+        if target.control_path.is_some() {
+            // Refused mux channels must not fall back to a fresh MFA login.
+            args.extend(["-o".into(), "ProxyCommand=false".into()]);
+        }
+        args.extend(target.args.iter().cloned());
         args
+    }
+
+    pub fn is_independent(&self) -> bool {
+        matches!(self.target, Target::Independent { .. })
+    }
+
+    fn publish_attempt(&self, attempt: u64, change: impl FnOnce(&mut State)) {
+        let mut state = lock(&self.state);
+        if self.closed.load(Ordering::Acquire) || state.attempt != attempt { return; }
+        change(&mut state);
+        drop(state);
+        (self.wake)();
     }
 
     fn publish(&self, change: impl FnOnce(&mut State)) {
@@ -269,7 +351,8 @@ impl Remote {
         }
     }
 
-    fn client(&self) -> Result<Arc<Client>, String> {
+    pub(crate) fn client(&self) -> Result<Arc<Client>, String> {
+        if self.closed.load(Ordering::Acquire) { return Err("SFTP connection closed.".into()); }
         let state = lock(&self.state);
         match (&state.phase, &state.client) {
             (Phase::Ready, Some(client)) => Ok(client.clone()),
@@ -277,12 +360,14 @@ impl Remote {
         }
     }
 
-    /// The control socket appears only after authentication finishes, however long the user
-    /// spends on a host key prompt, password or second factor.
+    /// The socket proves SSH authentication, not completion of a bastion's terminal menu
+    /// or post-authentication OTP. Independent file channels do not use this socket.
     fn wait_for_login(self: &Arc<Self>) {
         let remote = self.clone();
         std::thread::spawn(move || {
-            if let Some(path) = remote.target.control_path.clone() {
+            if let Target::Shared(target) = &remote.target
+                && let Some(path) = target.control_path.clone()
+            {
                 while !Path::new(&path).exists() {
                     if remote.closed.load(Ordering::Acquire) {
                         return;
@@ -300,39 +385,110 @@ impl Remote {
     }
 
     fn connect(self: &Arc<Self>) {
-        if self.closed.load(Ordering::Acquire) { return; }
-        self.publish(|state| state.phase = Phase::Connecting);
-        let mut args = self.channel_args();
-        args.extend(["-s".to_string(), self.target.destination.clone(), "sftp".to_string()]);
-        let spawned = command(&self.target.executable).args(&args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn();
-        let mut child = match spawned {
-            Ok(child) => child,
+        // Reserve synchronously under one lock: simultaneous retries cannot start two
+        // logins, and an older worker cannot publish over a newer connection attempt.
+        let (attempt, previous, previous_auth) = {
+            let mut state = lock(&self.state);
+            if self.closed.load(Ordering::Acquire) || state.connecting || state.phase == Phase::Ready { return; }
+            state.attempt += 1;
+            state.connecting = true;
+            state.phase = Phase::Connecting;
+            state.client = None;
+            (state.attempt, state.sftp_child.take(), state.authentication.take())
+        };
+        (self.wake)();
+        let independent = self.is_independent();
+        if let Some(child) = previous {
+            stop_channel(&child, previous_auth.as_deref(), independent);
+            let _ = lock(&child).wait();
+        }
+        if let Some(authentication) = previous_auth { authentication.cancel(); }
+        let prepared = (|| -> Result<_, String> {
+            let (mut command, initial_directory, authentication) = match &self.target {
+                Target::Shared(target) => {
+                    let mut args = self.channel_args();
+                    args.extend(["-s".to_string(), target.destination.clone(), "sftp".to_string()]);
+                    let mut process = command(&target.executable);
+                    process.args(&args);
+                    (process, ".".to_string(), None)
+                }
+                Target::Independent { connection, executable } => {
+                    let mut connection = lock(connection);
+                    let mut state = lock(&self.state);
+                    if self.closed.load(Ordering::Acquire) || state.attempt != attempt {
+                        return Err("文件连接已关闭。".into());
+                    }
+                    let authentication = Arc::new(connection.prepare_auth()?);
+                    state.authentication = Some(authentication.clone());
+                    drop(state);
+                    let mut process = command(executable);
+                    process.args(connection.ssh_args()).envs(authentication.env());
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::process::CommandExt;
+                        process.process_group(0);
+                    }
+                    (process, connection.initial_directory.clone(), Some(authentication))
+                }
+            };
+            command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+            Ok((command, initial_directory, authentication))
+        })();
+        let (mut process, initial_directory, authentication) = match prepared {
+            Ok(prepared) => prepared,
             Err(error) => {
-                self.publish(|state| state.phase = Phase::Unavailable { reason: Reason::Failed, detail: error.to_string() });
+                self.publish_attempt(attempt, |state| {
+                    state.connecting = false;
+                    state.authentication = None;
+                    state.phase = Phase::Unavailable { reason: Reason::Failed, detail: error };
+                });
                 return;
             }
         };
-        let (Some(stdin), Some(stdout), Some(mut stderr)) = (child.stdin.take(), child.stdout.take(), child.stderr.take()) else { return };
-        let child = Arc::new(Mutex::new(child));
-        {
-            let mut state = lock(&self.state);
-            if self.closed.load(Ordering::Acquire) {
-                drop(state);
-                let _ = lock(&child).kill();
-                let _ = lock(&child).wait();
+        // Registration and close share this lock. There must be no gap where shutdown
+        // sees no child, returns, and a late worker then starts a new ssh/helper process.
+        let mut registration = lock(&self.state);
+        if self.closed.load(Ordering::Acquire) || registration.attempt != attempt {
+            drop(registration);
+            if let Some(authentication) = &authentication { authentication.cancel(); }
+            return;
+        }
+        let mut child = match process.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                drop(registration);
+                if let Some(authentication) = &authentication { authentication.cancel(); }
+                self.publish_attempt(attempt, |state| {
+                    state.connecting = false;
+                    state.authentication = None;
+                    state.phase = Phase::Unavailable { reason: Reason::Failed, detail: error.to_string() };
+                });
                 return;
             }
-            state.sftp_child = Some(child.clone());
-        }
+        };
+        let (Some(stdin), Some(stdout), Some(mut stderr)) = (child.stdin.take(), child.stdout.take(), child.stderr.take()) else {
+            drop(registration);
+            let child = Arc::new(Mutex::new(child));
+            stop_channel(&child, authentication.as_deref(), independent);
+            let _ = lock(&child).wait();
+            self.publish_attempt(attempt, |state| {
+                state.connecting = false;
+                state.authentication = None;
+                state.phase = Phase::Unavailable { reason: Reason::Failed, detail: "无法打开 SFTP 子进程管道。".into() };
+            });
+            return;
+        };
+        let child = Arc::new(Mutex::new(child));
+        registration.sftp_child = Some(child.clone());
+        registration.authentication = authentication.clone();
+        drop(registration);
         let errors = Arc::new(Mutex::new(String::new()));
         {
             let errors = errors.clone();
             std::thread::spawn(move || {
                 let mut buffer = [0; 1024];
                 while let Ok(read) = stderr.read(&mut buffer) {
-                    if read == 0 {
-                        break;
-                    }
+                    if read == 0 { break; }
                     let mut text = lock(&errors);
                     text.push_str(&String::from_utf8_lossy(&buffer[..read]));
                     let excess = text.len().saturating_sub(MAX_STDERR);
@@ -343,82 +499,121 @@ impl Remote {
                 }
             });
         }
-        // The handshake runs on a watchdog: a server that never answers ends the attempt.
-        let (done, waiting) = std::sync::mpsc::channel();
+        let started = Arc::new(Mutex::new(None::<Instant>));
+        let timed_out = Arc::new(AtomicBool::new(false));
+        let (done, waiting) = std::sync::mpsc::channel::<()>();
         {
             let child = child.clone();
+            let authentication = authentication.clone();
+            let started = started.clone();
+            let timed_out = timed_out.clone();
             std::thread::spawn(move || {
-                if waiting.recv_timeout(HANDSHAKE).is_err() {
-                    let _ = lock(&child).kill();
+                let beginning = Instant::now();
+                loop {
+                    match waiting.recv_timeout(Duration::from_millis(100)) {
+                        Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {},
+                    }
+                    let expired = if independent {
+                        // No SFTP bytes can arrive until SSH authentication has finished.
+                        // Give password/OTP windows time, then use the ordinary protocol cap.
+                        lock(&started).as_ref().map_or(beginning.elapsed() >= AUTHENTICATION, |at| at.elapsed() >= HANDSHAKE)
+                    } else { beginning.elapsed() >= HANDSHAKE };
+                    if expired {
+                        timed_out.store(true, Ordering::Release);
+                        stop_channel(&child, authentication.as_deref(), independent);
+                        break;
+                    }
                 }
             });
         }
-        let result = Client::start(Box::new(stdin), Box::new(stdout)).and_then(|client| client.realpath(".").map(|home| (client, home)));
+        let result = Client::start(Box::new(stdin), Box::new(ProtocolOutput { reader: stdout, started }))
+            .and_then(|client| client.realpath(&initial_directory).map(|home| (client, home)));
         let _ = done.send(());
-        let has_control = self.target.control_path.is_some();
         match result {
             Ok((client, home)) => {
                 let client = Arc::new(client);
-                if self.closed.load(Ordering::Acquire) {
-                    let _ = lock(&child).kill();
+                if self.closed.load(Ordering::Acquire) || lock(&self.state).attempt != attempt {
+                    stop_channel(&child, authentication.as_deref(), independent);
                     let _ = lock(&child).wait();
                     return;
                 }
                 let partials: Vec<String> = lock(&self.state).partial_uploads.iter().cloned().collect();
-                for path in partials {
-                    self.remove_partial(&client, &path);
-                }
-                self.publish(|state| {
+                for path in partials { self.remove_partial(&client, &path); }
+                self.publish_attempt(attempt, |state| {
+                    state.connecting = false;
                     state.client = Some(client.clone());
                     state.home = Some(home.clone());
                     state.phase = Phase::Ready;
                 });
-                // When the channel ends, the panel says so and offers a retry.
                 let remote = self.clone();
                 std::thread::spawn(move || {
-                    // Never hold the child mutex while waiting: close() needs it to kill
-                    // a live SSH channel. A blocking wait here deadlocks tab shutdown.
+                    // Never hold this mutex while waiting: close needs it to kill ssh.
                     loop {
                         let alive = lock(&child).try_wait().is_ok_and(|status| status.is_none());
                         if !alive { break; }
+                        if client.closed() {
+                            stop_channel(&child, authentication.as_deref(), independent);
+                            let _ = lock(&child).wait();
+                            break;
+                        }
                         std::thread::sleep(POLL);
                     }
-                    if remote.closed.load(Ordering::Acquire) || !lock(&remote.state).client.as_ref().is_some_and(|current| Arc::ptr_eq(current, &client)) {
-                        return;
-                    }
+                    if let Some(authentication) = &authentication { authentication.cancel(); }
                     let detail = lock(&errors).trim().to_string();
-                    remote.publish(|state| {
+                    remote.publish_attempt(attempt, |state| {
+                        if !state.client.as_ref().is_some_and(|current| Arc::ptr_eq(current, &client)) { return; }
                         state.client = None;
+                        state.sftp_child = None;
+                        state.authentication = None;
                         state.phase = Phase::Unavailable { reason: Reason::Lost, detail };
                     });
                 });
             }
             Err(error) => {
-                let _ = lock(&child).kill();
+                stop_channel(&child, authentication.as_deref(), independent);
                 let _ = lock(&child).wait();
                 std::thread::sleep(Duration::from_millis(50));
                 let stderr = lock(&errors).trim().to_string();
-                // Through a shared connection ssh prints nothing when the server refuses the
-                // subsystem, because the refusal goes to the master process.
+                let has_control = matches!(&self.target, Target::Shared(target) if target.control_path.is_some());
                 let fallback = if has_control && stderr.is_empty() { Reason::NoSftp } else { Reason::Failed };
-                let detail = if stderr.is_empty() { error.to_string() } else { stderr.clone() };
+                let detail = if timed_out.load(Ordering::Acquire) {
+                    if independent { "独立文件连接认证或 SFTP 握手超时；请重新连接。".into() }
+                    else { "SFTP 握手超时。".into() }
+                } else if stderr.is_empty() { error.to_string() } else { stderr.clone() };
                 let detail: String = detail.chars().rev().take(500).collect::<Vec<_>>().into_iter().rev().collect();
-                self.publish(|state| state.phase = Phase::Unavailable { reason: failure_reason(&stderr, fallback), detail });
+                self.publish_attempt(attempt, |state| {
+                    state.connecting = false;
+                    state.sftp_child = None;
+                    state.authentication = None;
+                    state.phase = Phase::Unavailable { reason: failure_reason(&stderr, fallback), detail };
+                });
             }
         }
     }
 
     fn start_metrics(self: &Arc<Self>) {
+        let Target::Shared(target) = &self.target else { return; };
+        if self.closed.load(Ordering::Acquire) { return; }
         let mut args = self.channel_args();
-        args.push(self.target.destination.clone());
+        args.push(target.destination.clone());
         args.push(format!("sh -c '{}'", metrics::script()));
-        let Ok(mut child) = command(&self.target.executable).args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else {
+        let Ok(mut child) = command(&target.executable).args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else {
             self.publish(|state| state.metrics_available = false);
             return;
         };
         let Some(mut stdout) = child.stdout.take() else { return };
         let child = Arc::new(Mutex::new(child));
-        lock(&self.state).metrics_child = Some(child.clone());
+        {
+            let mut state = lock(&self.state);
+            if self.closed.load(Ordering::Acquire) || !state.metrics_wanted || state.metrics_child.is_some() {
+                drop(state);
+                let _ = lock(&child).kill();
+                let _ = lock(&child).wait();
+                return;
+            }
+            state.metrics_child = Some(child.clone());
+        }
         let remote = self.clone();
         std::thread::spawn(move || {
             let mut tracker = Tracker::default();
@@ -452,6 +647,7 @@ impl Remote {
     }
 
     pub fn watch_metrics(self: &Arc<Self>, enabled: bool) {
+        if self.is_independent() || self.closed.load(Ordering::Acquire) { return; }
         let start = {
             let mut state = lock(&self.state);
             state.metrics_wanted = enabled;
@@ -470,9 +666,10 @@ impl Remote {
     }
 
     pub fn retry(self: &Arc<Self>) {
+        if self.closed.load(Ordering::Acquire) { return; }
         let (linked, unavailable, metrics) = {
             let state = lock(&self.state);
-            (state.linked, matches!(state.phase, Phase::Unavailable { .. }), state.metrics_wanted && state.metrics_child.is_none())
+            (state.linked, matches!(state.phase, Phase::Unavailable { .. }) && !state.connecting, !self.is_independent() && state.metrics_wanted && state.metrics_child.is_none())
         };
         if !linked {
             return;
@@ -486,46 +683,67 @@ impl Remote {
         }
     }
 
-    /// Lists a directory in the background; the newest request wins.
-    pub fn list(self: &Arc<Self>, path: String) {
-        let ticket = {
+    fn begin_listing(&self) -> (u64, String) {
+        let (ticket, generation) = {
             let mut state = lock(&self.state);
             state.listing.ticket += 1;
             state.listing.loading = true;
-            state.listing.ticket
+            (state.listing.ticket, format!("{}:{}", self.identity, state.attempt))
         };
         (self.wake)();
+        (ticket, generation)
+    }
+
+    /// Lists a directory in the background; the newest request wins.
+    pub fn list(self: &Arc<Self>, path: String) {
+        // Reserve before returning so callers and the UI immediately observe loading=true.
+        let (ticket, generation) = self.begin_listing();
         let remote = self.clone();
-        std::thread::spawn(move || {
-            let result = remote.client().and_then(|client| {
-                let directory = client.realpath(&path).map_err(|error| error.to_string())?;
-                let entries = client.readdir(&directory).map_err(|error| error.to_string())?;
-                let entries = entries
-                    .into_iter()
-                    .map(|entry| {
-                        // Symlinks report their own metadata; resolve them so linked folders open.
-                        let target = if entry.attributes.symlink() { client.stat(&join(&directory, &entry.name)).ok() } else { None };
-                        let shown = target.unwrap_or(entry.attributes);
-                        FileEntry { directory: shown.directory(), symlink: entry.attributes.symlink(), size: shown.size.unwrap_or(0), mtime: shown.mtime.unwrap_or(0), mode: entry.attributes.mode.unwrap_or(0), name: entry.name }
-                    })
-                    .collect();
-                Ok((directory, entries))
-            });
-            remote.publish(|state| {
-                if state.listing.ticket != ticket {
-                    return;
+        std::thread::spawn(move || match remote.client() {
+            Ok(client) => { let _ = remote.browse_at(&client, &path, ticket, &generation); }
+            Err(error) => remote.publish(|state| {
+                if state.listing.ticket == ticket && format!("{}:{}", remote.identity, state.attempt) == generation {
+                    state.listing.loading = false;
+                    state.listing.error = Some(error);
                 }
-                state.listing.loading = false;
-                match result {
-                    Ok((directory, entries)) => {
-                        state.listing.path = Some(directory);
-                        state.listing.entries = entries;
-                        state.listing.error = None;
-                    }
-                    Err(error) => state.listing.error = Some(error),
-                }
-            });
+            }),
         });
+    }
+
+    /// Uses a pinned client so a reconnect cannot redirect an external operation.
+    pub(crate) fn reserve_browse(&self, client: &Arc<Client>) -> Result<(u64, String), String> {
+        let (ticket, generation) = {
+            let mut state = lock(&self.state);
+            if self.closed.load(Ordering::Acquire) || !state.client.as_ref().is_some_and(|current| Arc::ptr_eq(current, client)) {
+                return Err("SFTP connection changed before browsing; nothing was sent.".into());
+            }
+            state.listing.ticket += 1;
+            state.listing.loading = true;
+            (state.listing.ticket, format!("{}:{}", self.identity, state.attempt))
+        };
+        (self.wake)();
+        Ok((ticket, generation))
+    }
+
+    pub(crate) fn browse_at(&self, client: &Client, path: &str, ticket: u64, generation: &str) -> Result<Listing, String> {
+        let result: Result<Listing, String> = (|| {
+            let directory = client.realpath(path).map_err(|error| error.to_string())?;
+            let entries = client.readdir(&directory).map_err(|error| error.to_string())?.into_iter().map(|entry| {
+                let target = if entry.attributes.symlink() { client.stat(&join(&directory, &entry.name)).ok() } else { None };
+                let shown = target.unwrap_or(entry.attributes);
+                FileEntry { directory: shown.directory(), symlink: entry.attributes.symlink(), size: shown.size.unwrap_or(0), mtime: shown.mtime.unwrap_or(0), mode: entry.attributes.mode.unwrap_or(0), name: entry.name }
+            }).collect();
+            Ok(Listing { path: Some(directory), entries, error: None, loading: false, ticket })
+        })();
+        self.publish(|state| {
+            if state.listing.ticket != ticket || format!("{}:{}", self.identity, state.attempt) != generation || self.closed.load(Ordering::Acquire) { return; }
+            state.listing.loading = false;
+            match &result {
+                Ok(listing) => state.listing = listing.clone(),
+                Err(error) => state.listing.error = Some(error.clone()),
+            }
+        });
+        result
     }
 
     /// Runs a file operation in the background and reports a failure through `done`.
@@ -620,13 +838,25 @@ impl Remote {
         Ok(())
     }
 
-    fn enqueue(self: &Arc<Self>, upload: bool, name: String, drag_source: Option<String>, run: Work) {
+    fn enqueue(self: &Arc<Self>, upload: bool, name: String, drag_source: Option<String>, run: Work) -> u64 {
+        self.enqueue_tracked(upload, name, drag_source, run, false)
+    }
+
+    fn enqueue_tracked(self: &Arc<Self>, upload: bool, name: String, drag_source: Option<String>, run: Work, tracked: bool) -> u64 {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         self.publish(|state| {
-            state.transfers.push(Transfer::queued(id, upload, name));
+            let transfer = Transfer::queued(id, upload, name);
+            if tracked { state.tracked_transfers.insert(id, transfer.clone()); }
+            state.transfers.push(transfer);
             state.queue.push_back(Job { transfer: id, run, drag_source });
         });
         self.pump();
+        id
+    }
+
+    pub(crate) fn tracked_transfer(&self, id: u64) -> Option<Transfer> {
+        let state = lock(&self.state);
+        state.transfers.iter().find(|t| t.id == id).cloned().or_else(|| state.tracked_transfers.get(&id).cloned())
     }
 
     fn pump(self: &Arc<Self>) {
@@ -665,6 +895,9 @@ impl Remote {
                             }
                         }
                     }
+                    if state.tracked_transfers.contains_key(&job.transfer)
+                        && let Some(transfer) = state.transfers.iter().find(|t| t.id == job.transfer).cloned()
+                    { state.tracked_transfers.insert(job.transfer, transfer); }
                     let finished: Vec<u64> = state.transfers.iter().filter(|transfer| transfer.finished()).map(|transfer| transfer.id).collect();
                     let stale = finished.len().saturating_sub(MAX_FINISHED);
                     let stale: Vec<u64> = finished.into_iter().take(stale).collect();
@@ -685,6 +918,9 @@ impl Remote {
                         state.drags.remove(source);
                     }
                     state.queue.retain(|job| job.transfer != transfer);
+                    if state.tracked_transfers.contains_key(&transfer)
+                        && let Some(item) = state.transfers.iter().find(|t| t.id == transfer).cloned()
+                    { state.tracked_transfers.insert(transfer, item); }
                 }
             }
         });
@@ -730,6 +966,10 @@ impl Remote {
     /// into place only when complete.
     fn run_upload(&self, id: u64, source: &Path, target: &str) -> Result<usize, String> {
         let client = self.client()?;
+        self.run_upload_on(id, source, target, &client, true)
+    }
+
+    fn run_upload_on(&self, id: u64, source: &Path, target: &str, client: &Client, overwrite: bool) -> Result<usize, String> {
         let canceled = self.canceled(id);
         enum Step {
             Directory(String),
@@ -778,9 +1018,9 @@ impl Remote {
                 Step::File(local, remote, mode) => {
                     let partial = format!("{remote}.omniterm-{}.part", &uuid::Uuid::new_v4().simple().to_string()[..8]);
                     lock(&self.state).partial_uploads.insert(partial.clone());
-                    let result = client.upload(&local, &partial, Some(mode), &canceled, &mut progress).and_then(|_| client.replace(&partial, &remote));
+                    let result = client.upload(&local, &partial, Some(mode), &canceled, &mut progress).and_then(|_| if overwrite { client.replace(&partial, &remote) } else { client.rename(&partial, &remote) });
                     if let Err(error) = result {
-                        self.remove_partial(&client, &partial);
+                        self.remove_partial(client, &partial);
                         return Err(error.to_string());
                     }
                     lock(&self.state).partial_uploads.remove(&partial);
@@ -792,6 +1032,11 @@ impl Remote {
 
     fn run_download(&self, id: u64, source: &str, target: &Path, limit: Option<u64>) -> Result<usize, String> {
         let client = self.client()?;
+        self.run_download_on(id, source, target, limit, &client, true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_download_on(&self, id: u64, source: &str, target: &Path, limit: Option<u64>, client: &Client, overwrite: bool) -> Result<usize, String> {
         let canceled = self.canceled(id);
         enum Step {
             Directory(PathBuf),
@@ -846,6 +1091,11 @@ impl Remote {
                     let partial = directory.join(format!(".{}.omniterm-part", &uuid::Uuid::new_v4().simple().to_string()[..8]));
                     // The user confirmed replacing an existing file; Windows renames refuse one.
                     let result = client.download(&remote, &partial, Some(mode), &canceled, &mut progress).map_err(|error| error.to_string()).and_then(|_| {
+                        if !overwrite {
+                            std::fs::hard_link(&partial, &local).map_err(|error| error.to_string())?;
+                            let _ = std::fs::remove_file(&partial);
+                            return Ok(());
+                        }
                         if cfg!(windows) && local.is_file() {
                             std::fs::remove_file(&local).map_err(|error| error.to_string())?;
                         }
@@ -863,14 +1113,25 @@ impl Remote {
 
     /// Ends the channels and the shared login, which otherwise outlives the terminal for
     /// ControlPersist seconds.
+    #[cfg(all(test, unix))]
     fn close(self: &Arc<Self>) -> Option<std::thread::JoinHandle<()>> {
+        self.close_channels(true)
+    }
+
+    /// Replacing or removing the file connection must leave its pane's terminal running.
+    fn close_channels(self: &Arc<Self>, close_master: bool) -> Option<std::thread::JoinHandle<()>> {
         if self.closed.swap(true, Ordering::AcqRel) { return None; }
         {
             let mut state = lock(&self.state);
+            state.attempt += 1;
+            state.connecting = false;
+            if let Some(authentication) = &state.authentication { authentication.cancel(); }
             for transfer in &mut state.transfers {
                 transfer.canceled.store(true, Ordering::Relaxed);
                 if transfer.status == TransferStatus::Queued { transfer.status = TransferStatus::Canceled; }
             }
+            let tracked: Vec<_> = state.transfers.iter().filter(|t| state.tracked_transfers.contains_key(&t.id)).cloned().collect();
+            for transfer in tracked { state.tracked_transfers.insert(transfer.id, transfer); }
             state.queue.clear();
             state.drags.clear();
         }
@@ -884,17 +1145,21 @@ impl Remote {
                 if running == 0 || Instant::now() >= deadline { break; }
                 std::thread::sleep(Duration::from_millis(20));
             }
-            let (children, directory) = {
+            let (children, directory, authentication) = {
                 let mut state = lock(&remote.state);
                 state.client = None;
-                ([state.sftp_child.take(), state.metrics_child.take()], state.drag_directory.take())
+                ([state.sftp_child.take(), state.metrics_child.take()], state.drag_directory.take(), state.authentication.take())
             };
-            for child in children.into_iter().flatten() { let _ = lock(&child).kill(); }
+            for child in children.into_iter().flatten() {
+                stop_channel(&child, authentication.as_deref(), remote.is_independent());
+                let _ = lock(&child).wait();
+            }
+            if let Some(authentication) = authentication { authentication.cancel(); }
             if let Some(directory) = directory { let _ = std::fs::remove_dir_all(directory); }
-            if let Some(path) = &remote.target.control_path
-                && Path::new(path).exists()
+            if close_master
+                && let Target::Shared(target) = &remote.target
             {
-                let _ = command(&remote.target.executable).args(["-o", &format!("ControlPath={path}"), "-O", "exit", &remote.target.destination]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+                stop_master(target);
             }
         }))
     }
@@ -902,24 +1167,44 @@ impl Remote {
 
 pub struct Manager {
     remotes: Mutex<HashMap<String, Arc<Remote>>>,
+    /// A pane still owns these terminal masters after its file connection is replaced.
+    /// File-only detach never exits them; terminal detach or app shutdown does.
+    preserved_masters: Mutex<HashMap<String, Vec<Companion>>>,
     wake: Arc<dyn Fn() + Send + Sync>,
     closing: Mutex<Vec<std::thread::JoinHandle<()>>>,
 }
 
 impl Manager {
     pub fn new(wake: impl Fn() + Send + Sync + 'static) -> Self {
-        Self { remotes: Mutex::default(), wake: Arc::new(wake), closing: Mutex::default() }
+        Self { remotes: Mutex::default(), preserved_masters: Mutex::default(), wake: Arc::new(wake), closing: Mutex::default() }
     }
 
     pub fn attach(&self, id: &str, target: Companion) {
+        self.install(id, Target::Shared(target));
+    }
+
+    /// An explicitly imported asset file endpoint; never probes the terminal's gateway.
+    pub fn attach_qizhi(&self, id: &str, connection: qizhi::Connection) -> Result<(), String> {
+        if id.is_empty() { return Err("文件连接缺少终端标识。".into()); }
+        let executable = crate::core::paths::find_executable("ssh").ok_or("没有找到 OpenSSH 客户端 ssh。")?;
+        let executable = executable.to_str().ok_or("SSH 可执行文件路径无效。")?.to_string();
+        self.install(id, Target::Independent { connection: Mutex::new(connection), executable });
+        Ok(())
+    }
+
+    fn install(&self, id: &str, target: Target) {
         let remote = Arc::new(Remote {
             id: id.to_string(),
+            identity: uuid::Uuid::new_v4().to_string(),
             target,
             state: Mutex::new(State {
                 phase: Phase::Waiting,
                 home: None,
                 client: None,
                 sftp_child: None,
+                authentication: None,
+                attempt: 0,
+                connecting: false,
                 metrics_child: None,
                 metrics_wanted: false,
                 metrics: None,
@@ -927,6 +1212,7 @@ impl Manager {
                 linked: false,
                 listing: Listing::default(),
                 transfers: Vec::new(),
+                tracked_transfers: HashMap::new(),
                 queue: VecDeque::new(),
                 running: 0,
                 uploads_done: 0,
@@ -938,8 +1224,15 @@ impl Manager {
             wake: self.wake.clone(),
             next: AtomicU64::new(1),
         });
-        lock(&self.remotes).insert(id.to_string(), remote.clone());
+        if let Some(previous) = lock(&self.remotes).insert(id.to_string(), remote.clone()) {
+            self.preserve_master(id, &previous);
+            self.track_close(previous.close_channels(false));
+        }
         remote.wait_for_login();
+    }
+
+    pub(crate) fn all(&self) -> Vec<Arc<Remote>> {
+        lock(&self.remotes).values().cloned().collect()
     }
 
     pub fn get(&self, id: &str) -> Option<Arc<Remote>> {
@@ -947,9 +1240,40 @@ impl Manager {
     }
 
     pub fn detach(&self, id: &str) {
-        if let Some(remote) = lock(&self.remotes).remove(id)
-            && let Some(worker) = remote.close()
+        let channels = lock(&self.remotes).remove(id).and_then(|remote| {
+            self.preserve_master(id, &remote);
+            remote.close_channels(false)
+        });
+        let masters = lock(&self.preserved_masters).remove(id).unwrap_or_default();
+        if channels.is_some() || !masters.is_empty() {
+            self.track_close(Some(std::thread::spawn(move || {
+                if let Some(channels) = channels { let _ = channels.join(); }
+                for master in masters { stop_master(&master); }
+            })));
+        }
+    }
+
+    pub fn detach_file_only(&self, id: &str) {
+        if let Some(remote) = lock(&self.remotes).remove(id) {
+            self.preserve_master(id, &remote);
+            self.track_close(remote.close_channels(false));
+        }
+    }
+
+    fn preserve_master(&self, id: &str, remote: &Remote) {
+        if let Target::Shared(target) = &remote.target
+            && target.control_path.is_some()
         {
+            let mut owned = lock(&self.preserved_masters);
+            let masters = owned.entry(id.to_string()).or_default();
+            if !masters.iter().any(|master| master.control_path == target.control_path) {
+                masters.push(target.clone());
+            }
+        }
+    }
+
+    fn track_close(&self, worker: Option<std::thread::JoinHandle<()>>) {
+        if let Some(worker) = worker {
             let mut closing = lock(&self.closing);
             closing.retain(|worker| !worker.is_finished());
             closing.push(worker);
@@ -959,9 +1283,70 @@ impl Manager {
     pub fn shutdown(&self) {
         let remotes: Vec<_> = lock(&self.remotes).drain().map(|(_, remote)| remote).collect();
         let mut workers: Vec<_> = lock(&self.closing).drain(..).collect();
-        workers.extend(remotes.iter().filter_map(|remote| remote.close()));
+        for remote in &remotes {
+            self.preserve_master(remote.id(), remote);
+            workers.extend(remote.close_channels(false));
+        }
         // The window has exited; finish cleanup before main returns and stops all threads.
         for worker in workers { let _ = worker.join(); }
+        for masters in lock(&self.preserved_masters).drain().map(|(_, masters)| masters) {
+            for master in masters { stop_master(&master); }
+        }
+    }
+}
+
+pub(crate) struct ExternalTransfer {
+    pub upload: bool,
+    pub local: PathBuf,
+    pub remote: String,
+    pub recursive: bool,
+    pub overwrite: bool,
+}
+
+impl Remote {
+    pub(crate) fn generation(&self) -> String {
+        format!("{}:{}", self.identity, lock(&self.state).attempt)
+    }
+
+    pub(crate) fn checked_client(&self, generation: &str) -> Result<Arc<Client>, String> {
+        let state = lock(&self.state);
+        if self.closed.load(Ordering::Acquire) || format!("{}:{}", self.identity, state.attempt) != generation {
+            return Err("SFTP connection changed or closed; list and bind the file session again. Nothing was sent.".into());
+        }
+        match (&state.phase, &state.client) {
+            (Phase::Ready, Some(client)) if !client.closed() => Ok(client.clone()),
+            _ => Err("SFTP is not ready; finish authentication in the window first.".into()),
+        }
+    }
+
+    pub(crate) fn public_endpoint(&self) -> serde_json::Value {
+        match &self.target {
+            Target::Shared(target) => serde_json::json!({"source": "terminal-companion", "destination": target.destination}),
+            Target::Independent { connection, .. } => {
+                let connection = lock(connection);
+                serde_json::json!({"source": "independent-sftp", "host": connection.host, "user": connection.user, "port": connection.port, "title": connection.title})
+            }
+        }
+    }
+
+    pub(crate) fn start_external_transfer(self: &Arc<Self>, client: Arc<Client>, plan: ExternalTransfer) -> u64 {
+        let name = if plan.upload { plan.local.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default() } else { basename(&plan.remote).to_string() };
+        self.enqueue_tracked(plan.upload, name, None, Box::new(move |remote, id| {
+            if !Arc::ptr_eq(&remote.client()?, &client) { return Err("SFTP connection changed before transfer; nothing was sent.".into()); }
+            if plan.upload {
+                let metadata = std::fs::symlink_metadata(&plan.local).map_err(|error| error.to_string())?;
+                if metadata.file_type().is_symlink() || !(metadata.is_file() || metadata.is_dir()) { return Err("Upload source must be a regular file or directory, not a symlink.".into()); }
+                if metadata.is_dir() && !plan.recursive { return Err("Directory upload requires --recursive.".into()); }
+                if !plan.overwrite && client.exists(&plan.remote).map_err(|e| e.to_string())? { return Err("Remote destination exists; use --overwrite only when replacement is intended.".into()); }
+                remote.run_upload_on(id, &plan.local, &plan.remote, &client, plan.overwrite)
+            } else {
+                let metadata = client.lstat(&plan.remote).map_err(|error| error.to_string())?;
+                if metadata.symlink() || !(metadata.file() || metadata.directory()) { return Err("Download source must be a regular file or directory, not a symlink.".into()); }
+                if metadata.directory() && !plan.recursive { return Err("Directory download requires --recursive.".into()); }
+                if !plan.overwrite && std::fs::symlink_metadata(&plan.local).is_ok() { return Err("Local destination exists; use --overwrite only when replacement is intended.".into()); }
+                remote.run_download_on(id, &plan.remote, &plan.local, None, &client, plan.overwrite)
+            }
+        }), true)
     }
 }
 
@@ -972,13 +1357,17 @@ impl Remote {
 
     /// Runs one read-only probe on the session's shared login and returns its output.
     pub fn exec(&self, script: &str, timeout: Duration) -> Result<String, String> {
+        let Target::Shared(target) = &self.target else {
+            return Err("独立文件连接仅支持 SFTP，不提供远程命令或主机监控。".into());
+        };
+        if self.closed.load(Ordering::Acquire) { return Err("文件连接已关闭。".into()); }
         if !lock(&self.state).linked {
             return Err("这个 SSH 会话还没有可用的共享连接。".into());
         }
         let mut args = self.channel_args();
-        args.push(self.target.destination.clone());
+        args.push(target.destination.clone());
         args.push(format!("sh -c '{script}'"));
-        let mut command = command(&self.target.executable);
+        let mut command = command(&target.executable);
         command.args(&args);
         crate::monitor::probe::run_with_timeout(&mut command, timeout).ok_or_else(|| "远程采样失败或超时。".into())
     }
@@ -1025,6 +1414,8 @@ mod tests {
     fn ssh_errors_explain_why_the_panel_is_unavailable() {
         assert_eq!(failure_reason("subsystem request failed on channel 0", Reason::Failed), Reason::NoSftp);
         assert_eq!(failure_reason("Permission denied (publickey).", Reason::Failed), Reason::Auth);
+        assert_eq!(failure_reason("mux_client_request_session: session request failed: Session open refused by peer\nPermission denied (password,keyboard-interactive,publickey).", Reason::Failed), Reason::ChannelRefused);
+        assert_eq!(failure_reason("Host key verification failed.", Reason::Failed), Reason::HostKey);
         assert_eq!(failure_reason("", Reason::Lost), Reason::Lost);
     }
 }

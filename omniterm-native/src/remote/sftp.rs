@@ -227,11 +227,18 @@ pub struct Client {
 }
 
 /// A request in flight.
-pub struct Ticket(Receiver<Result<Reply>>);
+pub struct Ticket(Receiver<Result<Reply>>, Arc<AtomicBool>);
 
 impl Ticket {
-    fn wait(self) -> Result<Reply> {
-        self.0.recv_timeout(REPLY_TIMEOUT).map_err(|_| Error::Closed)?
+    fn wait(self) -> Result<Reply> { self.wait_for(REPLY_TIMEOUT) }
+
+    fn wait_for(self, timeout: Duration) -> Result<Reply> {
+        self.0.recv_timeout(timeout).map_err(|_| {
+            // A timed-out request may have reached the server. Retire this client so
+            // it cannot accept fresh writes while the earlier outcome is unknown.
+            self.1.store(true, Ordering::Release);
+            Error::Closed
+        })?
     }
 }
 
@@ -343,10 +350,11 @@ impl Client {
         let packet = build(id).finish();
         let mut input = self.input.lock().unwrap_or_else(|p| p.into_inner());
         if input.write_all(&packet).and_then(|_| input.flush()).is_err() {
+            self.closed.store(true, Ordering::Release);
             self.pending.lock().unwrap_or_else(|p| p.into_inner()).remove(&id);
             return Err(Error::Closed);
         }
-        Ok(Ticket(receiver))
+        Ok(Ticket(receiver, self.closed.clone()))
     }
 
     fn call(&self, build: impl FnOnce(u32) -> Packet) -> Result<Reply> {
@@ -564,6 +572,19 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unanswered_request_retires_the_client_but_a_reply_does_not() {
+        let (_sender, receiver) = channel();
+        let closed = Arc::new(AtomicBool::new(false));
+        assert!(matches!(Ticket(receiver, closed.clone()).wait_for(Duration::ZERO), Err(Error::Closed)));
+        assert!(closed.load(Ordering::Acquire), "Unknown outcomes must not accept further writes on this client");
+        let (sender, receiver) = channel();
+        let closed = Arc::new(AtomicBool::new(false));
+        sender.send(Ok(Reply::Status(STATUS_OK, String::new()))).unwrap();
+        assert!(Ticket(receiver, closed.clone()).wait_for(Duration::ZERO).is_ok());
+        assert!(!closed.load(Ordering::Acquire));
+    }
 
     #[test]
     fn packets_carry_their_length_type_and_id() {

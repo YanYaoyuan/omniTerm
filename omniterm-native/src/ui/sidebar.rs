@@ -35,7 +35,10 @@ pub fn connection_label(kind: Kind) -> &'static str {
 pub fn show(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
     let palette = style::palette(ui);
     // An SSH tab adds its files beside the workspace view.
-    if let Some(remote) = app.focused_remote() {
+    let ssh_pane = app.focused().filter(|pane| pane.session.kind == Kind::Ssh).map(|pane| pane.id().to_string());
+    let bound_files = app.focused().and_then(|pane| pane.session.profile.as_ref()).is_some_and(|profile| profile.file_connection.is_some() || profile.file_connection_stale || (profile.routed_file_login() && app.settings.remote_panels));
+    let remote = app.focused_remote();
+    if bound_files || remote.is_some() {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
             let width = (ui.available_width() - 3.0) / 2.0;
@@ -53,7 +56,11 @@ pub fn show(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
         });
         ui.add_space(10.0);
         if app.sidebar_files {
-            super::remote_panel::file_panel(app, ui, &remote, intents);
+            if let Some(remote) = remote {
+                super::remote_panel::file_panel(app, ui, &remote, intents);
+            } else if let Some(id) = ssh_pane {
+                super::remote_panel::disconnected_file_panel(app, ui, &id, intents);
+            }
             return;
         }
     }
@@ -62,6 +69,12 @@ pub fn show(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
         ui.with_layout(Layout::top_down(Align::Min), |ui| {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 workspace(app, ui, intents);
+                if let Some(id) = &ssh_pane
+                    && !bound_files
+                    && style::ghost_button(ui, "导入文件连接参数…").clicked()
+                {
+                    intents.push(Intent::ImportFileConnection(id.clone()));
+                }
                 connections(app, ui, intents);
             });
         });

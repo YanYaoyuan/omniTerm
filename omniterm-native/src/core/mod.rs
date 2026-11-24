@@ -3,10 +3,13 @@
 //! settings and the workspace. Nothing here draws or blocks on the UI thread.
 
 pub mod paths;
+pub mod accessclient;
+pub mod web_launch;
 pub mod plan;
 pub mod profile;
 pub mod settings;
 pub mod ssh_config;
+pub mod ssh_auth;
 pub mod text;
 pub mod workspace;
 pub mod x11;

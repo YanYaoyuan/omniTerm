@@ -86,8 +86,8 @@ export function createRemoteStore(api) {
     transfers.set(transfer.id, next.filter((item) => !stale.has(item)));
     emit();
   });
-  api.onRemoteMetrics(({ id, available, sample }) => {
-    metrics.set(id, available ? { available, sample } : { available, sample: null });
+  api.onRemoteMetrics(({ id, available, sample, reason, detail }) => {
+    metrics.set(id, available ? { available, sample } : { available, sample: null, reason, detail });
     emit();
   });
   return {

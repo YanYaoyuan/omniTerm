@@ -629,6 +629,11 @@ impl Host {
                 let IdParams { id } = parse(params)?;
                 Ok(self.require(&id)?.replay())
             }
+            "session.integration" => {
+                let IdParams { id } = parse(params)?;
+                let session = self.require(&id)?;
+                Ok(json!(crate::shell_integration(&session.nonce).ok_or("No shell integration nonce")?))
+            }
             "session.close" => {
                 let IdParams { id } = parse(params)?;
                 let session = self.sessions().remove(&id);
@@ -678,6 +683,13 @@ impl Host {
                 let mut broker = self.broker();
                 let changed = broker.end_task(self, &task_id);
                 drop(broker);
+                self.publish(changed);
+                Ok(json!(true))
+            }
+            "task.invalidate" => {
+                let task_id = params.get("taskId").and_then(Value::as_str).ok_or("taskId is required")?;
+                let reason = params.get("reason").and_then(Value::as_str).unwrap_or("The Agent engine stopped.");
+                let changed = self.broker().invalidate_task(task_id, reason);
                 self.publish(changed);
                 Ok(json!(true))
             }

@@ -133,6 +133,7 @@ mod tests {
         relative_program.push(program.strip_prefix("/").unwrap());
         let argument = "literal argument; $(not executed)";
         let session = backend.open_blocking(Open {
+            web_launch: None,
             token: 1,
             kind: Kind::Shell,
             cwd: directory.to_string_lossy().into_owned(),
