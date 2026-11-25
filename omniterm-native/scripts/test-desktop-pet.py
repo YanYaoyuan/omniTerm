@@ -128,15 +128,38 @@ class Desktop:
         info = S.check_output(['xwininfo', '-id', hex(window)], env=self.env, text=True)
         return tuple(int(re.search(name + r':\s+(-?\d+)', info)[1]) for name in ['Absolute upper-left X', 'Absolute upper-left Y', 'Width', 'Height'])
 
-    def cat_rect(self):
+    def cat_rect(self, image=None):
         from PIL import ImageGrab, ImageChops
-        image = ImageGrab.grab(xdisplay=self.env['DISPLAY']).convert('RGB')
+        if image is None:
+            image = ImageGrab.grab(xdisplay=self.env['DISPLAY']).convert('RGB')
         mask = None
         for band, value in zip(image.split(), (255, 235, 197)):
             selected = band.point([255 if i == value else 0 for i in range(256)])
             mask = selected if mask is None else ImageChops.multiply(mask, selected)
         rect = mask.getbbox()
         return rect
+
+    def turn_sweep(self, output):
+        from PIL import Image, ImageChops, ImageDraw, ImageGrab
+        sheet = Image.new('RGB', (800, 640), (230, 238, 247))
+        labels = ImageDraw.Draw(sheet)
+        self.move(1690, 840)
+        time.sleep(.35)
+        self.move(900, 850)
+        for index in range(16):
+            image = ImageGrab.grab(xdisplay=self.env['DISPLAY']).convert('RGB')
+            bounds = self.cat_rect(image)
+            assert bounds, 'Cat disappeared during its turn'
+            crop = image.crop((bounds[0] - 24, bounds[1] - 24, bounds[2] + 24, bounds[3] + 24))
+            channels = crop.split()
+            masks = [band.point([255 if low <= i <= high else 0 for i in range(256)]) for band, (low, high) in zip(channels, [(42, 46), (130, 134), (253, 255)])]
+            blue = ImageChops.multiply(ImageChops.multiply(masks[0], masks[1]), masks[2]).histogram()[255]
+            assert blue >= 30, ('Scarf collapsed into its dark outline during the turn', index, blue)
+            x, y = index % 4 * 200, index // 4 * 160
+            sheet.paste(crop, (x + (200 - crop.width) // 2, y + (160 - crop.height) // 2))
+            labels.text((x + 5, y + 5), str(index + 1), fill=(25, 40, 69))
+            time.sleep(.015)
+        sheet.save(output / 'turn-sweep.png')
 
     def settle(self, pet, point):
         self.move(*point)
@@ -235,6 +258,8 @@ def main():
             position = d.settle(pet, (1700, 850))
             assert position[0] > 1000 and position[1] > 650, position
             assert d.geometry(pet) == (0, 0, 2000, 1100), 'GPU canvas should stay fixed across the desktop'
+            d.turn_sweep(args.output)
+            d.settle(pet, (1700, 850))
             d.focus(under)
             d.x.XRaiseWindow(d.d, under)
             d.flush()
@@ -317,7 +342,7 @@ def main():
             external_cli.close_window(env['DISPLAY'], main_window)
             assert app.wait(timeout=10) == 0
             assert not d.window(pet_title), 'Pet survived application exit'
-            report = {'passed': True, 'checks': ['global-follow-outside-main-window', 'always-on-top', 'no-focus-stealing', 'follow-while-main-minimized', 'external-cli-while-following', 'pause-resume', 'click-through-to-another-application', 'transparent-background', 'recall-restart', 'normal-exit-closes-pet', 'fixed-gpu-canvas']}
+            report = {'passed': True, 'checks': ['global-follow-outside-main-window', 'always-on-top', 'no-focus-stealing', 'follow-while-main-minimized', 'external-cli-while-following', 'pause-resume', 'click-through-to-another-application', 'transparent-background', 'recall-restart', 'normal-exit-closes-pet', 'fixed-gpu-canvas', 'turn-keeps-scarf-visible']}
             (args.output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
             print(json.dumps(report))
         except BaseException:
