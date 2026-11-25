@@ -83,6 +83,10 @@ pub fn show(state: &mut State, ctx: &egui::Context) {
     if !state.texture_tried {
         state.texture_tried = true;
         if let Ok(image) = image::load_from_memory(include_bytes!("../../assets/easter-eggs/byte-sprites.png")) {
+            let limit = ctx.input(|i| i.max_texture_side).clamp(1, u32::MAX as usize) as u32;
+            let image = if image.width() > limit || image.height() > limit {
+                image.resize(limit, limit, image::imageops::FilterType::Triangle)
+            } else { image };
             let rgba = image.to_rgba8();
             state.frames = atlas_frames(&rgba);
             state.texture = Some(ctx.load_texture("byte-cat", egui::ColorImage::from_rgba_unmultiplied([rgba.width() as usize, rgba.height() as usize], rgba.as_raw()), egui::TextureOptions::LINEAR));
@@ -268,6 +272,17 @@ mod tests {
         assert!(image.width() > image.height() * 2);
         assert_eq!(image.get_pixel(0, 0)[3], 0);
         assert!(image.pixels().any(|p| p[3] == 255));
+    }
+    #[test]
+    fn atlas_respects_the_renderers_texture_limit() {
+        let ctx = egui::Context::default();
+        let mut state = State::new(true, 0, true); state.open = true;
+        ctx.run_ui(egui::RawInput { max_texture_side: Some(1024), ..Default::default() }, |ui| {
+            show(&mut state, ui.ctx());
+            let size = state.texture.as_ref().unwrap().size();
+            assert!(size[0] <= 1024 && size[1] <= 1024);
+            assert!(state.frames.iter().all(|frame| frame.is_positive() && frame.is_finite()));
+        }).drop_without_applying_deltas();
     }
     #[test]
     fn controls_fit_the_smallest_supported_window_without_scrolling() {
