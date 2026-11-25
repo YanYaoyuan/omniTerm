@@ -24,17 +24,21 @@ pub struct State {
     last_tap: f64,
     last_step: f64,
     release_keys: bool,
+    just_opened: bool,
+    opening_frame: Option<u64>,
+    backdrop_pressed: bool,
     texture: Option<egui::TextureHandle>,
     frames: [Rect; 3],
     texture_tried: bool,
     game: Snake,
+    desktop: super::desktop_pet::DesktopPet,
 }
 
 impl State {
     pub fn new(discovered: bool, best: u16, still: bool) -> Self {
-        Self { open: false, discovered, best, still, page: Page::Cat, pose: Pose::Rest, until: 0.0, pats: 0, fish: 0, taps: 0, last_tap: -10.0, last_step: 0.0, release_keys: false, texture: None, frames: [Rect::NOTHING; 3], texture_tried: false, game: Snake::new(42) }
+        Self { open: false, discovered, best, still, page: Page::Cat, pose: Pose::Rest, until: 0.0, pats: 0, fish: 0, taps: 0, last_tap: -10.0, last_step: 0.0, release_keys: false, just_opened: false, opening_frame: None, backdrop_pressed: false, texture: None, frames: [Rect::NOTHING; 3], texture_tried: false, game: Snake::new(42), desktop: Default::default() }
     }
-    pub fn reveal(&mut self) { self.discovered = true; self.open = true; }
+    pub fn reveal(&mut self) { self.discovered = true; self.open = true; self.just_opened = true; self.backdrop_pressed = false; }
     pub fn tap_brand(&mut self, now: f64) {
         self.taps = if now - self.last_tap > 1.4 { 1 } else { self.taps + 1 };
         self.last_tap = now;
@@ -56,9 +60,14 @@ pub fn badge(state: &mut State, ui: &mut egui::Ui) {
     if !state.discovered { return; }
     let (rect, response) = ui.allocate_exact_size(Vec2::new(25.0, 21.0), Sense::click());
     cat_face(ui.painter(), rect.center(), 8.0);
-    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("BYTE 在这里 · 点击小憩一下，右键可隐藏入口");
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(if state.desktop.enabled() { "BYTE 在桌面陪你 · 点击打开，右键暂停或收回" } else { "BYTE 在这里 · 点击小憩一下，右键可隐藏入口" });
     if response.clicked() { state.reveal(); }
     response.context_menu(|ui| {
+        if state.desktop.enabled() {
+            if ui.button(if state.desktop.paused() { "继续桌面追逐" } else { "暂停桌面追逐" }).clicked() { state.desktop.pause(ui.ctx()); ui.close(); }
+            if ui.button("收回桌面小猫").clicked() { state.desktop.stop(ui.ctx()); ui.close(); }
+            ui.separator();
+        }
         if ui.button("隐藏小猫入口").clicked() { state.discovered = false; ui.close(); }
     });
 }
@@ -75,6 +84,7 @@ fn cat_face(p: &egui::Painter, center: Pos2, radius: f32) {
 }
 
 pub fn show(state: &mut State, ctx: &egui::Context) {
+    state.desktop.show(ctx);
     if !state.open { return; }
     let palette = style::palette_of(ctx);
     let now = ctx.input(|i| i.time);
@@ -92,6 +102,8 @@ pub fn show(state: &mut State, ctx: &egui::Context) {
             state.texture = Some(ctx.load_texture("byte-cat", egui::ColorImage::from_rgba_unmultiplied([rgba.width() as usize, rgba.height() as usize], rgba.as_raw()), egui::TextureOptions::LINEAR));
         }
     }
+    if std::mem::take(&mut state.just_opened) { state.opening_frame = Some(ctx.cumulative_frame_nr()); }
+    let opening = state.opening_frame == Some(ctx.cumulative_frame_nr());
     let mut close = false;
     let response = egui::Modal::new(Id::unique("byte-playroom"))
         .area(egui::Modal::default_area(Id::unique("byte-playroom")).default_size(Vec2::new(500.0, 540.0)))
@@ -122,7 +134,15 @@ pub fn show(state: &mut State, ctx: &egui::Context) {
                 }
             });
         });
-    if close || response.should_close() { state.close(); }
+    // A reopening click belongs to the status-bar button. Only close on a
+    // backdrop click whose press started after this modal was already open.
+    if !opening && ctx.input(|i| i.pointer.primary_pressed()) {
+        state.backdrop_pressed = ctx.input(|i| i.pointer.interact_pos().is_some_and(|p| !response.response.rect.contains(p)));
+    }
+    let outside = state.backdrop_pressed && response.backdrop_response.clicked();
+    if ctx.input(|i| i.pointer.primary_released()) { state.backdrop_pressed = false; }
+    let escape = response.is_top_modal && !response.any_popup_open && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape));
+    if close || outside || escape { state.close(); }
 }
 
 fn cat(state: &mut State, ui: &mut egui::Ui, now: f64, focused: bool) {
@@ -154,6 +174,17 @@ fn cat(state: &mut State, ui: &mut egui::Ui, now: f64, focused: bool) {
         ui.add_space(8.0);
         ui.label(RichText::new(format!("本次陪伴  {} 次摸摸 · {} 包小鱼干", state.pats, state.fish)).size(11.0).color(palette.muted()));
         ui.checkbox(&mut state.still, "静态插画（减少动画）");
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            if state.desktop.enabled() {
+                let response = ui.button(if state.desktop.paused() { "继续桌面追逐" } else { "暂停桌面追逐" });
+                if response.clicked() { state.desktop.pause(ui.ctx()); }
+                if ui.button("收回桌面小猫").clicked() { state.desktop.stop(ui.ctx()); }
+            } else if ui.button("放到桌面追鼠标").clicked() && let Some(texture) = &state.texture
+                && state.desktop.start(ui.ctx(), texture.clone(), state.frames) { state.close(); }
+        });
+        if let Some(error) = state.desktop.error() { ui.colored_label(palette.accent(), error); }
+        else { ui.label(RichText::new("跨应用追逐 · 点击穿透 · 右键状态栏小猫可暂停或收回").size(10.0).color(palette.muted())); }
     });
     if before != (state.pats, state.fish, state.until) { ui.ctx().request_repaint(); }
     if focused && !state.still { ui.ctx().request_repaint_after(Duration::from_millis(40)); }
@@ -286,7 +317,7 @@ mod tests {
     }
     #[test]
     fn controls_fit_the_smallest_supported_window_without_scrolling() {
-        for (page, expected) in [(Page::Cat, ["投喂小鱼干", "静态插画"]), (Page::Game, ["出发", "方向键 / WASD"])] {
+        for (page, expected) in [(Page::Cat, ["投喂小鱼干", "放到桌面追鼠标"]), (Page::Game, ["出发", "方向键 / WASD"])] {
             let ctx = egui::Context::default();
             let mut state = State::new(true, 0, true); state.open = true; state.page = page;
             let mut seen = [false; 2];
@@ -303,6 +334,28 @@ mod tests {
             }
             assert!(seen.into_iter().all(|s| s), "some controls were clipped: {expected:?}");
         }
+    }
+    #[test]
+    fn reopening_from_an_outside_button_does_not_close_on_the_opening_click() {
+        let ctx = egui::Context::default();
+        let mut state = State::new(true, 0, true); state.reveal();
+        let raw = || egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 650.0))), ..Default::default() };
+        for _ in 0..3 { ctx.run_ui(raw(), |ui| show(&mut state, ui.ctx())).drop_without_applying_deltas(); }
+        state.close();
+        ctx.run_ui(raw(), |ui| show(&mut state, ui.ctx())).drop_without_applying_deltas();
+        let click = || vec![egui::Event::PointerMoved(Pos2::new(894.0, 637.0)), egui::Event::PointerButton { pos: Pos2::new(894.0, 637.0), button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE }, egui::Event::PointerButton { pos: Pos2::new(894.0, 637.0), button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }];
+        state.reveal();
+        let mut passes = 0;
+        ctx.run_ui(egui::RawInput { events: click(), ..raw() }, |ui| {
+            show(&mut state, ui.ctx());
+            if passes == 0 { ui.ctx().request_discard("exercise modal opening across layout passes"); }
+            passes += 1;
+        }).drop_without_applying_deltas();
+        assert!(passes >= 2);
+        assert!(state.open);
+        ctx.run_ui(raw(), |ui| show(&mut state, ui.ctx())).drop_without_applying_deltas();
+        ctx.run_ui(egui::RawInput { events: click(), ..raw() }, |ui| show(&mut state, ui.ctx())).drop_without_applying_deltas();
+        assert!(!state.open, "later backdrop clicks must still close it");
     }
     #[test]
     fn space_pauses_once_and_closing_waits_for_held_keys() {

@@ -25,6 +25,7 @@ mod layout;
 mod monitor;
 mod png;
 mod play;
+mod desktop_pointer;
 mod remote;
 mod smoke;
 mod terminal;

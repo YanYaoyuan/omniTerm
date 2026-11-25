@@ -6,6 +6,7 @@ mod agent_panel;
 mod chrome;
 mod dialogs;
 mod easter_eggs;
+mod desktop_pet;
 mod highlighting;
 mod file_connection;
 mod web_files;
@@ -217,8 +218,9 @@ pub struct App {
     docked: Vec<(String, dock::Edge)>,
     /// The docked pane with the keyboard, when one has it rather than the active tab.
     docked_focus: Option<String>,
-    /// Glyphs rasterized this frame, uploaded by whichever pane's callback prepares first.
+    /// Pending glyph pixels survive skipped paints; the first pane callback uploads them.
     frame_uploads: Arc<std::sync::Mutex<Vec<crate::glyphs::Upload>>>,
+    frame_upload_epoch: u64,
     agent_state: agent_panel::AgentState,
     workspace_layout: Option<serde_json::Value>,
     file_panels: HashMap<String, remote_panel::PanelState>,
@@ -324,6 +326,7 @@ impl App {
             docked: Vec::new(),
             docked_focus: None,
             frame_uploads: Arc::default(),
+            frame_upload_epoch: 0,
             agent_state: agent_panel::AgentState::with_profile(ui_state.agent_profile.clone()),
             workspace_layout: None,
             file_panels: HashMap::new(),
@@ -1255,6 +1258,9 @@ impl App {
 }
 
 impl eframe::App for App {
+    // Child desktop-companion viewports need an alpha-zero clear. Root chrome
+    // paints its own background, including the configured window translucency.
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] { [0.0; 4] }
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let scale = ctx.pixels_per_point();
@@ -1275,7 +1281,6 @@ impl eframe::App for App {
         }
         let modal = self.dialog.is_some() || self.palette.is_some() || self.easter_eggs.blocks_input(&ctx);
         self.file_drop = file_drop::FrameDrop::capture(frame, &ctx, modal);
-        self.frame_uploads = Arc::default();
         let epoch = self.fonts.epoch;
         if !modal && self.web_files.is_none() {
             self.global_keys(&ctx);
@@ -1345,7 +1350,13 @@ impl eframe::App for App {
         // Every pane has been built by now and no callback has prepared yet, so glyphs first
         // seen anywhere this frame go up before anything is drawn. If the atlas started over
         // meanwhile, the panes built before that point are rebuilt next frame.
-        self.frame_uploads.lock().unwrap_or_else(|p| p.into_inner()).append(&mut self.fonts.uploads);
+        // Minimized windows may run UI without preparing a GPU callback. Keep
+        // pending glyph pixels until a visible pane actually uploads them.
+        {
+            let mut pending = self.frame_uploads.lock().unwrap_or_else(|p| p.into_inner());
+            if self.frame_upload_epoch != self.fonts.epoch { pending.clear(); self.frame_upload_epoch = self.fonts.epoch; }
+            pending.append(&mut self.fonts.uploads);
+        }
         if self.fonts.epoch != epoch {
             ctx.request_repaint();
         }

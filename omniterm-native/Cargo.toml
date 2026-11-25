@@ -45,7 +45,7 @@ raw-window-handle = "0.6"
 
 # X11 forwarding: the short path of omniTerm itself, which ssh runs as its xauth.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 raw-window-handle = "0.6"
