@@ -1,0 +1,77 @@
+{
+  "callbackFps": 76.29219288334737,
+  "canvasPixels": [
+    2560.0,
+    1440.0
+  ],
+  "canvasUpdatesDuringRun": 0,
+  "frameIntervals": {
+    "count": 528,
+    "medianMs": 13.312236405909061,
+    "p95Ms": 13.684145174920559,
+    "p99Ms": 69.34865564107895
+  },
+  "motion": "continuous-joints",
+  "pauseResumeCycles": 0,
+  "pointerIoOnUiThread": false,
+  "presentation": "AutoVsync",
+  "renderer": {
+    "backend": "Vulkan",
+    "hardware": true,
+    "kind": "DiscreteGpu",
+    "name": "NVIDIA GeForce RTX 5090"
+  },
+  "requestedPresentModes": [
+    "AutoVsync"
+  ],
+  "rootFrames": 76,
+  "slowFrames": [
+    [
+      5,
+      67.28354841470718
+    ],
+    [
+      48,
+      66.49764627218246
+    ],
+    [
+      82,
+      67.63926148414612
+    ],
+    [
+      88,
+      76.50398463010788
+    ],
+    [
+      158,
+      79.71180975437164
+    ],
+    [
+      233,
+      79.20023798942566
+    ],
+    [
+      309,
+      69.9484720826149
+    ],
+    [
+      385,
+      69.34865564107895
+    ],
+    [
+      391,
+      73.67057353258133
+    ],
+    [
+      463,
+      70.32860815525055
+    ]
+  ],
+  "uiWork": {
+    "count": 606,
+    "medianMs": 0.002716,
+    "p95Ms": 0.006212,
+    "p99Ms": 0.008906
+  },
+  "warmupSeconds": 1.0
+}

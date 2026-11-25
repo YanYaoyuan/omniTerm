@@ -6,7 +6,8 @@ mod agent_panel;
 mod chrome;
 mod dialogs;
 mod easter_eggs;
-mod desktop_pet;
+pub(crate) mod desktop_pet;
+mod pet_rig;
 mod highlighting;
 mod file_connection;
 mod web_files;
@@ -341,6 +342,7 @@ impl App {
             mac: cfg!(target_os = "macos"),
             windows: cfg!(windows),
         };
+        app.easter_eggs.renderer(&app.render_state);
         match app.store.list() {
             Ok(profiles) => app.profiles = profiles,
             Err(error) => app.notify(error, true),
@@ -1376,6 +1378,7 @@ impl eframe::App for App {
             let first = self.tabs.first().and_then(|tab| self.panes.get(&tab.focus)).map(|pane| (pane.session.terminal.clone(), self.render_state.adapter.get_info().backend));
             smoke.tick(&ctx, &self.backend, first, self.fonts.family());
         }
+        frame.set_wgpu_surface_config(self.easter_eggs.surface_config());
         if self.workspace_dirty.is_some() {
             ctx.request_repaint_after(Duration::from_millis(450));
         }

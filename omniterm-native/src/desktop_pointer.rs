@@ -2,13 +2,14 @@
 //! Read-only global pointer sampling. No event hooks, input injection or permissions prompts.
 use eframe::egui::{Pos2, Rect, Vec2};
 pub use platform::Tracker;
+#[derive(Clone, Copy)]
 pub struct Sample { pub pointer: Pos2, pub bounds: Rect }
 
 #[cfg(target_os = "linux")]
 mod platform {
     use super::*;
     use x11rb::{connection::Connection, protocol::xproto::ConnectionExt, rust_connection::RustConnection};
-    pub struct Tracker { connection: RustConnection, root: u32 }
+    pub struct Tracker { connection: RustConnection, root: u32, bounds: Rect, checked: std::time::Instant }
     impl Tracker {
         pub fn new() -> Result<Self, String> {
             if std::env::var("XDG_SESSION_TYPE").is_ok_and(|v| v == "wayland") || std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty()) {
@@ -20,13 +21,19 @@ mod platform {
             let atom = connection.intern_atom(false, format!("_NET_WM_CM_S{screen}").as_bytes()).map_err(|e| e.to_string())?.reply().map_err(|e| e.to_string())?.atom;
             let owner = connection.get_selection_owner(atom).map_err(|e| e.to_string())?.reply().map_err(|e| e.to_string())?.owner;
             if owner == 0 { return Err("桌面跟随需要启用 X11 窗口合成器，以显示透明小猫。".into()); }
-            Ok(Self { connection, root })
+            let g = connection.get_geometry(root).map_err(|e| e.to_string())?.reply().map_err(|e| e.to_string())?;
+            let bounds = Rect::from_min_size(Pos2::ZERO, Vec2::new(f32::from(g.width), f32::from(g.height)));
+            Ok(Self { connection, root, bounds, checked: std::time::Instant::now() })
         }
-        pub fn sample(&self) -> Result<Sample, String> {
+        pub fn sample(&mut self) -> Result<Sample, String> {
             let p = self.connection.query_pointer(self.root).map_err(|e| e.to_string())?.reply().map_err(|e| e.to_string())?;
             if !p.same_screen { return Err("鼠标已离开当前 X11 屏幕，请收回后重新放出小猫。".into()); }
-            let g = self.connection.get_geometry(self.root).map_err(|e| e.to_string())?.reply().map_err(|e| e.to_string())?;
-            Ok(Sample { pointer: Pos2::new(f32::from(p.root_x), f32::from(p.root_y)), bounds: Rect::from_min_size(Pos2::ZERO, Vec2::new(f32::from(g.width), f32::from(g.height))) })
+            if self.checked.elapsed() >= std::time::Duration::from_secs(1) {
+                let g = self.connection.get_geometry(self.root).map_err(|e| e.to_string())?.reply().map_err(|e| e.to_string())?;
+                self.bounds = Rect::from_min_size(Pos2::ZERO, Vec2::new(f32::from(g.width), f32::from(g.height)));
+                self.checked = std::time::Instant::now();
+            }
+            Ok(Sample { pointer: Pos2::new(f32::from(p.root_x), f32::from(p.root_y)), bounds: self.bounds })
         }
     }
 }
@@ -38,7 +45,7 @@ mod platform {
     pub struct Tracker;
     impl Tracker {
         pub fn new() -> Result<Self, String> { Ok(Self) }
-        pub fn sample(&self) -> Result<Sample, String> {
+        pub fn sample(&mut self) -> Result<Sample, String> {
             let mut p = POINT { x: 0, y: 0 };
             // SAFETY: the POINT is writable and these APIs only read desktop state.
             unsafe {
@@ -68,7 +75,7 @@ mod platform {
     pub struct Tracker;
     impl Tracker {
         pub fn new() -> Result<Self, String> { Ok(Self) }
-        pub fn sample(&self) -> Result<Sample, String> {
+        pub fn sample(&mut self) -> Result<Sample, String> {
             // SAFETY: null source samples current state, never posts an event. Each
             // retained event is released. Display IDs and CGRect follow the C ABI.
             unsafe {

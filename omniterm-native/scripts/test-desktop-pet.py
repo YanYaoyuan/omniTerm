@@ -128,13 +128,26 @@ class Desktop:
         info = S.check_output(['xwininfo', '-id', hex(window)], env=self.env, text=True)
         return tuple(int(re.search(name + r':\s+(-?\d+)', info)[1]) for name in ['Absolute upper-left X', 'Absolute upper-left Y', 'Width', 'Height'])
 
+    def cat_rect(self):
+        from PIL import ImageGrab, ImageChops
+        image = ImageGrab.grab(xdisplay=self.env['DISPLAY']).convert('RGB')
+        mask = None
+        for band, value in zip(image.split(), (255, 235, 197)):
+            selected = band.point([255 if i == value else 0 for i in range(256)])
+            mask = selected if mask is None else ImageChops.multiply(mask, selected)
+        rect = mask.getbbox()
+        return rect
+
     def settle(self, pet, point):
         self.move(*point)
         def close_enough():
-            x, y, w, h = self.geometry(pet)
-            return math.dist((x + w / 2, y + h / 2), point) < 107
+            rect = self.cat_rect()
+            if rect is None:
+                return False
+            left, top, right, bottom = rect
+            return math.dist(((left + right) / 2, (top + bottom) / 2), point) < 135
         until(close_enough, 'Cat did not follow global mouse', 8)
-        return self.geometry(pet)
+        return self.cat_rect()
 
     def screenshot(self, path):
         from PIL import ImageGrab
@@ -221,6 +234,7 @@ def main():
             assert '_NET_WM_WINDOW_TYPE_DOCK' in props and '_NET_WM_STATE_ABOVE' in props, props
             position = d.settle(pet, (1700, 850))
             assert position[0] > 1000 and position[1] > 650, position
+            assert d.geometry(pet) == (0, 0, 2000, 1100), 'GPU canvas should stay fixed across the desktop'
             d.focus(under)
             d.x.XRaiseWindow(d.d, under)
             d.flush()
@@ -255,17 +269,17 @@ def main():
             d.click(312, 540)  # pause
             time.sleep(.2)
             d.tap('Escape')
-            paused = d.geometry(pet)
+            paused = until(d.cat_rect, 'Paused cat is not visible')
             d.move(1800, 150)
             time.sleep(.6)
-            assert d.geometry(pet) == paused, 'Paused cat moved'
+            assert d.cat_rect() == paused, 'Paused cat moved'
             d.x.XRaiseWindow(d.d, under)
             d.focus(under)
             time.sleep(.2)
             event = (C.c_long * 24)()
             while d.x.XPending(d.d):
                 d.x.XNextEvent(d.d, C.byref(event))
-            d.click(paused[0] + 80, paused[1] + 62)
+            d.click((paused[0] + paused[2]) // 2, (paused[1] + paused[3]) // 2)
             clicked = False
             while d.x.XPending(d.d):
                 d.x.XNextEvent(d.d, C.byref(event))
@@ -275,7 +289,8 @@ def main():
             d.screenshot(args.output / 'click-through.png')
             from PIL import Image
             screenshot = Image.open(args.output / 'click-through.png').convert('RGB')
-            assert screenshot.getpixel((paused[0] + 2, paused[1] + 2)) == (217, 229, 242), 'Opaque pet window background'
+            assert screenshot.getpixel((1900, 1000)) == (217, 229, 242), 'Opaque GPU canvas background'
+            assert d.geometry(pet) == (0, 0, 2000, 1100), 'The canvas moved during the chase'
             d.x.XRaiseWindow(d.d, main_window)
             d.focus(main_window)
             d.click(894, 637)
@@ -302,7 +317,7 @@ def main():
             external_cli.close_window(env['DISPLAY'], main_window)
             assert app.wait(timeout=10) == 0
             assert not d.window(pet_title), 'Pet survived application exit'
-            report = {'passed': True, 'checks': ['global-follow-outside-main-window', 'always-on-top', 'no-focus-stealing', 'follow-while-main-minimized', 'external-cli-while-following', 'pause-resume', 'click-through-to-another-application', 'transparent-background', 'recall-restart', 'normal-exit-closes-pet']}
+            report = {'passed': True, 'checks': ['global-follow-outside-main-window', 'always-on-top', 'no-focus-stealing', 'follow-while-main-minimized', 'external-cli-while-following', 'pause-resume', 'click-through-to-another-application', 'transparent-background', 'recall-restart', 'normal-exit-closes-pet', 'fixed-gpu-canvas']}
             (args.output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
             print(json.dumps(report))
         except BaseException:

@@ -38,6 +38,8 @@ impl State {
     pub fn new(discovered: bool, best: u16, still: bool) -> Self {
         Self { open: false, discovered, best, still, page: Page::Cat, pose: Pose::Rest, until: 0.0, pats: 0, fish: 0, taps: 0, last_tap: -10.0, last_step: 0.0, release_keys: false, just_opened: false, opening_frame: None, backdrop_pressed: false, texture: None, frames: [Rect::NOTHING; 3], texture_tried: false, game: Snake::new(42), desktop: Default::default() }
     }
+    pub fn surface_config(&self) -> eframe::egui_wgpu::SurfaceConfig { self.desktop.surface_config() }
+    pub fn renderer(&self, render: &eframe::egui_wgpu::RenderState) { self.desktop.renderer(render); }
     pub fn reveal(&mut self) { self.discovered = true; self.open = true; self.just_opened = true; self.backdrop_pressed = false; }
     pub fn tap_brand(&mut self, now: f64) {
         self.taps = if now - self.last_tap > 1.4 { 1 } else { self.taps + 1 };
@@ -180,9 +182,10 @@ fn cat(state: &mut State, ui: &mut egui::Ui, now: f64, focused: bool) {
                 let response = ui.button(if state.desktop.paused() { "继续桌面追逐" } else { "暂停桌面追逐" });
                 if response.clicked() { state.desktop.pause(ui.ctx()); }
                 if ui.button("收回桌面小猫").clicked() { state.desktop.stop(ui.ctx()); }
-            } else if ui.button("放到桌面追鼠标").clicked() && let Some(texture) = &state.texture
-                && state.desktop.start(ui.ctx(), texture.clone(), state.frames) { state.close(); }
+            } else if ui.button("放到桌面追鼠标").clicked() && state.desktop.start(ui.ctx()) { state.close(); }
         });
+        let renderer = state.desktop.renderer_label();
+        if !renderer.is_empty() { ui.label(RichText::new(renderer).size(10.0).color(palette.muted())); }
         if let Some(error) = state.desktop.error() { ui.colored_label(palette.accent(), error); }
         else { ui.label(RichText::new("跨应用追逐 · 点击穿透 · 右键状态栏小猫可暂停或收回").size(10.0).color(palette.muted())); }
     });
