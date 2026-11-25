@@ -419,7 +419,7 @@ fn stack(app: &mut App, ui: &mut Ui, area: Rect, intents: &mut Vec<Intent>, moda
 /// A terminal docked on a window edge, drawn and driven like any pane.
 pub fn docked(app: &mut App, ui: &mut Ui, id: &str, rect: Rect, intents: &mut Vec<Intent>) {
     let focused = app.docked_focus.as_deref() == Some(id);
-    let modal = app.dialog.is_some() || app.palette.is_some();
+    let modal = app.dialog.is_some() || app.palette.is_some() || app.easter_eggs.blocking();
     let uploads = app.frame_uploads.clone();
     pane(app, ui, id, rect.shrink(3.0), focused, true, &uploads, intents, modal);
 }

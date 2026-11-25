@@ -24,6 +24,7 @@ mod input;
 mod layout;
 mod monitor;
 mod png;
+mod play;
 mod remote;
 mod smoke;
 mod terminal;

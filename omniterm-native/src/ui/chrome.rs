@@ -77,6 +77,10 @@ pub fn title_bar(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
         ui.painter().text(Pos2::new(left, center_y), Align2::LEFT_CENTER, icons::TERMINAL_WINDOW, FontId::new(19.0, egui::FontFamily::Name(style::ICONS.into())), palette.accent());
         left += 26.0;
         ui.painter().text(Pos2::new(left, center_y), Align2::LEFT_CENTER, "omniTerm", FontId::proportional(13.0), palette.text_soft());
+        let brand_rect = Rect::from_min_max(Pos2::new(left - 33.0, rect.top() + 5.0), Pos2::new(left + 78.0, rect.bottom() - 5.0));
+        let brand = ui.interact(brand_rect, ui.scope_id().with("byte-brand"), Sense::click_and_drag()).on_hover_text("omniTerm · 连点品牌，藏着一点小惊喜");
+        if brand.drag_started() { intents.push(Intent::Window(ViewportCommand::StartDrag)); }
+        if brand.clicked() { app.easter_eggs.tap_brand(ui.input(|input| input.time)); }
 
         let controls = if app.mac { 0.0 } else { 138.0 };
         let actions_right = rect.right() - controls;
@@ -227,6 +231,10 @@ pub fn status_bar(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
                 }
                 separator(ui);
                 let ready = crate::agent::engine::resolve().is_ok();
+                if app.easter_eggs.discovered {
+                    super::easter_eggs::badge(&mut app.easter_eggs, ui);
+                    separator(ui);
+                }
                 ui.label(small(if ready { "omniTerm Agent 已就绪" } else { "omniTerm Agent 未就绪" }));
                 status_dot(ui, ready);
             });

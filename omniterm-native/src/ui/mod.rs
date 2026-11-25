@@ -5,6 +5,7 @@
 mod agent_panel;
 mod chrome;
 mod dialogs;
+mod easter_eggs;
 mod highlighting;
 mod file_connection;
 mod web_files;
@@ -157,6 +158,7 @@ pub enum Intent {
     MovePane { id: String, target: Option<(String, crate::layout::Direction)> },
     DockPane { id: String, edge: dock::Edge },
     OpenProcesses,
+    OpenPlayroom,
     /// Types the readiness marks script into a terminal; the user submits it with Enter.
     StageIntegration(String),
     AllowAutoSubmit { id: String, enabled: bool },
@@ -191,6 +193,7 @@ pub struct App {
     focus_mode: bool,
     dialog: Option<Dialog>,
     palette: Option<palette::State>,
+    easter_eggs: easter_eggs::State,
     search: Search,
     toast: Option<Toast>,
     selecting: Option<String>,
@@ -242,6 +245,9 @@ struct UiState {
     agent_profile: Option<String>,
     monitor_visible: bool,
     dock: Option<dock::Dock>,
+    playroom_discovered: bool,
+    snake_best: u16,
+    playroom_still: bool,
 }
 
 fn next_counter(counter: &mut u64) -> u64 {
@@ -296,6 +302,7 @@ impl App {
             focus_mode: false,
             dialog: None,
             palette: None,
+            easter_eggs: easter_eggs::State::new(ui_state.playroom_discovered, ui_state.snake_best, ui_state.playroom_still),
             search: Search { found: true, ..Search::default() },
             toast: None,
             selecting: None,
@@ -962,6 +969,7 @@ impl App {
             Intent::Window(command) => ctx.send_viewport_cmd(command),
             Intent::SetTheme(id) => self.settings.theme = id.to_string(),
             Intent::OpenProcesses => self.open_processes(),
+            Intent::OpenPlayroom => self.easter_eggs.reveal(),
             Intent::StageIntegration(id) => match self.panes.get(&id).and_then(|pane| crate::backend::shell_integration(&pane.session.nonce)) {
                 Some(script) => {
                     self.backend.write(&id, script);
@@ -1113,7 +1121,7 @@ impl App {
 
     fn save_ui_state(&self) {
         if self.external_launch { return; }
-        let state = UiState { sidebar_hidden: !self.sidebar_visible, agent_hidden: !self.agent_visible, seen_ssh_hosts: self.seen_hosts.iter().cloned().collect(), agent_profile: self.agent_state.profile.clone(), monitor_visible: self.monitor_visible, dock: Some(self.dock.clone()) };
+        let state = UiState { sidebar_hidden: !self.sidebar_visible, agent_hidden: !self.agent_visible, seen_ssh_hosts: self.seen_hosts.iter().cloned().collect(), agent_profile: self.agent_state.profile.clone(), monitor_visible: self.monitor_visible, dock: Some(self.dock.clone()), playroom_discovered: self.easter_eggs.discovered, snake_best: self.easter_eggs.best, playroom_still: self.easter_eggs.still };
         if let Ok(json) = serde_json::to_vec(&state) {
             let _ = paths::write_atomically(&paths::file(UI_STATE), &json);
         }
@@ -1265,7 +1273,7 @@ impl eframe::App for App {
             ctx.set_theme(if theme.light { egui::Theme::Light } else { egui::Theme::Dark });
             style::apply_visuals(&ctx, &palette);
         }
-        let modal = self.dialog.is_some() || self.palette.is_some();
+        let modal = self.dialog.is_some() || self.palette.is_some() || self.easter_eggs.blocks_input(&ctx);
         self.file_drop = file_drop::FrameDrop::capture(frame, &ctx, modal);
         self.frame_uploads = Arc::default();
         let epoch = self.fonts.epoch;
@@ -1315,6 +1323,7 @@ impl eframe::App for App {
             Some(Err(error)) => self.notify(error, true),
             None => {}
         }
+        easter_eggs::show(&mut self.easter_eggs, &ctx);
         chrome::toast(self, &ctx);
         for intent in intents {
             self.apply(&ctx, intent);
