@@ -22,10 +22,10 @@ use eframe::egui_wgpu;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-const TOOLBAR: f32 = 55.0;
-const TABSTRIP: f32 = 41.0;
-const TERMINAL_TOOLBAR: f32 = 34.0;
-const FOOTNOTE: f32 = 28.0;
+const TOOLBAR: f32 = 32.0;
+const TABSTRIP: f32 = 35.0;
+const TERMINAL_TOOLBAR: f32 = 30.0;
+const FOOTNOTE: f32 = 22.0;
 const METRICS: f32 = 32.0;
 const GAP: f32 = 6.0;
 const BLINK: Duration = Duration::from_millis(600);
@@ -42,14 +42,15 @@ pub fn show(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>, modal: bool) 
     let full = ui.max_rect();
     ui.painter().rect_filled(full, 0.0, palette.panel_soft);
     let mut area = full;
+    let strip = Rect::from_min_size(area.min, Vec2::new(area.width(), TABSTRIP));
+    tab_strip(app, ui, strip, intents);
+    area.min.y += TABSTRIP;
     if !app.focus_mode {
         let toolbar = Rect::from_min_size(area.min, Vec2::new(area.width(), TOOLBAR));
         workspace_toolbar(app, ui, toolbar, intents);
         area.min.y += TOOLBAR;
     }
-    let strip = Rect::from_min_size(area.min, Vec2::new(area.width(), TABSTRIP));
-    tab_strip(app, ui, strip, intents);
-    area.min.y += TABSTRIP;
+
     let bar = Rect::from_min_size(area.min, Vec2::new(area.width(), TERMINAL_TOOLBAR));
     terminal_toolbar(app, ui, bar, intents);
     area.min.y += TERMINAL_TOOLBAR;
@@ -78,13 +79,13 @@ fn workspace_toolbar(app: &App, ui: &mut Ui, rect: Rect, intents: &mut Vec<Inten
     ui.painter().rect_filled(rect, 0.0, palette.panel_soft);
     ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, palette.border));
     let directory = app.focused().map(|pane| pane.cwd().to_string()).unwrap_or_else(|| app.cwd.clone());
-    ui.scope_builder(egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(20.0, 0.0))).layout(Layout::left_to_right(Align::Center)), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(12.0, 0.0))).layout(Layout::left_to_right(Align::Center)), |ui| {
         ui.label(icon(icons::FOLDER_SIMPLE, 16.0).color(palette.muted()));
         ui.label(RichText::new("工作区").size(12.0).color(palette.muted()));
         ui.label(icon(icons::CARET_RIGHT, 12.0).color(palette.faint()));
         ui.add(egui::Label::new(RichText::new(path_label(&directory, &app.home)).size(12.0).strong().color(palette.text())).truncate()).on_hover_text(&directory);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if style::secondary_button(ui, &format!("{}  打开文件夹", icons::FOLDER_OPEN)).clicked() {
+            if style::ghost_button(ui, &format!("{}  打开文件夹", icons::FOLDER_OPEN)).clicked() {
                 intents.push(Intent::ChooseDirectory);
             }
         });
@@ -110,14 +111,14 @@ fn tab_strip(app: &mut App, ui: &mut Ui, rect: Rect, intents: &mut Vec<Intent>) 
         let response = ui.interact(cell, id, Sense::click_and_drag());
         if active {
             ui.painter().rect_filled(cell, 0.0, if palette.panel_bg == Color32::TRANSPARENT { alpha(palette.tokens.ink, 0.07) } else { palette.panel_bg });
-            ui.painter().hline(cell.x_range(), cell.bottom() - 1.0, Stroke::new(2.0, palette.accent()));
+            ui.painter().hline(cell.x_range(), cell.top() + 1.0, Stroke::new(2.0, palette.accent()));
         } else if response.hovered() {
             ui.painter().rect_filled(cell, 0.0, alpha(palette.tokens.ink, 0.03));
         }
         if dragged == Some(tab.id) {
             ui.painter().rect_filled(cell, 0.0, alpha(palette.tokens.bg, 0.5));
         }
-        ui.painter().vline(cell.right() - 0.5, cell.y_range().shrink(10.0), Stroke::new(1.0, palette.border));
+        ui.painter().vline(cell.right() - 0.5, cell.y_range(), Stroke::new(1.0, palette.border));
         let focus = app.panes.get(&tab.focus);
         let kind = focus.map(|pane| pane.session.kind).unwrap_or(Kind::Shell);
         let color = if active { palette.text_soft() } else { palette.muted() };

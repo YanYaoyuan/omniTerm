@@ -277,13 +277,15 @@ fn member(app: &mut App, ui: &mut Ui, member: &Member, rect: Rect, intents: &mut
         }
     };
     ui.painter().rect_filled(rect, 0.0, if panel == Panel::Sidebar { palette.panel } else { palette.panel_soft });
-    let inner = rect.shrink2(if panel == Panel::Sidebar { Vec2::new(12.0, 0.0) } else { Vec2::new(10.0, 0.0) });
+    let inner = rect.shrink2(if panel == Panel::Sidebar { Vec2::new(8.0, 0.0) } else { Vec2::new(10.0, 0.0) });
     member_ui(ui, Id::unique(("dock-member", panel as u8)), inner, |ui| {
         match panel {
             Panel::Sidebar => {
                 ui.horizontal(|ui| {
-                    ui.add_space(rect.width() - 46.0);
-                    grip(app, ui, panel);
+                    ui.set_height(32.0);
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new(if app.sidebar_files && app.focused_remote().is_some() { "远程文件" } else { "资源管理器" }).size(11.0).strong().color(palette.text_soft()));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { grip(app, ui, panel); });
                 });
                 super::sidebar::show(app, ui, intents);
             }
@@ -291,6 +293,7 @@ fn member(app: &mut App, ui: &mut Ui, member: &Member, rect: Rect, intents: &mut
             Panel::Monitor => super::monitor_view::show(app, ui, intents),
         }
     });
+    ui.painter().vline(rect.right() - 0.5, rect.y_range(), Stroke::new(1.0, palette.border));
     let edge_line = rect.x_range();
     ui.painter().hline(edge_line, rect.bottom() - 0.5, Stroke::new(1.0, palette.border));
 }

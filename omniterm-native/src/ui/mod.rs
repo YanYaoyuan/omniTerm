@@ -227,6 +227,7 @@ pub struct App {
     file_panels: HashMap<String, remote_panel::PanelState>,
     file_connection_errors: HashMap<String, String>,
     sidebar_files: bool,
+    connection_query: String,
     watched: Option<String>,
     credential_work: Vec<std::sync::mpsc::Receiver<Result<(), String>>>,
     background: Option<(std::path::PathBuf, egui::TextureHandle)>,
@@ -333,6 +334,7 @@ impl App {
             file_panels: HashMap::new(),
             file_connection_errors: HashMap::new(),
             sidebar_files: true,
+            connection_query: String::new(),
             watched: None,
             credential_work: Vec::new(),
             background: None,
@@ -1303,6 +1305,7 @@ impl eframe::App for App {
         if self.web_files.is_some() {
             egui::CentralPanel::default().frame(egui::Frame::new().inner_margin(16)).show(ui, |ui| web_files::show(self, ui, &mut intents));
         } else {
+            if !self.focus_mode { chrome::activity_bar(self, ui, &mut intents); }
             dock::show(self, ui, &mut intents, self.focus_mode);
             dock::drag_overlay(self, &ctx);
             dock::pane_overlay(self, &ctx, &mut intents);

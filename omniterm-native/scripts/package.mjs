@@ -59,6 +59,7 @@ const notices = async (directory) => {
   await mkdir(directory, { recursive: true });
   for (const name of ["LICENSE", "NOTICE"]) await cp(path.join(repository, name), path.join(directory, name));
   await cp(path.join(native, "assets/Phosphor-LICENSE-MIT.txt"), path.join(directory, "Phosphor-LICENSE-MIT.txt"));
+  await cp(path.join(native, "assets/theme-licenses"), path.join(directory, "theme-licenses"), { recursive: true });
   await cp(path.join(native, "assets/highlight-licenses"), path.join(directory, "highlight-licenses"), { recursive: true });
 };
 

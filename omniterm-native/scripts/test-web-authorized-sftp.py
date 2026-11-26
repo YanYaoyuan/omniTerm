@@ -145,6 +145,10 @@ def gui(root, port, server, env):
         display = ':' + stream.readline().strip()
     env = {**env, 'DISPLAY': display, 'OMNITERM_DATA_DIR': str(root/'app-data'), 'OMNITERM_AUTOMATION_DIR': str(root/'automation')}
     env.pop('OMNITERM_DISABLE_AUTOMATION', None)
+    if theme := os.environ.get('OMNITERM_TEST_THEME'):
+        data = root / 'app-data'
+        data.mkdir(mode=0o700, exist_ok=True)
+        (data / 'native-settings.json').write_text(json.dumps({'theme': theme, 'restoreWorkspace': False, 'sshConfigPrompt': False}))
     packet = {'app':'winscp','host':'127.0.0.1','port':str(port),'user':'alice','pwd':'fixture-credential','PWD':'never-use-uppercase','st':'Web SFTP fixture','path':'/','proxy.addr':None}
     wire = 'accessclient://' + base64.b64encode(zlib.compress(json.dumps(packet).encode())).decode()
     with (root/'gui.stderr').open('wb') as log:

@@ -144,7 +144,7 @@ impl Default for Settings {
             scrollback: 10_000,
             cursor_blink: true,
             cursor_style: CursorStyle::Bar,
-            theme: "midnight".into(),
+            theme: "codeDark".into(),
             copy_on_select: false,
             option_as_meta: false,
             dim_inactive: true,

@@ -68,6 +68,8 @@ pub fn show(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
         bottom(ui, intents);
         ui.with_layout(Layout::top_down(Align::Min), |ui| {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                ui.add(egui::TextEdit::singleline(&mut app.connection_query).hint_text("筛选连接名称或主机…").desired_width(f32::INFINITY).margin(egui::vec2(8.0, 6.0)));
+                ui.add_space(8.0);
                 workspace(app, ui, intents);
                 if let Some(id) = &ssh_pane
                     && !bound_files
@@ -98,10 +100,11 @@ fn heading(ui: &mut Ui, title: &str, action: Option<(&str, &str)>) -> bool {
 /// A full-width row button with an icon, a title and an optional second line.
 fn row(ui: &mut Ui, glyph: &str, title: &str, detail: Option<&str>, active: bool, trailing: Option<&str>) -> egui::Response {
     let palette = style::palette(ui);
-    let height = if detail.is_some() { 42.0 } else { 32.0 };
+    let height = if detail.is_some() { 43.0 } else { 30.0 };
     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::click());
-    let fill = if active { palette.hover() } else if response.hovered() { alpha(palette.tokens.ink, 0.04) } else { Color32::TRANSPARENT };
-    ui.painter().rect_filled(rect, 6.0, fill);
+    let fill = if active { alpha(palette.tokens.accent, 0.14) } else if response.hovered() { alpha(palette.tokens.ink, 0.04) } else { Color32::TRANSPARENT };
+    ui.painter().rect_filled(rect, 2.0, fill);
+    if active { ui.painter().vline(rect.left() + 1.0, rect.y_range(), Stroke::new(2.0, palette.accent())); }
     let mut text_left = rect.left() + 10.0;
     ui.painter().text(egui::pos2(text_left, rect.center().y), egui::Align2::LEFT_CENTER, glyph, egui::FontId::new(17.0, egui::FontFamily::Name(style::ICONS.into())), if active { palette.accent() } else { palette.muted() });
     text_left += 26.0;
@@ -111,10 +114,10 @@ fn row(ui: &mut Ui, glyph: &str, title: &str, detail: Option<&str>, active: bool
         job.wrap = egui::text::TextWrapping::truncate_at_width(width.max(10.0));
         ui.painter().layout_job(job)
     };
-    let title = line(title, 12.0, if active { palette.text() } else { palette.text_soft() });
+    let title = line(title, 13.0, if active { palette.text() } else { palette.text_soft() });
     match detail {
         Some(detail) => {
-            let detail = line(detail, 10.0, palette.faint());
+            let detail = line(detail, 11.0, palette.faint());
             ui.painter().galley(egui::pos2(text_left, rect.top() + 6.0), title, palette.text_soft());
             ui.painter().galley(egui::pos2(text_left, rect.top() + 23.0), detail, palette.faint());
         }
@@ -136,9 +139,9 @@ fn workspace(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
     }
     // The working folder: new local terminals start here.
     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 52.0), Sense::click());
-    ui.painter().rect(rect, 8.0, if response.hovered() { palette.hover() } else { alpha(palette.tokens.ink, 0.03) }, Stroke::new(1.0, palette.border), egui::StrokeKind::Inside);
+    ui.painter().rect(rect, 3.0, if response.hovered() { palette.hover() } else { alpha(palette.tokens.ink, 0.03) }, Stroke::new(1.0, palette.border), egui::StrokeKind::Inside);
     let avatar = egui::Rect::from_min_size(rect.left_top() + Vec2::new(9.0, 10.0), Vec2::splat(32.0));
-    ui.painter().rect_filled(avatar, 7.0, alpha(palette.tokens.accent, 0.12));
+    ui.painter().rect_filled(avatar, 3.0, alpha(palette.tokens.accent, 0.12));
     ui.painter().text(avatar.center(), egui::Align2::CENTER_CENTER, icons::FOLDER_SIMPLE, egui::FontId::new(20.0, egui::FontFamily::Name(style::ICONS.into())), palette.accent());
     let left = avatar.right() + 10.0;
     let width = rect.right() - left - 24.0;
@@ -170,7 +173,7 @@ fn workspace(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
 
 fn connections(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
     let palette = style::palette(ui);
-    if heading(ui, "已保存的连接", Some((icons::PLUS, "添加连接"))) {
+    if heading(ui, &format!("已保存的连接  {}", app.profiles.len()), Some((icons::PLUS, "添加连接"))) {
         intents.push(Intent::Dialog(Dialog::Connection(Box::new(ConnectionForm::new(Kind::Ssh, None)))));
     }
     if app.profiles.is_empty() {
@@ -189,10 +192,15 @@ fn connections(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
         });
         return;
     }
+    let selected = app.focused().and_then(|pane| pane.session.profile.as_ref()).and_then(|profile| profile.id.as_deref());
+    let query = app.connection_query.trim().to_lowercase();
+    let mut matches = 0;
     for profile in &app.profiles {
+        if !query.is_empty() && !format!("{} {}", profile.display_name(), profile_detail(profile)).to_lowercase().contains(&query) { continue; }
+        matches += 1;
         let kind = profile.kind.unwrap_or(Kind::Ssh);
         let detail = profile_detail(profile);
-        let response = row(ui, kind_icon(kind), &profile.display_name(), Some(&detail), false, None);
+        let response = row(ui, kind_icon(kind), &profile.display_name(), Some(&detail), selected.is_some() && profile.id.as_deref() == selected, None);
         let menu_rect = egui::Rect::from_center_size(egui::pos2(response.rect.right() - 16.0, response.rect.center().y), Vec2::splat(24.0));
         let menu = ui.put(menu_rect, egui::Button::new(icon(icons::DOTS_THREE, 18.0).color(palette.muted())).frame(false)).on_hover_text(format!("{}的选项", profile.display_name()));
         egui::Popup::menu(&menu).show(|ui| {
@@ -207,6 +215,7 @@ fn connections(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
             intents.push(Intent::NewTab { kind, profile: Some(profile.clone()), cwd: None });
         }
     }
+    if matches == 0 { ui.label(RichText::new("没有匹配的连接").size(12.0).color(palette.muted())); }
 }
 
 pub fn profile_detail(profile: &Profile) -> String {
@@ -246,7 +255,7 @@ fn bottom(ui: &mut Ui, intents: &mut Vec<Intent>) {
                     .min_size(Vec2::new(width, 32.0))
                     .fill(alpha(palette.tokens.ink, 0.03))
                     .stroke(Stroke::new(1.0, palette.border))
-                    .corner_radius(6);
+                    .corner_radius(3);
                 if ui.add(button).clicked() {
                     intents.push(Intent::Dialog(Dialog::Connection(Box::new(ConnectionForm::new(kind, None)))));
                 }

@@ -45,8 +45,8 @@ impl Palette {
             panel,
             panel_soft,
             panel_bg,
-            border: alpha(tokens.ink, 0.05),
-            border_strong: alpha(tokens.ink, 0.08),
+            border: alpha(tokens.ink, if theme.light { 0.10 } else { 0.08 }),
+            border_strong: alpha(tokens.ink, if theme.light { 0.17 } else { 0.14 }),
             light: theme.light,
         }
     }
@@ -83,6 +83,7 @@ pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(ICONS.into(), Arc::new(egui::FontData::from_static(include_bytes!("../../assets/Phosphor.ttf"))));
     fonts.families.insert(FontFamily::Name(ICONS.into()), vec![ICONS.into()]);
+    let mut primary_installed = false;
     for (name, path) in UI_FONTS.iter().chain(CJK_FONTS) {
         if fonts.font_data.contains_key(*name) {
             continue;
@@ -91,7 +92,7 @@ pub fn install_fonts(ctx: &egui::Context) {
             fonts.font_data.insert((*name).into(), Arc::new(egui::FontData::from_owned(bytes)));
             let proportional = fonts.families.entry(FontFamily::Proportional).or_default();
             if UI_FONTS.iter().any(|(ui, _)| ui == name) {
-                proportional.insert(0, (*name).into());
+                if !primary_installed { proportional.insert(0, (*name).into()); primary_installed = true; }
             } else {
                 proportional.push((*name).into());
                 fonts.families.entry(FontFamily::Monospace).or_default().push((*name).into());
@@ -130,8 +131,8 @@ pub fn apply_visuals(ctx: &egui::Context, palette: &Palette) {
     visuals.panel_fill = Color32::TRANSPARENT;
     visuals.window_fill = color(t.surface);
     visuals.window_stroke = Stroke::new(1.0, palette.border_strong);
-    visuals.window_corner_radius = CornerRadius::same(10);
-    visuals.menu_corner_radius = CornerRadius::same(7);
+    visuals.window_corner_radius = CornerRadius::same(8);
+    visuals.menu_corner_radius = CornerRadius::same(3);
     visuals.extreme_bg_color = color(t.well);
     visuals.faint_bg_color = color(t.surface_soft);
     visuals.selection.bg_fill = alpha(t.accent, 0.28);
@@ -146,7 +147,7 @@ pub fn apply_visuals(ctx: &egui::Context, palette: &Palette) {
     ] {
         state.bg_fill = fill;
         state.weak_bg_fill = fill;
-        state.corner_radius = CornerRadius::same(5);
+        state.corner_radius = CornerRadius::same(3);
         state.bg_stroke = Stroke::new(1.0, palette.border);
         state.fg_stroke = Stroke::new(1.0, color(t.text_soft));
     }
@@ -157,10 +158,10 @@ pub fn apply_visuals(ctx: &egui::Context, palette: &Palette) {
         style.spacing.item_spacing = Vec2::new(6.0, 4.0);
         style.spacing.button_padding = Vec2::new(8.0, 4.0);
         style.spacing.interact_size.y = 24.0;
-        style.text_styles.insert(egui::TextStyle::Body, FontId::proportional(12.0));
-        style.text_styles.insert(egui::TextStyle::Button, FontId::proportional(12.0));
-        style.text_styles.insert(egui::TextStyle::Small, FontId::proportional(10.0));
-        style.text_styles.insert(egui::TextStyle::Monospace, FontId::monospace(11.0));
+        style.text_styles.insert(egui::TextStyle::Body, FontId::proportional(13.0));
+        style.text_styles.insert(egui::TextStyle::Button, FontId::proportional(13.0));
+        style.text_styles.insert(egui::TextStyle::Small, FontId::proportional(11.0));
+        style.text_styles.insert(egui::TextStyle::Monospace, FontId::monospace(12.0));
         style.text_styles.insert(egui::TextStyle::Heading, FontId::proportional(16.0));
     });
 }
@@ -172,10 +173,10 @@ pub fn icon(glyph: &str, size: f32) -> RichText {
 /// A square, borderless button with an icon and a tooltip.
 pub fn icon_button(ui: &mut Ui, glyph: &str, tooltip: &str, enabled: bool) -> Response {
     let palette = palette(ui);
-    let size = Vec2::splat(25.0);
+    let size = Vec2::splat(26.0);
     let (rect, response) = ui.allocate_exact_size(size, if enabled { Sense::click() } else { Sense::hover() });
     if response.hovered() && enabled {
-        ui.painter().rect_filled(rect, 5.0, palette.hover());
+        ui.painter().rect_filled(rect, 3.0, palette.hover());
     }
     let color = if !enabled { palette.faint().gamma_multiply(0.6) } else if response.hovered() { palette.text_soft() } else { palette.muted() };
     ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, glyph, FontId::new(15.0, FontFamily::Name(ICONS.into())), color);
