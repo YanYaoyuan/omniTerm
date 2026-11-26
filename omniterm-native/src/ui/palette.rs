@@ -56,6 +56,7 @@ fn commands(app: &App) -> Vec<Command> {
         list.push(Command { keywords: "theme color 配色", ..command("主题", theme.name, icons::PALETTE, None, false, Intent::SetTheme(theme.id)) });
     }
     list.push(Command { keywords: "process monitor top ps 进程", ..command("工作区", "打开进程监视窗口", icons::CPU, None, false, Intent::OpenProcesses) });
+    list.push(Command { keywords: "彩蛋 小猫 cat byte game snake easter eggs arcade 摸鱼 休息", ..command("彩蛋", "小憩一下 · BYTE 与数据包贪吃蛇", icons::TERMINAL_WINDOW, None, false, Intent::OpenPlayroom) });
     list.push(Command { keywords: "dock layout panel", ..command("外观", "重置面板布局", icons::SIDEBAR_SIMPLE, None, false, Intent::ResetDock) });
     list.push(command("设置", "打开终端设置", icons::GEAR_SIX, key(Action::Settings), false, Intent::Action(Action::Settings)));
     list.push(Command { keywords: "ssh config import 导入", ..command("连接", "从 ~/.ssh/config 导入主机…", icons::HARD_DRIVES, None, false, Intent::OpenSshImport) });

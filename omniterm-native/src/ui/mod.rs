@@ -5,6 +5,9 @@
 mod agent_panel;
 mod chrome;
 mod dialogs;
+mod easter_eggs;
+pub(crate) mod desktop_pet;
+mod pet_rig;
 mod highlighting;
 mod file_connection;
 mod web_files;
@@ -157,6 +160,7 @@ pub enum Intent {
     MovePane { id: String, target: Option<(String, crate::layout::Direction)> },
     DockPane { id: String, edge: dock::Edge },
     OpenProcesses,
+    OpenPlayroom,
     /// Types the readiness marks script into a terminal; the user submits it with Enter.
     StageIntegration(String),
     AllowAutoSubmit { id: String, enabled: bool },
@@ -191,6 +195,7 @@ pub struct App {
     focus_mode: bool,
     dialog: Option<Dialog>,
     palette: Option<palette::State>,
+    easter_eggs: easter_eggs::State,
     search: Search,
     toast: Option<Toast>,
     selecting: Option<String>,
@@ -214,13 +219,15 @@ pub struct App {
     docked: Vec<(String, dock::Edge)>,
     /// The docked pane with the keyboard, when one has it rather than the active tab.
     docked_focus: Option<String>,
-    /// Glyphs rasterized this frame, uploaded by whichever pane's callback prepares first.
+    /// Pending glyph pixels survive skipped paints; the first pane callback uploads them.
     frame_uploads: Arc<std::sync::Mutex<Vec<crate::glyphs::Upload>>>,
+    frame_upload_epoch: u64,
     agent_state: agent_panel::AgentState,
     workspace_layout: Option<serde_json::Value>,
     file_panels: HashMap<String, remote_panel::PanelState>,
     file_connection_errors: HashMap<String, String>,
     sidebar_files: bool,
+    connection_query: String,
     watched: Option<String>,
     credential_work: Vec<std::sync::mpsc::Receiver<Result<(), String>>>,
     background: Option<(std::path::PathBuf, egui::TextureHandle)>,
@@ -242,6 +249,9 @@ struct UiState {
     agent_profile: Option<String>,
     monitor_visible: bool,
     dock: Option<dock::Dock>,
+    playroom_discovered: bool,
+    snake_best: u16,
+    playroom_still: bool,
 }
 
 fn next_counter(counter: &mut u64) -> u64 {
@@ -296,6 +306,7 @@ impl App {
             focus_mode: false,
             dialog: None,
             palette: None,
+            easter_eggs: easter_eggs::State::new(ui_state.playroom_discovered, ui_state.snake_best, ui_state.playroom_still),
             search: Search { found: true, ..Search::default() },
             toast: None,
             selecting: None,
@@ -317,11 +328,13 @@ impl App {
             docked: Vec::new(),
             docked_focus: None,
             frame_uploads: Arc::default(),
+            frame_upload_epoch: 0,
             agent_state: agent_panel::AgentState::with_profile(ui_state.agent_profile.clone()),
             workspace_layout: None,
             file_panels: HashMap::new(),
             file_connection_errors: HashMap::new(),
             sidebar_files: true,
+            connection_query: String::new(),
             watched: None,
             credential_work: Vec::new(),
             background: None,
@@ -331,6 +344,7 @@ impl App {
             mac: cfg!(target_os = "macos"),
             windows: cfg!(windows),
         };
+        app.easter_eggs.renderer(&app.render_state);
         match app.store.list() {
             Ok(profiles) => app.profiles = profiles,
             Err(error) => app.notify(error, true),
@@ -962,6 +976,7 @@ impl App {
             Intent::Window(command) => ctx.send_viewport_cmd(command),
             Intent::SetTheme(id) => self.settings.theme = id.to_string(),
             Intent::OpenProcesses => self.open_processes(),
+            Intent::OpenPlayroom => self.easter_eggs.reveal(),
             Intent::StageIntegration(id) => match self.panes.get(&id).and_then(|pane| crate::backend::shell_integration(&pane.session.nonce)) {
                 Some(script) => {
                     self.backend.write(&id, script);
@@ -1113,7 +1128,7 @@ impl App {
 
     fn save_ui_state(&self) {
         if self.external_launch { return; }
-        let state = UiState { sidebar_hidden: !self.sidebar_visible, agent_hidden: !self.agent_visible, seen_ssh_hosts: self.seen_hosts.iter().cloned().collect(), agent_profile: self.agent_state.profile.clone(), monitor_visible: self.monitor_visible, dock: Some(self.dock.clone()) };
+        let state = UiState { sidebar_hidden: !self.sidebar_visible, agent_hidden: !self.agent_visible, seen_ssh_hosts: self.seen_hosts.iter().cloned().collect(), agent_profile: self.agent_state.profile.clone(), monitor_visible: self.monitor_visible, dock: Some(self.dock.clone()), playroom_discovered: self.easter_eggs.discovered, snake_best: self.easter_eggs.best, playroom_still: self.easter_eggs.still };
         if let Ok(json) = serde_json::to_vec(&state) {
             let _ = paths::write_atomically(&paths::file(UI_STATE), &json);
         }
@@ -1247,6 +1262,9 @@ impl App {
 }
 
 impl eframe::App for App {
+    // Child desktop-companion viewports need an alpha-zero clear. Root chrome
+    // paints its own background, including the configured window translucency.
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] { [0.0; 4] }
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let scale = ctx.pixels_per_point();
@@ -1265,9 +1283,8 @@ impl eframe::App for App {
             ctx.set_theme(if theme.light { egui::Theme::Light } else { egui::Theme::Dark });
             style::apply_visuals(&ctx, &palette);
         }
-        let modal = self.dialog.is_some() || self.palette.is_some();
+        let modal = self.dialog.is_some() || self.palette.is_some() || self.easter_eggs.blocks_input(&ctx);
         self.file_drop = file_drop::FrameDrop::capture(frame, &ctx, modal);
-        self.frame_uploads = Arc::default();
         let epoch = self.fonts.epoch;
         if !modal && self.web_files.is_none() {
             self.global_keys(&ctx);
@@ -1288,6 +1305,7 @@ impl eframe::App for App {
         if self.web_files.is_some() {
             egui::CentralPanel::default().frame(egui::Frame::new().inner_margin(16)).show(ui, |ui| web_files::show(self, ui, &mut intents));
         } else {
+            if !self.focus_mode { chrome::activity_bar(self, ui, &mut intents); }
             dock::show(self, ui, &mut intents, self.focus_mode);
             dock::drag_overlay(self, &ctx);
             dock::pane_overlay(self, &ctx, &mut intents);
@@ -1315,6 +1333,7 @@ impl eframe::App for App {
             Some(Err(error)) => self.notify(error, true),
             None => {}
         }
+        easter_eggs::show(&mut self.easter_eggs, &ctx);
         chrome::toast(self, &ctx);
         for intent in intents {
             self.apply(&ctx, intent);
@@ -1336,7 +1355,13 @@ impl eframe::App for App {
         // Every pane has been built by now and no callback has prepared yet, so glyphs first
         // seen anywhere this frame go up before anything is drawn. If the atlas started over
         // meanwhile, the panes built before that point are rebuilt next frame.
-        self.frame_uploads.lock().unwrap_or_else(|p| p.into_inner()).append(&mut self.fonts.uploads);
+        // Minimized windows may run UI without preparing a GPU callback. Keep
+        // pending glyph pixels until a visible pane actually uploads them.
+        {
+            let mut pending = self.frame_uploads.lock().unwrap_or_else(|p| p.into_inner());
+            if self.frame_upload_epoch != self.fonts.epoch { pending.clear(); self.frame_upload_epoch = self.fonts.epoch; }
+            pending.append(&mut self.fonts.uploads);
+        }
         if self.fonts.epoch != epoch {
             ctx.request_repaint();
         }
@@ -1356,6 +1381,7 @@ impl eframe::App for App {
             let first = self.tabs.first().and_then(|tab| self.panes.get(&tab.focus)).map(|pane| (pane.session.terminal.clone(), self.render_state.adapter.get_info().backend));
             smoke.tick(&ctx, &self.backend, first, self.fonts.family());
         }
+        frame.set_wgpu_surface_config(self.easter_eggs.surface_config());
         if self.workspace_dirty.is_some() {
             ctx.request_repaint_after(Duration::from_millis(450));
         }

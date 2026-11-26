@@ -10,8 +10,8 @@ use crate::icons;
 use crate::theme::THEMES;
 use eframe::egui::{self, Align, Align2, Color32, CursorIcon, FontId, Layout, Pos2, Rect, ResizeDirection, RichText, Sense, Stroke, Ui, Vec2, ViewportCommand};
 
-pub const TITLE_HEIGHT: f32 = 43.0;
-pub const STATUS_HEIGHT: f32 = 27.0;
+pub const TITLE_HEIGHT: f32 = 36.0;
+pub const STATUS_HEIGHT: f32 = 22.0;
 const RESIZE_EDGE: f32 = 5.0;
 const MAC_TRAFFIC_LIGHTS: f32 = 83.0;
 
@@ -71,47 +71,34 @@ pub fn title_bar(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
             let maximized = ui.ctx().input(|input| input.viewport().maximized.unwrap_or(false));
             intents.push(Intent::Window(ViewportCommand::Maximized(!maximized)));
         }
-        let brand_width = if app.sidebar_visible && app.dock.sidebar == super::dock::Edge::Left { app.dock.size(super::dock::Edge::Left) } else { 230.0 };
-        let mut left = rect.left() + if app.mac { MAC_TRAFFIC_LIGHTS } else { 22.0 };
+        let left = rect.left() + if app.mac { MAC_TRAFFIC_LIGHTS } else { 17.0 };
         let center_y = rect.center().y;
         ui.painter().text(Pos2::new(left, center_y), Align2::LEFT_CENTER, icons::TERMINAL_WINDOW, FontId::new(19.0, egui::FontFamily::Name(style::ICONS.into())), palette.accent());
-        left += 26.0;
-        ui.painter().text(Pos2::new(left, center_y), Align2::LEFT_CENTER, "omniTerm", FontId::proportional(13.0), palette.text_soft());
-
+        ui.painter().text(Pos2::new(left + 27.0, center_y), Align2::LEFT_CENTER, "omniTerm", FontId::proportional(13.0), palette.text_soft());
+        let brand_rect = Rect::from_min_size(Pos2::new(left - 5.0, rect.top() + 3.0), Vec2::new(120.0, TITLE_HEIGHT - 6.0));
+        let brand = ui.interact(brand_rect, ui.scope_id().with("byte-brand"), Sense::click_and_drag()).on_hover_text("omniTerm · 连点品牌，藏着一点小惊喜");
+        if brand.drag_started() { intents.push(Intent::Window(ViewportCommand::StartDrag)); }
+        if brand.clicked() { app.easter_eggs.tap_brand(ui.input(|input| input.time)); }
         let controls = if app.mac { 0.0 } else { 138.0 };
         let actions_right = rect.right() - controls;
-        let actions = ui.scope_builder(egui::UiBuilder::new().max_rect(Rect::from_min_max(Pos2::new(rect.left() + brand_width, rect.top()), Pos2::new(actions_right - 12.0, rect.bottom()))).layout(Layout::right_to_left(Align::Center)), |ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            let agent_label = format!("{}（{}）", if app.agent_visible { "隐藏 omniTerm Agent 面板（对话继续运行）" } else { "显示 omniTerm Agent 面板" }, super::shortcuts::label(Action::ToggleAgent, app.mac));
-            if title_button(ui, icons::ROBOT, "omniTerm Agent", app.agent_visible).on_hover_text(agent_label).clicked() {
-                intents.push(Intent::Action(Action::ToggleAgent));
-            }
-            if title_button(ui, icons::CPU, "进程", false).on_hover_text("打开进程监视窗口").clicked() {
-                app.open_processes();
-            }
-            if title_button(ui, icons::STACK, "监控", app.monitor_visible).on_hover_text("显示或隐藏监控面板").clicked() {
-                app.monitor_visible = !app.monitor_visible;
-            }
-            let palette_key = super::shortcuts::label(Action::Palette, app.mac);
-            if title_button(ui, icons::COMMAND, &format!("命令  {palette_key}"), false).on_hover_text(format!("命令面板（{palette_key}）")).clicked() {
-                intents.push(Intent::Action(Action::Palette));
-            }
+        // Keep the command centre bounded between the brand and layout controls,
+        // including at the minimum supported window size.
+        let width = (rect.width() * 0.38).clamp(180.0, 560.0);
+        let center = Rect::from_center_size(Pos2::new(rect.center().x - 35.0, center_y), Vec2::new(width, 25.0));
+        let response = ui.interact(center, ui.scope_id().with("command-center"), Sense::click()).on_hover_text("搜索命令、连接和设置 · Ctrl+Shift+P");
+        ui.painter().rect(center, 5.0, if response.hovered() { palette.hover() } else { alpha(palette.tokens.ink, 0.035) }, Stroke::new(1.0, palette.border_strong), egui::StrokeKind::Inside);
+        let directory = app.focused().map(|pane| pane.cwd().to_string()).unwrap_or_else(|| app.cwd.clone());
+        ui.painter().text(center.left_center() + Vec2::new(12.0, 0.0), Align2::LEFT_CENTER, icons::COMMAND, FontId::new(13.0, egui::FontFamily::Name(style::ICONS.into())), palette.muted());
+        let mut job = egui::text::LayoutJob::simple_singleline(format!("{}  —  搜索命令", basename(&directory)), FontId::proportional(12.0), palette.text_soft());
+        job.wrap = egui::text::TextWrapping::truncate_at_width(center.width() - 65.0);
+        let galley = ui.painter().layout_job(job);
+        ui.painter().galley(Pos2::new(center.center().x - galley.size().x / 2.0, center_y - galley.size().y / 2.0), galley, palette.text_soft());
+        if response.clicked() { intents.push(Intent::Action(Action::Palette)); }
+        ui.scope_builder(egui::UiBuilder::new().max_rect(Rect::from_min_max(Pos2::new(center.right() + 12.0, rect.top()), Pos2::new(actions_right - 8.0, rect.bottom()))).layout(Layout::right_to_left(Align::Center)), |ui| {
+            if icon_button(ui, icons::ROBOT, "切换 Agent 面板", true).clicked() { intents.push(Intent::Action(Action::ToggleAgent)); }
+            if icon_button(ui, icons::SIDEBAR_SIMPLE, "切换资源管理器", true).clicked() { intents.push(Intent::Action(Action::ToggleSidebar)); }
             theme_menu(app, ui);
-            ui.min_rect().left()
         });
-        // The title fills what is left between the brand and the actions, truncated to fit.
-        let title_rect = Rect::from_min_max(Pos2::new(rect.left() + brand_width + 8.0, rect.top()), Pos2::new(actions.inner - 8.0, rect.bottom()));
-        if title_rect.width() > 60.0 {
-            let tab = app.active_tab().map(|tab| super::terminals::tab_label(app, tab)).unwrap_or_else(|| "工作区".into());
-            let directory = app.focused().map(|pane| pane.cwd().to_string()).unwrap_or_else(|| app.cwd.clone());
-            let text = format!("{}  /  {}", basename(&directory), tab);
-            let mut job = egui::text::LayoutJob::simple_singleline(text, FontId::proportional(11.0), palette.muted());
-            job.wrap = egui::text::TextWrapping::truncate_at_width(title_rect.width() - 20.0);
-            let galley = ui.painter().layout_job(job);
-            let start = Pos2::new(title_rect.center().x - (galley.size().x + 18.0) / 2.0, center_y);
-            ui.painter().text(start, Align2::LEFT_CENTER, icons::FOLDER_SIMPLE, FontId::new(13.0, egui::FontFamily::Name(style::ICONS.into())), palette.muted());
-            ui.painter().galley(Pos2::new(start.x + 18.0, center_y - galley.size().y / 2.0), galley, palette.muted());
-        }
         if !app.mac {
             window_controls(ui, Rect::from_min_max(Pos2::new(actions_right, rect.top()), rect.right_bottom()), intents);
         }
@@ -121,20 +108,12 @@ pub fn title_bar(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
     }
 }
 
-fn title_button(ui: &mut Ui, glyph: &str, label: &str, active: bool) -> egui::Response {
+pub(super) fn theme_menu(app: &mut App, ui: &mut Ui) {
     let palette = style::palette(ui);
-    let color = if active { palette.text_soft() } else { palette.muted() };
-    let glyph = RichText::new(glyph).family(egui::FontFamily::Name(style::ICONS.into())).size(15.0).color(color);
-    let label = RichText::new(label).size(11.0).color(color);
-    ui.add(egui::Button::new((glyph, label)).fill(Color32::TRANSPARENT).stroke(Stroke::NONE).corner_radius(5))
-}
-
-fn theme_menu(app: &mut App, ui: &mut Ui) {
-    let palette = style::palette(ui);
-    let response = title_button(ui, icons::PALETTE, "主题", false).on_hover_text("切换主题");
+    let response = icon_button(ui, icons::PALETTE, "颜色主题", true).on_hover_text("切换主题");
     egui::Popup::menu(&response).show(|ui| {
         ui.set_min_width(190.0);
-        for theme in &THEMES {
+        for theme in THEMES.iter().filter(|theme| theme.id.starts_with("code")).chain(THEMES.iter().filter(|theme| !theme.id.starts_with("code"))) {
             let selected = app.settings.theme == theme.id;
             let row = ui.horizontal(|ui| {
                 let (dot, _) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
@@ -147,6 +126,43 @@ fn theme_menu(app: &mut App, ui: &mut Ui) {
             }
         }
     });
+}
+
+/// Compact navigation with real workbench actions, independent of panel docking.
+pub fn activity_bar(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
+    let palette = style::palette(ui);
+    let has_files = app.focused_remote().is_some() || app.focused().is_some_and(|pane| pane.session.kind == crate::core::profile::Kind::Ssh);
+    egui::Panel::left("activity-bar").exact_size(48.0).resizable(false).frame(egui::Frame::new().fill(palette.panel)).show(ui, |ui| {
+        let rect = ui.max_rect();
+        ui.painter().vline(rect.right() - 0.5, rect.y_range(), Stroke::new(1.0, palette.border));
+        ui.spacing_mut().item_spacing.y = 2.0;
+        if activity(ui, icons::HARD_DRIVES, "连接与工作区", app.sidebar_visible && (!has_files || !app.sidebar_files)).clicked() {
+            if app.sidebar_visible && (!has_files || !app.sidebar_files) { app.sidebar_visible = false; }
+            else { app.sidebar_visible = true; app.sidebar_files = false; }
+        }
+        if activity(ui, icons::FOLDER_OPEN, "远程文件 · 先选择 SSH / SFTP 会话", app.sidebar_visible && has_files && app.sidebar_files).clicked() {
+            if !has_files { intents.push(Intent::Notify("先选择一个 SSH 或 SFTP 会话，即可浏览它的远程文件。".into(), false)); }
+            else if app.sidebar_visible && app.sidebar_files { app.sidebar_visible = false; }
+            else { app.sidebar_visible = true; app.sidebar_files = true; }
+        }
+        if activity(ui, icons::ROBOT, "omniTerm Agent", app.agent_visible).clicked() { intents.push(Intent::Action(Action::ToggleAgent)); }
+        if activity(ui, icons::STACK, "监控面板", app.monitor_visible).clicked() { app.monitor_visible = !app.monitor_visible; }
+        if activity(ui, icons::CPU, "进程监视器", app.processes.open).clicked() { app.open_processes(); }
+        ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
+            ui.add_space(6.0);
+            if activity(ui, icons::GEAR_SIX, "设置", false).clicked() { intents.push(Intent::Action(Action::Settings)); }
+            theme_menu(app, ui);
+        });
+    });
+}
+
+fn activity(ui: &mut Ui, glyph: &str, label: &str, active: bool) -> egui::Response {
+    let palette = style::palette(ui);
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(48.0, 46.0), Sense::click());
+    if response.hovered() { ui.painter().rect_filled(rect.shrink2(Vec2::new(5.0, 3.0)), 4.0, palette.hover()); }
+    if active { ui.painter().vline(rect.left() + 1.0, rect.y_range().shrink(5.0), Stroke::new(2.0, palette.accent())); }
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, FontId::new(23.0, egui::FontFamily::Name(style::ICONS.into())), if active { palette.text() } else { palette.muted() });
+    response.on_hover_text(label)
 }
 
 /// Minimize, maximize and close, drawn in the theme's colors: Windows and Linux windows have
@@ -227,6 +243,10 @@ pub fn status_bar(app: &mut App, ui: &mut Ui, intents: &mut Vec<Intent>) {
                 }
                 separator(ui);
                 let ready = crate::agent::engine::resolve().is_ok();
+                if app.easter_eggs.discovered {
+                    super::easter_eggs::badge(&mut app.easter_eggs, ui);
+                    separator(ui);
+                }
                 ui.label(small(if ready { "omniTerm Agent 已就绪" } else { "omniTerm Agent 未就绪" }));
                 status_dot(ui, ready);
             });

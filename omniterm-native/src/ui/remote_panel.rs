@@ -267,6 +267,12 @@ pub fn file_panel(app: &mut App, ui: &mut Ui, remote: &Arc<Remote>, intents: &mu
         });
     }
 
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("名称").size(11.0).color(palette.muted()));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { ui.label(RichText::new("大小").size(11.0).color(palette.muted())); });
+    });
+    ui.separator();
     let entries = sorted(&snapshot.listing.entries, state.show_hidden);
     let names: Vec<String> = entries.iter().map(|entry| entry.name.clone()).collect();
     let list_height = (ui.available_height() - transfers_height(&snapshot, ui.available_height()) - ui.spacing().item_spacing.y).max(0.0);
@@ -310,11 +316,11 @@ pub fn file_panel(app: &mut App, ui: &mut Ui, remote: &Arc<Remote>, intents: &mu
             }
             let selected = state.selection.contains(&entry.name);
             let sense = if crate::drag_out::SUPPORTED { Sense::click_and_drag() } else { Sense::click() };
-            let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), sense);
+            let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), sense);
             let path = join(&current, &entry.name);
             let drag = snapshot.drags.get(&path);
             if selected {
-                ui.painter().rect_filled(rect, 4.0, alpha(palette.tokens.accent, 0.16));
+                ui.painter().rect_filled(rect, 2.0, alpha(palette.tokens.accent, 0.16));
             } else if response.hovered() {
                 ui.painter().rect_filled(rect, 4.0, alpha(palette.tokens.ink, 0.04));
             }
@@ -323,7 +329,7 @@ pub fn file_panel(app: &mut App, ui: &mut Ui, remote: &Arc<Remote>, intents: &mu
             ui.painter().text(rect.left_center() + Vec2::new(8.0, 0.0), egui::Align2::LEFT_CENTER, glyph, egui::FontId::new(15.0, egui::FontFamily::Name(style::ICONS.into())), tint);
             let size = if entry.directory { String::new() } else { format_bytes(entry.size as f64) };
             let size_width = if size.is_empty() { 0.0 } else { 60.0 };
-            let mut job = egui::text::LayoutJob::simple_singleline(entry.name.clone(), egui::FontId::proportional(11.5), palette.text_soft());
+            let mut job = egui::text::LayoutJob::simple_singleline(entry.name.clone(), egui::FontId::proportional(12.5), palette.text_soft());
             job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - 36.0 - size_width).max(20.0));
             let galley = ui.painter().layout_job(job);
             ui.painter().galley(rect.left_center() + Vec2::new(30.0, -galley.size().y / 2.0), galley, palette.text_soft());

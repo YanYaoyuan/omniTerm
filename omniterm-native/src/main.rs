@@ -24,6 +24,8 @@ mod input;
 mod layout;
 mod monitor;
 mod png;
+mod play;
+mod desktop_pointer;
 mod remote;
 mod smoke;
 mod terminal;
@@ -94,6 +96,12 @@ fn main() -> eframe::Result {
         };
         std::process::exit(code);
     }
+    if args.first().map(String::as_str) == Some("--bench-desktop-pet") {
+        let seconds = args.get(1).and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite()).unwrap_or(10.0);
+        let path = args.get(2).map(std::path::PathBuf::from).unwrap_or_else(|| "byte-gpu-benchmark.json".into());
+        if let Err(error) = ui::desktop_pet::benchmark(seconds, path, args.iter().any(|v| v == "--cycle-pause")) { eprintln!("BYTE benchmark: {error}"); std::process::exit(1); }
+        return Ok(());
+    }
     if args.first().map(String::as_str) == Some("--bench") {
         let megabytes = args.get(1).and_then(|value| value.parse().ok()).unwrap_or(32);
         println!("{}", bench::run(megabytes));
@@ -120,7 +128,7 @@ fn main() -> eframe::Result {
     if let Some(icon) = app_icon() {
         viewport = viewport.with_icon(icon);
     }
-    let options = eframe::NativeOptions { viewport, renderer: eframe::Renderer::Wgpu, ..Default::default() };
+    let options = eframe::NativeOptions { viewport, renderer: eframe::Renderer::Wgpu, wgpu_options: gpu::configuration(), ..Default::default() };
     let result = eframe::run_native("omniTerm", options, Box::new(move |cc| Ok(Box::new(ui::App::new(cc, settings, transparent, smoke, web_launch)))));
     remote::cleanup();
     core::x11::shutdown();

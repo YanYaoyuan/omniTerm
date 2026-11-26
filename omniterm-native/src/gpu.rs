@@ -317,3 +317,23 @@ pub fn forget(render_state: &egui_wgpu::RenderState, live: &[u64]) {
         resources.panes.retain(|pane, _| live.contains(pane));
     }
 }
+
+/// Preserve the application's original low-latency VSync outside desktop play.
+/// The environment override is useful for an A/B probe without changing a driver.
+pub fn surface_config() -> egui_wgpu::SurfaceConfig {
+    if std::env::var("OMNITERM_GPU_PRESENT").is_ok_and(|mode| mode == "async") { asynchronous_surface() }
+    else { egui_wgpu::SurfaceConfig::LOW_LATENCY }
+}
+pub fn asynchronous_surface() -> egui_wgpu::SurfaceConfig {
+    egui_wgpu::SurfaceConfig { present_mode: wgpu::PresentMode::AutoNoVsync, desired_maximum_frame_latency: Some(2) }
+}
+pub fn prefer_asynchronous(info: &wgpu::AdapterInfo) -> bool {
+    match std::env::var("OMNITERM_GPU_PRESENT").as_deref() {
+        Ok("async") => true,
+        Ok("sync") => false,
+        _ => cfg!(target_os = "linux") && info.vendor == 0x10de && info.backend == wgpu::Backend::Vulkan,
+    }
+}
+pub fn configuration() -> egui_wgpu::WgpuConfiguration {
+    egui_wgpu::WgpuConfiguration::default().with_surface_config(surface_config())
+}

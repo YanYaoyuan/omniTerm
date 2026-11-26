@@ -1,5 +1,5 @@
 // Copyright 2026 omniTerm contributors. SPDX-License-Identifier: Apache-2.0
-//! The desktop app's 13 color schemes, generated from `themes.js` so the colors match exactly,
+//! Terminal schemes and semantic workbench colors, including Code Modern presets.
 //! the colors the interface derives from them, and the xterm 256-color table.
 
 use alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
@@ -35,7 +35,7 @@ const fn palette(colors: [u32; 16]) -> [Rgb; 16] {
 }
 
 #[rustfmt::skip]
-pub const THEMES: [Theme; 13] = [
+pub const THEMES: [Theme; 15] = [
     Theme {
         id: "midnight",
         name: "Midnight",
@@ -192,6 +192,20 @@ pub const THEMES: [Theme; 13] = [
         accent: None,
         text: None,
     },
+    Theme {
+        id: "codeDark", name: "Code Dark Modern",
+        background: hex(0x1f1f1f), foreground: hex(0xcccccc), cursor: hex(0xaeafad),
+        selection: hex(0x264f78),
+        ansi: palette([0x000000,0xcd3131,0x0dbc79,0xe5e510,0x2472c8,0xbc3fbc,0x11a8cd,0xe5e5e5,0x666666,0xf14c4c,0x23d18b,0xf5f543,0x3b8eea,0xd670d6,0x29b8db,0xffffff]),
+        light: false, accent: Some(hex(0x0078d4)), text: None,
+    },
+    Theme {
+        id: "codeLight", name: "Code Light Modern",
+        background: hex(0xffffff), foreground: hex(0x3b3b3b), cursor: hex(0x000000),
+        selection: hex(0xadd6ff),
+        ansi: palette([0x000000,0xcd3131,0x00bc00,0x949800,0x0451a5,0xbc05bc,0x0598bc,0x555555,0x666666,0xcd3131,0x14ce14,0xb5ba00,0x0451a5,0xbc05bc,0x0598bc,0xa5a5a5]),
+        light: true, accent: Some(hex(0x005fb8)), text: None,
+    },
 ];
 
 pub fn by_id(id: &str) -> &'static Theme {
@@ -261,7 +275,7 @@ impl Theme {
         let light = self.light;
         let white = hex(0xffffff);
         let dark = hex(0x10151c);
-        Tokens {
+        let mut tokens = Tokens {
             bg: background,
             surface: mix(background, text, if light { 0.035 } else { 0.055 }),
             surface_soft: mix(background, text, if light { 0.02 } else { 0.03 }),
@@ -277,7 +291,17 @@ impl Theme {
             danger: self.ansi[1],
             warning: self.ansi[3],
             ink: if light { hex(0) } else { white },
+        };
+        // Chrome roles are independent of the terminal's ANSI/cursor colors.
+        if self.id == "codeDark" || self.id == "codeLight" {
+            tokens.surface = hex(if light { 0xf8f8f8 } else { 0x181818 });
+            tokens.surface_soft = tokens.surface;
+            tokens.surface_hover = hex(if light { 0xe8e8e8 } else { 0x2b2b2b });
+            tokens.well = hex(if light { 0xffffff } else { 0x313131 });
+            tokens.muted = hex(if light { 0x616161 } else { 0x9d9d9d });
+            tokens.faint = hex(if light { 0x616161 } else { 0x989898 });
         }
+        tokens
     }
 
     /// Resolves a cell color. `overrides` holds colors a program set with OSC 4, 10 or 11.
@@ -340,6 +364,19 @@ mod tests {
         let set = move |index: usize| (index == 1).then_some(red);
         assert_eq!(theme.resolve(Color::Indexed(1), &set), red);
         assert_eq!(theme.resolve(Color::Spec(red), &none), red);
+    }
+
+    #[test]
+    fn code_workbench_text_meets_normal_text_contrast() {
+        for id in ["codeDark", "codeLight"] {
+            let theme = by_id(id);
+            let tokens = theme.tokens();
+            for background in [tokens.bg, tokens.surface, tokens.well] {
+                assert!(contrast(tokens.text, background) >= 4.5, "{id}: text");
+                assert!(contrast(tokens.muted, background) >= 4.5, "{id}: secondary text");
+            }
+            assert!(contrast(tokens.accent, tokens.on_accent) >= 4.5, "{id}: button text");
+        }
     }
 
     #[test]
